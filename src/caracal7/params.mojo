@@ -54,8 +54,8 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:
             raise Error("m_l | 63")
-        if 161280 % self.L0 != 0:
-            raise Error("L0 | 161280")
+        if 161280 % self.L0 != 0 or (self.L0 & (self.L0 - 1)) == 0:
+            raise Error("L0 | 161280 with an odd part > 1 (the encoder has no scatter path without a radix stage)")
         if self.m_cosets != 1 and self.m_cosets != 2 and self.m_cosets != 4:
             raise Error("m_cosets in {1, 2, 4}")
         if self.N() > 4 * self.L():

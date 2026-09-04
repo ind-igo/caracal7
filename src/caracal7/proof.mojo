@@ -45,7 +45,8 @@ struct TailLevel(TrivialRegisterPassable, Writable):
 def tail_schedule[p: Params]() raises -> List[TailLevel]:
     """Committed tail levels l = 2 .. ell-1, derived from N and e (design section 2). The level after
     the last entry is sent in the clear; with no entries, y_2 itself is the clear vector. A level folds
-    `tail_digits` binary digits, so the tail stops when fewer remain (the odd digit is never folded)."""
+    `tail_digits` binary digits, so the tail stops when fewer remain (the odd digit is never folded).
+    Domains with odd part 1 are skipped: the encoder scatters from its last odd-radix stage."""
     var levels = List[TailLevel]()
     var length = p.N()
     var digits = p.a1 + p.a2
@@ -55,7 +56,7 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
         var cosets = 0
         for m in [1, 2, 4]:
             for d in range(1, H4_ORDER + 1):
-                if H4_ORDER % d == 0 and m * d >= TAIL_RATE_INV * rows and (L == 0 or m * d < L):
+                if H4_ORDER % d == 0 and (d & (d - 1)) != 0 and m * d >= TAIL_RATE_INV * rows and (L == 0 or m * d < L):
                     L = m * d
                     cosets = m
                     break
