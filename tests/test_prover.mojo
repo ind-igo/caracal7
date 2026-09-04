@@ -22,16 +22,17 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
 
 
 def test_tail_schedule_folds_a_larger_grid() raises:
-    # 288 x 128: N = 36864 -> level 2 rows 4608 on L = 80640 -> level 3 rows 576 on L = 9216 (2 x 4608) -> clear
+    # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32) -> clear
     comptime big = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
                           tail_digits=3, tail_clear_max=2500, lambda_bits=103)
     var s = tail_schedule[big]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 4608)
-    assert_equal(s[0].L, 80640)
+    assert_equal(s[0].L, 161280)
+    assert_equal(s[0].cosets, 1)
     assert_equal(s[1].rows, 576)
-    assert_equal(s[1].L, 9216)
-    assert_equal(s[1].cosets, 2)
+    assert_equal(s[1].L, 18432)
+    assert_equal(s[1].cosets, 4)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
     var shape = Shape.__init__[big](357, 34)
     assert_equal(shape.clear_length, 576)
@@ -44,10 +45,10 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     var s = tail_schedule[narrow]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 31752)
-    assert_equal(s[0].L, 645120)          # 4 cosets of 161280
+    assert_equal(s[0].L, 645120)          # the largest domain, rate 1/20: the cap
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
-    assert_equal(s[1].L, 64512)          # 2 cosets of 32256
+    assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
     var shape = Shape.__init__[narrow](43, 34)
     assert_equal(shape.clear_length, 3969)
 
