@@ -104,8 +104,10 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 
 ```
 src/caracal7/
-  params.mojo       Params, derived constants, twiddle tables
+  params.mojo       Params, derived constants
   field.mojo        F, F2, F4, E
+  tables.mojo       generators, twiddle tables (host, setup)
+  arena.mojo        the one device allocation (rule 6)
   encode.mojo       idft2, to_stored, pack, rs_encode
   merkle.mojo       Blake3 tree
   open.mojo         open, fold
