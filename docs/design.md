@@ -28,7 +28,9 @@ struct Params:
 
 Derived at comptime: `h1`, `h2`, `N = h1 * h2`, `L = m_cosets * L0`, the rate, the query count `|S|` from the formula of section 9, `n_cw`. `P` (opening points) and the column count are runtime values of the IR program, not parameters.
 
-Milestone 1 profile: `e = 16`, `a1 = 3, m1 = 9` (h1 = 72), `a2 = 5, m2 = 1` (h2 = 32), the Keccak-128 grid, `L0 = 80,640`, `m_cosets = 1`.
+Milestone 1 profile: `e = 16`, `a1 = 3, m1 = 9` (h1 = 72), `a2 = 5, m2 = 1` (h2 = 32), `L0 = 80,640`, `m_cosets = 1`. This is the reference profile for synthetic columns, not a Keccak grid: the main spec lists Keccak-128 at 72 × 32 and statement-layer section 9 at 64 × 24, and that is reconciled when the frontend lands.
+
+The tail schedule is derived, not chosen: from `N` and `e`, level by level, the message length, `L_l`, the exact rate, and `|S_l|` by the query formula, until the clear-vector bound of 9.3 stops the recursion. The whole schedule is computed before the transcript prefix is hashed, because the prefix commits to it.
 
 ## 3. Buffers
 
@@ -37,17 +39,21 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 | buffer | shape | notes |
 |---|---|---|
 | `trace` | (column, x2, x1) | witness in row order of section 2, one byte per value; a chain is contiguous |
-| `coeff` | (column, coord, x2, x1) | F2 monomial coefficients after the inverse 2D DFT; coord in {0,1} |
-| `stored` | (column, slot) | mixed basis, Frobenius-real slots (9.1), N bytes per column; for E-valued columns each coordinate is its own column |
+| `coeff` | (column, x2, x1, 2) | F2 monomial coefficients after the inverse 2D DFT, the two coordinates adjacent |
+| `stored` | (column, slot) | mixed basis, N bytes per column. F-valued columns use the Frobenius-real slots of 9.1. E-valued columns (A, B, Q2) use the plain `(x1, x2, r)` slots of 9.2, one stored column per E coordinate, written directly by the quotient path |
 | `packed` | (column, i, 4) | F4 symbols, N/4 per column |
 | `code` | (s, column, n_cw, 4) | codeword rows, leaf-major: leaf `s` is contiguous, `4 * n_cw * columns` bytes |
 | `tree` | (level, node, 32) | Blake3 digests, leaves first |
-| `lde` | (column, coord, G2, G1) | evaluations on the residual grid G, E-valued for accumulators and quotients |
-| `residual` | (coord, G2, G1) | batched residual, E-valued |
+| `lde` | (column, G2, G1, coord) | evaluations on the residual grid G; 2 coordinates for witness columns, e for accumulators |
+| `residual` | (G2, G1, e) | batched residual, E-valued |
+| `v_l` | (query, n_cw, 4, e) at level 2; (query, e) later | expected symbols sent per level (9.3) |
+| `w_tilde` | (slot, e) | the batched query of the current level, reused per level |
+| `round_msgs` | (level, 3, 3, e) | sumcheck messages |
+| `transcript` | Blake3 state plus a challenge buffer | device resident (section 6) |
 | `fold_y` | (slot, e) | level-2 message y in E, slot order |
 | `tail_code_l` | (s, 8, e) | level-l codeword rows, 8 E per row (9.3) |
 
-Leaf-major `code` is the one layout choice that costs a transpose: the encoder produces column-major codewords and the Merkle leaf wants all columns at one position. The encoder writes its output transposed in its last pass. If Apple GPU shared memory makes that pass slow, we keep a column-major copy and transpose once; measure first.
+Leaf-major `code` and `tail_code_l` cost a transpose: both encoders produce column-major codewords and the Merkle leaf wants all columns at one position. Both encoders write their output transposed in their last pass. If Apple GPU shared memory makes that pass slow, we keep a column-major copy and transpose once; measure first.
 
 Row width of a leaf is `4 * n_cw * columns` bytes. With 1,024-byte leaves that caps a tree at 256 columns at `n_cw = 1`, which is the 16-accumulator ceiling of section 13. Wider trees split into chunked leaves later.
 
@@ -58,19 +64,25 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | kernel | in → out | threads | notes |
 |---|---|---|---|
 | `idft2` | trace → coeff | one per (column, line) | inverse 2D DFT over F2, axis by axis, mixed radix 2/3/7 stages; each stage a batched small GEMM |
-| `to_stored` | coeff → stored | one per (column, slot) | length-m DFT over F per axis on the odd digit, then the Frobenius-real slot bijection of 9.1 |
+| `to_stored` | coeff → stored | one per (column, slot) | length-m DFT over F per axis on the odd digit, then the Frobenius-real slot bijection of 9.1; the quotient specialization writes E coordinates to plain slots (9.2) |
 | `pack` | stored → packed | one per (column, i) | gather 4 slots on the packing digit into one F4 symbol |
 | `rs_encode` | packed → code | one per (column, butterfly) | coset twist by `g_k^i`, then the order-L0 DFT over F4 in two passes: the power-of-two part, then the 315-point Good-Thomas part; each stage a block GEMM with 4×4 F-matrices as twiddles |
 | `merkle` | code → tree | one per node per level | Blake3, 1,024-byte leaves, 32-byte nodes, one launch per level |
-| `open` | stored, w_z → alpha | one per (column, point) | contraction `<w_z, stored(c)>` in E; `w_z` is built on device from the twelve tensor factors of 9.1 |
+| `open` | stored, w_z → alpha | one per (column, point) | contraction `<w_z, stored(c)>` in E; `w_z` is built on device from the twelve tensor factors of 9.1 for F-valued columns and the single `Mon(x) L(r)` product for quotient coordinate columns |
 | `fold` | stored, beta → fold_y | one per slot | GEMV over all columns of all three trees |
-| `query_gather` | code, tree, S → proof bytes | one per query | leaf rows and Merkle paths |
-| `tail_materialize` | tensor terms → w~ | one per slot | sum of a few dozen tensor products, E-valued |
+| `query_gather` | code, tree, S → proof bytes | one per query, then one per frontier node | opened leaf rows and a Merkle multiproof: the unique sibling frontier of S is computed first, each sibling emitted once |
+| `expected_symbols` | y_next, G rows at S → v_l | one per (query, coordinate) | the values the previous level must match at the opened positions (9.3) |
+| `tail_materialize` | tensor terms → w_tilde | one per slot | sum of the active claim batch: up to `12 P + 4 n_cw |S_1|` tensor terms at level 2, `|S_{l-1}|` plus the running claim later |
 | `tail_round` | w~, y → s_i | one per row | Hadamard and reduce over all but one digit, three evaluations |
 | `tail_fold` | y, r̄ → y_next | one per row | GEMV with the 8-column matrix |
-| `tail_encode` | y → tail_code | one per (coord, butterfly) | e/4 independent F4 DFTs on coefficient data, no inverse |
+| `tail_encode` | y → tail_code | one per (coord, butterfly) | e/4 independent F4 DFTs on coefficient data, no inverse; last pass writes the `(s, 8, e)` leaf-major layout |
+| `lde` | coeff → lde | one per (column, line) | coset LDE of 10.2: twist by `g^i`, forward DFT; shares the `idft2` stages |
+| `residual` | lde, tables → residual | one per row of G | the fused pass of statement-layer 5 over the linear and quadratic tables; milestone 1 runs it on synthetic families |
+| `quotient` | residual → coeff of A, B, Q2 | one per row, then `idft2` | multiply by `−1/2`, one axis-1 LDE of `S1`, inverse 2D DFT to E coefficients, then `to_stored` in plain slots |
 
-Milestone 2 adds `residual` (fused pass from the linear and quadratic tables of statement-layer 5), `quotient`, `lde` (the coset LDE of 10.2, which shares `idft2`), `factor`, `batch_invert`, `chain_scan`. Milestone 3 adds `radix_sort`.
+Milestone 1 ends with the W and Q trees, the residual and quotient on synthetic families, openings at P points, the tail, and the verifier, as the spec's build order says. Milestone 2 adds the Z tree: `factor`, `batch_invert`, `chain_scan`, the small grid and Q3. Milestone 3 adds `radix_sort`.
+
+Stage order the host enqueues for the tail, per level: commit `Mat(y_l)` (`tail_encode`, `merkle`, transcript absorb) → squeeze `S_{l-1}` → `query_gather` on the previous level → `expected_symbols` → absorb `v` → squeeze batching scalars → `tail_materialize` → three times (`tail_round`, absorb, squeeze `r_i`) → `tail_fold`. The last level sends `y_ell` in the clear.
 
 The first kernel written is `rs_encode`, because it decides prover time and tells us what Apple GPU support in Mojo can do.
 
