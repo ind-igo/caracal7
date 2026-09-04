@@ -128,15 +128,44 @@ Every kernel follows the ladder of Boehm's matmul article (siboehm.com/articles/
 6. **Bank conflicts, double buffering, warp tiling.** Only for the kernel that is the budget, and only after step 4 is measured. The article spent four weekends on the last 14%.
 7. **Autotune.** Tile parameters are comptime; a small Mojo sweep over a handful of `(BM, BN, BK, TM, TN)` settings picks them per kernel, because the best values differ per GPU.
 
-Stop at the rung where the kernel is no longer the budget. Only `rs_encode`, and later `residual`, should reach step 6.
+The ceiling is in the design, the polish is by measurement. Every layout, skeleton, and reduction rule above is chosen for peak throughput from the first commit and is not revisited per kernel. The per-kernel climb up the ladder is ordered by measurement, so that the kernels which are the budget (`rs_encode`, then `residual`) get the expensive rungs first, and no kernel is polished before a measurement says it is on the critical path. Nothing is left slow on purpose; work is ordered by where the time goes.
 
 **Arithmetic on bytes.** F values are 7 bits. A product is under 2^14, so a `UInt16` accumulator holds four products and an `Int32` holds thousands before a reduction. Reduce lazily: accumulate wide, reduce once per tile with `(x & 127) + (x >> 7)` twice, no division. F2 and F4 products are 4 and 16 base MACs on the same accumulators. This is the decision between fp32 and integer lanes in the open list: integer lanes with lazy reduction are the default until `rs_encode` shows fp32 wins.
 
 **Shapes are GEMMs.** A radix-`r` DFT stage on `batch` lines is a GEMM with `M = r`, `K = r`, `N = batch` and a twiddle matrix as the constant operand; the fold is a GEMV over columns; the residual pass is a GEMM of the family table against the LDE rows. Write each with the same tile skeleton so the tuning work transfers.
 
-## 9. Open
+## 9. Backends
+
+The design is backend agnostic. Apple and NVIDIA differ in the one place that matters, the inner product of a tile, and that difference is a comptime configuration, not a second code path.
+
+**What differs.** NVIDIA has integer tensor cores: an `s8 × s8 → s32` MMA, exact for our 7-bit values, at several times the fp32 rate. Apple has `simdgroup_matrix` for fp16, bf16, and fp32 only; fp32 is exact for our products (under 2^14) up to 1,024 accumulated terms, fp16 is not exact at all. Apple threadgroup memory is 32 KB, NVIDIA 48 to 228 KB. Both have 32-wide SIMD groups. So the tile op, the accumulator type, the reduction cadence, and the tile sizes differ; nothing else does.
+
+**The configuration.** One comptime struct, selected once by `is_apple_gpu()` / `is_nvidia_gpu()` and passed as a parameter to every kernel:
+
+```mojo
+struct Backend:
+    comptime simd_width: Int          # 32 on both
+    comptime threadgroup_bytes: Int   # 32 KB Apple, 48 KB+ NVIDIA
+    comptime mma: Bool                # tensor-core tile op available
+    comptime mma_m: Int; comptime mma_n: Int; comptime mma_k: Int
+    comptime in_dtype: DType          # int8 NVIDIA, float32 Apple, uint8 scalar fallback
+    comptime acc_dtype: DType         # int32 NVIDIA, float32 Apple, uint16/int32 scalar
+    comptime max_terms: Int           # products accumulated before a mod-127 reduction: 1,024 fp32, 2^17 int32
+    comptime vec_bytes: Int           # bytes per thread load, 16
+    comptime tile: TileParams         # BM, BN, BK, TM, TN defaults, overridden by the autotune sweep
+```
+
+**The one hot op.** `tile_mac[B: Backend](a_tile, b_tile, acc)`: multiply a `(mma_m × mma_k)` tile by a `(mma_k × mma_n)` tile and accumulate. Three implementations behind one signature: NVIDIA MMA, Apple simdgroup matrix in fp32, scalar SIMD lanes with lazy integer reduction. The GEMM skeleton of section 8, the buffer shapes, the transcript, and every kernel above the tile op are shared. The scalar path is also the reference the other two are tested against.
+
+**Consequences for the DFT.** MMA shapes fix `K`; a radix-`r` stage with `r` in {2, 3, 5, 7} does not fill `K = 16` or 32. Stages are therefore grouped into one matrix per pass whose order is a product of radices near the MMA `K` (for L0 = 80,640 = 2^8 · 315: the 315-point Good–Thomas pass is one 315 × 315 matrix applied as 20 blocks of 16, or three radix stages 5 · 7 · 9 padded per backend). Which grouping wins is per backend and comes out of the autotune sweep, not the design.
+
+**Rule.** No kernel contains `is_apple_gpu()` or `is_nvidia_gpu()` directly. All dispatch goes through `Backend`. A kernel that needs something the struct does not carry adds a field to the struct.
+
+To verify before the encoder is written: whether Mojo 1.0 exposes the Apple simdgroup matrix op and the NVIDIA int8 MMA through the same stdlib surface (`max.gpu` mma), or whether the tile op needs inline intrinsics per backend.
+
+## 10. Open
 
 - Apple GPU in Mojo: shared-memory size, `barrier`, and whether Blake3 on device reaches the CPU rate. Learned from `rs_encode` and `merkle`.
-- fp32 versus integer lanes for the GEMM stages. Section 10.2 assumes exact fp32 under a chunking rule; on Apple GPU integer SIMD may be the better path. Measure both in `rs_encode`.
+- The tile op per backend (section 9): fp32 simdgroup matrix on Apple against integer SIMD lanes, int8 MMA on NVIDIA. Measure in `rs_encode`.
 - Whether `code` should be leaf-major from the encoder or transposed once (section 3).
 - The tower constants `c_2`, `c_3`, `c_4` for `e = 16`.
