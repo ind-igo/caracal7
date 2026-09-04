@@ -2,7 +2,9 @@
 
 `tile_mac` is the one hot op. On SIMD lanes it is the rank-1 update acc[i] += a[i] * b (mma_k = 1)
 on int32 lanes, reduced lazily every `max_terms` products. An MMA backend (NVIDIA TensorCore, Apple
-M5 MmaOpApple) replaces this one function and its `Backend` value; nothing above this file changes.
+M5 MmaOpApple) replaces this function, the `Backend` value, and the fragment loads and k step of
+the skeleton below (an MMA consumes mma_k columns of the tile per call); every stage above this
+file is unchanged.
 
 `gemm_f2` is the shared skeleton of every GEMM-shaped stage on F2 data (the grid DFTs, the
 residual pass, the quotient interpolations): threadgroup tiles, register tiles, the F2 operands as
@@ -20,7 +22,7 @@ from std.gpu import thread_idx, block_idx
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
-from caracal7.field import F2, f_reduce_signed
+from caracal7.field import F2, f_add, f_reduce_signed, WIDE_BIAS
 
 
 @fieldwise_init
@@ -50,6 +52,7 @@ comptime SIMD_LANES = Backend(threadgroup_bytes=32768, mma_k=1, max_terms=128, v
                               tile=Tile(BM=64, BN=64, BK=16, TM=4, TN=4))
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
 comptime BACKEND = SIMD_LANES   # ponytail: the only implementation; select by device family here when an MMA path lands
+comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = the 8 F2 lanes of E: residual, open, fold
 
 
 @always_inline
@@ -117,10 +120,19 @@ struct Strided(Loader):
         return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
 
 
-def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int](
+struct Bytes(Loader):
+    """F values, one byte each, as F2 with a zero imaginary part."""
+    @staticmethod
+    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+        var v = F2(0)
+        v[0] = base[unsafe_offset=Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z)]
+        return v
+
+
+def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int32, N: Int32, K: Int32
 ):
-    """C[m, n] = sum_k A[m, k] B[k, n] over F2, batch z = block_idx.z."""
+    """C[m, n] = (C[m, n] if acc) + sum_k A[m, k] B[k, n] over F2, batch z = block_idx.z."""
     comptime BM = T.BM
     comptime BN = T.BN
     comptime BK = T.BK
@@ -129,6 +141,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int](
     comptime THREADS = T.threads()
     comptime assert BM % TM == 0 and BN % TN == 0
     comptime assert B.max_terms % BK == 0, "the lazy reduction cadence needs BK | max_terms"
+    comptime assert B.max_terms * 2 * 126 * 126 + 126 < Int(WIDE_BIAS), "signed F2 lanes overflow WIDE_BIAS before a reduction"
     comptime assert (BM * BK) % THREADS == 0 and (BK * BN) % THREADS == 0
     comptime assert 2 * (BK * BM + BK * BN) <= B.threadgroup_bytes
 
@@ -191,13 +204,16 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int](
             var n = bcol + tcol * TN + j
             if m < Mi and n < Ni:
                 var v = F2(UInt8(re[i][j]), UInt8(im[i][j]))
-                base.unsafe_store[width=2](Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + z * Int(o.sc_z), v)
+                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + z * Int(o.sc_z)
+                comptime if acc:
+                    v = f_add(v, base.unsafe_load[width=2](at))
+                base.unsafe_store[width=2](at, v)
 
 
-def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int](
+def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
-    comptime kernel = gemm_f2[B, T, L, D]
+    comptime kernel = gemm_f2[B, T, L, D, acc]
     ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
                                  grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())
 

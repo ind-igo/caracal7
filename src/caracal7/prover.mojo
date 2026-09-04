@@ -13,13 +13,13 @@ from max.gpu.host import DeviceContext
 from caracal7.params import Params
 from caracal7.arena import Arena, Bump
 from caracal7.tables import Domains, TableLayout, build_tables
-from caracal7.encode import EncLayout, encode, pack, rs_encode
+from caracal7.encode import EncLayout, encode
 from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.residual import lde, residual, quotient, quotient_elems, ENTRY
+from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT
 from caracal7.open import build_queries, open, fold
 from caracal7.tail import tail_encode, expected_symbols, tail_materialize, tail_round, tail_fold
 
@@ -48,10 +48,11 @@ struct ProverLayout:
     var tables: TableLayout
     var transcript: TranscriptLayout
     var enc_w: EncLayout            # witness tree: trace .. code
-    var enc_q: EncLayout            # quotient tree: stored .. code (trace/coeff unused; quotient writes stored)
+    var enc_q: EncLayout            # quotient tree: trace .. code (quotient writes the trace)
     var tree_w: Int                 # (node, 32), level 0 first, tree_nodes(L0) nodes
     var tree_q: Int
     var families: Int               # (entry, ENTRY)        the family table, kappa folded in on device
+    var shifts: Int                 # (P, POINT)            opening points as (dj1, dj2) on G
     var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
     var lde: Int                    # (column, G2, G1, 2)   witness columns on the residual grid
     var residual: Int               # (G2, G1, e)
@@ -83,6 +84,7 @@ struct ProverLayout:
         self.tree_w = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.families = bump.alloc(shape.entries * ENTRY)
+        self.shifts = bump.alloc(shape.points * POINT)
         self.ltmp = bump.alloc(shape.columns_w * p.h2() * 2 * p.h1() * 2)
         self.lde = bump.alloc(shape.columns_w * G * 2)
         self.residual = bump.alloc(G * p.e)
@@ -130,13 +132,18 @@ struct Prover[p: Params, H: Hash]:
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
+        var pts = shift_points(self.families)
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
+        var ph = ctx.enqueue_create_host_buffer[DType.uint8](len(pts))
         ctx.synchronize()
         for i in range(len(self.families)):
             fh[i] = self.families[i]
+        for i in range(len(pts)):
+            ph[i] = pts[i]
         self.arena.upload(ctx, self.layout.families, fh)
+        self.arena.upload(ctx, self.layout.shifts, ph)
 
-    def prove(self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
+    def prove(mut self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
         Every call is an enqueue; proof values are staged as async copies and read after the one
         synchronize in `proof.finish`."""
@@ -153,7 +160,7 @@ struct Prover[p: Params, H: Hash]:
         # header and transcript prefix (spec 9.4, statement-layer 6 step 1)
         proof.u32(Int(VERSION))
         proof.prefixed(public_inputs)
-        var prefix = prefix_bytes[Self.p](S, public_inputs, self.families)
+        var prefix = prefix_bytes[Self.p, Self.H](S, public_inputs, self.families)
         if len(prefix) > PREFIX_MAX:
             raise Error("public inputs too large for the prefix region")
         var prefix_host = ctx.enqueue_create_host_buffer[DType.uint8](len(prefix))
@@ -174,18 +181,17 @@ struct Prover[p: Params, H: Hash]:
         # 8-10. residual grid, quotient, commit Q
         lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
         residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.residual)
-        quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.stored)
-        pack[Self.p](ctx, base, L.enc_q)
-        rs_encode[Self.p](ctx, base, L.enc_q, L.tables)
+        quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.trace)
+        encode[Self.p](ctx, base, L.enc_q, L.tables)
         merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
 
         # 11. openings at the P points
-        build_queries[Self.p](ctx, base, L.z, S.points, L.w_z)
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, False, L.openings)
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, True, L.openings + S.points * S.columns_w * e)
+        build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, L.w_z)
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.openings, S.columns())
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.openings + S.columns_w * e, S.columns())
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
         proof.stage(self.arena, L.openings, S.points * S.columns() * e)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.beta_gamma, S.columns() + S.points)

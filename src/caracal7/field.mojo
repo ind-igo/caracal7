@@ -160,17 +160,24 @@ def ext_norm[k: Int](a: SIMD[DType.uint8, 1 << k]) -> SIMD[DType.uint8, 1 << (k 
     return f_sub(ext_mul[k - 1](a0, a0), ext_mul[k - 1](_level_const[k](), ext_mul[k - 1](a1, a1)))
 
 
-def ext_inv[k: Int](a: SIMD[DType.uint8, 1 << k]) raises -> SIMD[DType.uint8, 1 << k]:
-    """Norm descent: a^-1 = conj(a) / N(a). Raises on zero."""
+def ext_inv0[k: Int](a: SIMD[DType.uint8, 1 << k]) -> SIMD[DType.uint8, 1 << k]:
+    """Norm descent: a^-1 = conj(a) / N(a); 0 -> 0 (a^125 = 0 in F). The kernel form."""
     comptime if k == 0:
-        return f_inv(a[0])
+        return f_pow(a, 125)
     else:
         comptime h = 1 << (k - 1)
-        var n_inv = ext_inv[k - 1](ext_norm[k](a))
+        var n_inv = ext_inv0[k - 1](ext_norm[k](a))
         var c = ext_conj[k](a)
         var c0 = c.slice[h]()
         var c1 = c.slice[h, offset=h]()
         return rebind[SIMD[DType.uint8, 1 << k]](ext_mul[k - 1](c0, n_inv).join(ext_mul[k - 1](c1, n_inv)))
+
+
+def ext_inv[k: Int](a: SIMD[DType.uint8, 1 << k]) raises -> SIMD[DType.uint8, 1 << k]:
+    """Raises on zero."""
+    if a == SIMD[DType.uint8, 1 << k](0):
+        raise Error("ext_inv(0)")
+    return ext_inv0[k](a)
 
 
 def ext_pow[k: Int](a: SIMD[DType.uint8, 1 << k], n: Int) -> SIMD[DType.uint8, 1 << k]:
@@ -193,29 +200,3 @@ def ext_embed[k: Int, w: SIMDLength](a: SIMD[DType.uint8, w]) -> SIMD[DType.uint
     comptime for t in range(w):
         r[t] = a[t]
     return r
-
-
-# ---- E x F2 wide MAC (residual stage): E over F2 has coordinates (2k, 2k+1) = (u, v) of one F2 slot ----
-comptime E_MAC_MAX = 64      # 64 * 2 * 126^2 < WIDE_BIAS
-
-
-def e_mac_f2_wide(mut ev: SIMD[DType.int32, 8], mut od: SIMD[DType.int32, 8], a: E, b: F2):
-    """(ev, od) += a * b with a in E (even lanes u, odd lanes v) and b = b0 + b1 i in F2."""
-    var ae: SIMD[DType.uint8, 8]
-    var ao: SIMD[DType.uint8, 8]
-    ae, ao = a.deinterleave()
-    var ae32 = ae.cast[DType.int32]()
-    var ao32 = ao.cast[DType.int32]()
-    var b0 = Int32(b[0])
-    var b1 = Int32(b[1])
-    ev += ae32 * b0 - ao32 * b1
-    od += ae32 * b1 + ao32 * b0
-
-
-def e_wide_reduce(mut ev: SIMD[DType.int32, 8], mut od: SIMD[DType.int32, 8]) -> E:
-    """Reduce the two lane sets to F and interleave back to E; the accumulators restart from the result."""
-    var re = f_reduce_signed(ev)
-    var ro = f_reduce_signed(od)
-    ev = re.cast[DType.int32]()
-    od = ro.cast[DType.int32]()
-    return re.interleave(ro)

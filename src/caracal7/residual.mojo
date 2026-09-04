@@ -7,12 +7,13 @@ Buffers (bytes; slowest ... fastest):
     families  (entry, ENTRY)           the compiled family list, kappa folded in after alpha
     residual  (j2, j1, e)              R = sum_j alpha^j R_j on G
     quotient  five E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
-    stored    (3 e columns, slot)      A, B, Q2 coordinate columns in plain slots (spec 9.2)
+    trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
 
-Family entry (ENTRY = 32 bytes): kappa E [0, 16); col_a u16, dj1_a, dj2_a [16, 20); col_b u16,
-dj1_b, dj2_b [20, 24), col_b = NONE for a linear entry; mult [24] (0 none, 1 the gate (X1 - e1),
-2 the gate (X2 - e2)); coef F [25]; family u16 [26, 28). Shifts are offsets on G: a read at
-(omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family, one entry per (family, read).
+Family entry (ENTRY = 32 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
+col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
+mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32).
+Shifts are offsets on G in [0, 2 h_l): a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef *
+alpha^family, one entry per (family, read).
 ponytail: collapsing shared reads into one kappa (statement-layer 5) is the compiler's job when a
 real family list exists; the kernel does not care.
 
@@ -21,7 +22,7 @@ Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8
     residual   C[slot, point] = sum_entry kappa[entry][slot] * X[entry][point]; X is gathered by the
                Family loader as mult(point) * c_a(shift_a point) * c_b(shift_b point)
     quotient   q1m over G1 -> Q1 on the coset; qinv1, ginv2 -> the A, B coefficients;
-               q2m, qinv2 -> the Q2 coefficients; then the length-m DFT on the odd digit into slots
+               q2m, qinv2 -> the Q2 coefficients; forward DFTs to their values on H
 """
 
 from std.math import ceildiv
@@ -31,18 +32,47 @@ from std.gpu import thread_idx, block_idx, block_dim
 from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed
 from caracal7.params import Params
 from caracal7.tables import TableLayout
-from caracal7.backend import BACKEND, Tile, Operands, Loader, Strided, launch_gemm_f2, strided
+from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
 
 comptime ENTRY = 32
 comptime NONE = 65535
 comptime BLOCK = 256
-comptime RES_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = 8 F2 lanes of E; one SIMD group per block
 
 
 def quotient_elems[p: Params]() -> Int:
     """E elements of quotient scratch: Q1 on the coset (h1 x G2), its axis-1 transform, the A, B
-    coefficients (G2 x h1), the Q2 axis-1 transform (h1 x h2), the Q2 coefficients: 8 N."""
-    return 8 * p.N()
+    coefficients (G2 x h1), the Q2 coefficients, the Q2 axis-1 transform, the axis-1 values of
+    A, B, Q2, their values on H: 14 N."""
+    return 14 * p.N()
+
+
+comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
+
+
+def shift_points(fam: List[UInt8]) -> List[UInt8]:
+    """The opening points as (dj1, dj2) pairs on G: the DEEP point (0, 0) first, then every distinct
+    read shift of the family table in first-seen order (spec section 3, milestone 1)."""
+    var pts = List[UInt8](length=POINT, fill=0)
+    for k in range(len(fam) // ENTRY):
+        var en = entry(fam, k)
+        for side in range(2):
+            if side == 1 and en.col_b == NONE:
+                continue
+            var d1 = en.dj1_a if side == 0 else en.dj1_b
+            var d2 = en.dj2_a if side == 0 else en.dj2_b
+            if point_index(pts, d1, d2) < 0:
+                var n = len(pts)
+                pts.extend(List[UInt8](length=POINT, fill=0))
+                _u16(pts, n, d1)
+                _u16(pts, n + 2, d2)
+    return pts^
+
+
+def point_index(pts: List[UInt8], dj1: Int, dj2: Int) -> Int:
+    for i in range(len(pts) // POINT):
+        if _get16(pts, i * POINT) == dj1 and _get16(pts, i * POINT + 2) == dj2:
+            return i
+    return -1
 
 
 # ---- host side of the family list ----
@@ -57,23 +87,36 @@ struct Families:
         self.count = 0
 
     def add(mut self, family: Int, coef: Int, col_a: Int, k1_a: Int = 0, k2_a: Int = 0,
-            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0):
+            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0) raises:
+        """Shifts k_l are on H, already reduced to [0, h_l). A gated entry must be linear: two
+        columns and a gate exceed the degree bound (2 h1 - 1, 2 h2 - 2) of spec section 8 and
+        would alias on G."""
+        if col_b >= 0 and mult != 0:
+            raise Error("gated entries must be linear (spec 8 degree bound)")
         var e = List[UInt8](length=ENTRY, fill=0)
-        e[16] = UInt8(col_a & 255)
-        e[17] = UInt8(col_a >> 8)
-        e[18] = UInt8(2 * k1_a)
-        e[19] = UInt8(2 * k2_a)
-        var cb = NONE if col_b < 0 else col_b
-        e[20] = UInt8(cb & 255)
-        e[21] = UInt8(cb >> 8)
-        e[22] = UInt8(2 * k1_b)
-        e[23] = UInt8(2 * k2_b)
-        e[24] = UInt8(mult)
-        e[25] = UInt8(coef % 127)
-        e[26] = UInt8(family & 255)
-        e[27] = UInt8(family >> 8)
+        for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b]:
+            if v < 0 or v > 65535:
+                raise Error("family entry field out of range")
+        _u16(e, 16, col_a)
+        _u16(e, 18, 2 * k1_a)
+        _u16(e, 20, 2 * k2_a)
+        _u16(e, 22, NONE if col_b < 0 else col_b)
+        _u16(e, 24, 2 * k1_b)
+        _u16(e, 26, 2 * k2_b)
+        e[28] = UInt8(mult)
+        e[29] = UInt8(coef % 127)
+        _u16(e, 30, family)
         self.bytes.extend(e^)
         self.count += 1
+
+
+def _u16(mut l: List[UInt8], at: Int, v: Int):
+    l[at] = UInt8(v & 255)
+    l[at + 1] = UInt8(v >> 8)
+
+
+def _get16(l: List[UInt8], at: Int) -> Int:
+    return Int(l[at]) | Int(l[at + 1]) << 8
 
 
 @fieldwise_init
@@ -91,9 +134,9 @@ struct Entry(TrivialRegisterPassable):
 
 def entry(fam: List[UInt8], k: Int) -> Entry:
     var o = k * ENTRY
-    return Entry(col_a=Int(fam[o + 16]) | Int(fam[o + 17]) << 8, dj1_a=Int(fam[o + 18]), dj2_a=Int(fam[o + 19]),
-                 col_b=Int(fam[o + 20]) | Int(fam[o + 21]) << 8, dj1_b=Int(fam[o + 22]), dj2_b=Int(fam[o + 23]),
-                 mult=Int(fam[o + 24]), coef=Int(fam[o + 25]), family=Int(fam[o + 26]) | Int(fam[o + 27]) << 8)
+    return Entry(col_a=_get16(fam, o + 16), dj1_a=_get16(fam, o + 18), dj2_a=_get16(fam, o + 20),
+                 col_b=_get16(fam, o + 22), dj1_b=_get16(fam, o + 24), dj2_b=_get16(fam, o + 26),
+                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=_get16(fam, o + 30))
 
 
 def residual_at(fam: List[UInt8], alpha: E, z1: E, z2: E, e1: F2, e2: F2, reads: List[E]) -> E:
@@ -116,7 +159,7 @@ def residual_at(fam: List[UInt8], alpha: E, z1: E, z2: E, e1: F2, e2: F2, reads:
     return acc
 
 
-def synthetic_families() -> Families:
+def synthetic_families() raises -> Families:
     """Milestone 1: six families over eight columns, satisfied by `synthetic_trace`. They cover a
     linear entry, a quadratic entry, both gates, a within-chain shift, a cyclic shift, and an
     axis-2 shift."""
@@ -180,21 +223,26 @@ def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int
         return
     var ent = Int(families) + gid * ENTRY
     var a = base.unsafe_load[width=16](Int(alpha))
-    var fam = Int(base[unsafe_offset=ent + 26]) | Int(base[unsafe_offset=ent + 27]) << 8
-    var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 25]))
+    var fam = _d16(base, ent + 30)
+    var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 29]))
     base.unsafe_store[width=16](ent, kappa)
 
 
 @always_inline
+def _d16(base: Pointer[UInt8, MutAnyOrigin], at: Int) -> Int:
+    return Int(base[unsafe_offset=at]) | Int(base[unsafe_offset=at + 1]) << 8
+
+
+@always_inline
 def _read[p: Params](base: Pointer[UInt8, MutAnyOrigin], lde_buf: Int, at: Int, j1: Int, j2: Int) -> F2:
-    """c(shift point) for the read descriptor (col u16, dj1, dj2) at `at`."""
+    """c(shift point) for the read descriptor (col, dj1, dj2) at `at`; shifts are below the domain size."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    var col = Int(base[unsafe_offset=at]) | Int(base[unsafe_offset=at + 1]) << 8
-    var a = j1 + Int(base[unsafe_offset=at + 2])
+    var col = _d16(base, at)
+    var a = j1 + _d16(base, at + 2)
     if a >= G1:
         a -= G1
-    var b = j2 + Int(base[unsafe_offset=at + 3])
+    var b = j2 + _d16(base, at + 4)
     if b >= G2:
         b -= G2
     return base.unsafe_load[width=2](lde_buf + ((col * G2 + b) * G1 + a) * 2)
@@ -208,10 +256,9 @@ struct Family[p: Params](Loader):
     def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var ent = Int(o.b) + k * ENTRY
         var v = _read[Self.p](base, Int(o.aux0), ent + 16, n_lo, n_hi)
-        var col_b = Int(base[unsafe_offset=ent + 20]) | Int(base[unsafe_offset=ent + 21]) << 8
-        if col_b != NONE:
-            v = ext_mul[1](v, _read[Self.p](base, Int(o.aux0), ent + 20, n_lo, n_hi))
-        var mult = base[unsafe_offset=ent + 24]
+        if _d16(base, ent + 22) != NONE:
+            v = ext_mul[1](v, _read[Self.p](base, Int(o.aux0), ent + 22, n_lo, n_hi))
+        var mult = base[unsafe_offset=ent + 28]
         if mult == 1:
             v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + n_lo * 2))
         elif mult == 2:
@@ -219,37 +266,17 @@ struct Family[p: Params](Loader):
         return v
 
 
-def k_to_stored_e[p: Params](base: Pointer[UInt8, MutAnyOrigin], q1coef: Int64, q2coef: Int64, stored: Int64,
-                             rho1: Int64, rho2: Int64):
-    """stored[q * e + tau, x1 + 2^a1 (x2 + 2^a2 r)] = coordinate tau of c_x(r) for Q in (A, B, Q2):
-    c_x(r) = sum_y coef[x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2), the plain slots of 9.2."""
-    comptime h1 = p.h1()
-    comptime h2 = p.h2()
+def k_values_to_trace[p: Params](base: Pointer[UInt8, MutAnyOrigin], vals: Int64, trace: Int64):
+    """trace[q * e + tau, x] = coordinate tau of Q_q(x) for x in H, Q_q in (A, B, Q2): the quotient
+    coordinate columns are ordinary F-valued columns from here on (see docs/decisions.md)."""
     comptime N = p.N()
     comptime e = p.e
     var gid = _gid()
     if gid >= 3 * e * N:
         return
     var c = gid // N
-    var slot = gid % N
-    var q = c // e
-    var tau = c % e
-    var src = Int(q1coef) if q == 0 else (Int(q1coef) + h2 * h1 * e if q == 1 else Int(q2coef))
-    var x1 = slot % (1 << p.a1)
-    var x2 = (slot >> p.a1) % (1 << p.a2)
-    var r = slot >> (p.a1 + p.a2)
-    var r1 = r % p.m1
-    var r2 = r // p.m1
-    var acc = SIMD[DType.uint8, 1](0)
-    for y2 in range(p.m2):
-        var s2 = base[unsafe_offset=Int(rho2) + (y2 * r2) % p.m2]
-        for y1 in range(p.m1):
-            var s1 = base[unsafe_offset=Int(rho1) + (y1 * r1) % p.m1]
-            var k1 = x1 + (1 << p.a1) * y1
-            var k2 = x2 + (1 << p.a2) * y2
-            var v = base[unsafe_offset=src + (k2 * h1 + k1) * e + tau]
-            acc = f_add(acc, f_mul(SIMD[DType.uint8, 1](v), f_mul(SIMD[DType.uint8, 1](s1), SIMD[DType.uint8, 1](s2))))
-    base[unsafe_offset=Int(stored) + gid] = acc[0]
+    var x = gid % N
+    base[unsafe_offset=Int(trace) + gid] = base[unsafe_offset=Int(vals) + ((c // e) * N + x) * e + c % e]
 
 
 # ---- host orchestration ----
@@ -287,25 +314,29 @@ def residual[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     o.aux2 = Int64(tab.base + tab.gate2)
     # ponytail: D = G1 is not a power of two, so the point split costs an integer division per gathered
     # element; a (j2, j1) 2D launch removes it when the residual shows up in the profile.
-    launch_gemm_f2[BACKEND, RES_TILE, Family[p], G1](ctx, base, o, p.e // 2, G1 * G2, count)
+    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, base, o, p.e // 2, G1 * G2, count)
 
 
 def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                        residual_buf: Int, tab: TableLayout, scratch: Int, stored_q: Int) raises:
-    """residual -> A, B, Q2 coefficients -> 3 e coordinate columns in plain slots, written straight
-    into the quotient tree's `stored`. E-valued operands are the D = 8 lane view of the skeleton."""
+                        residual_buf: Int, tab: TableLayout, scratch: Int, trace_q: Int) raises:
+    """residual -> A, B, Q2 coefficients -> their values on H -> 3 e coordinate columns as the
+    trace of the quotient tree, which the level-1 encoder then treats like any witness column.
+    E-valued operands are the D = 8 lane view of the skeleton."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime G1 = 2 * h1
     comptime G2 = 2 * h2
+    comptime N = p.N()
     comptime e = p.e
     comptime T = BACKEND.tile
     var R = residual_buf
     var q1c = scratch                       # (t, j2, e)   Q1 on g1 H1 x G2
     var t1 = q1c + h1 * G2 * e              # (k1, j2, e)
     var q1coef = t1 + h1 * G2 * e           # (k2, k1, e)  rows k2 < h2: A; rows k2 >= h2: B
-    var t2 = q1coef + G2 * h1 * e           # (k1, t2, e)
-    var q2coef = t2 + h1 * h2 * e           # (k2, k1, e)
+    var q2coef = q1coef + G2 * h1 * e       # (k2, k1, e)  right after B: A, B, Q2 are N e apart
+    var t2 = q2coef + h2 * h1 * e           # (k1, t2, e)
+    var v1 = t2 + h1 * h2 * e               # (3, x1, k2, e)
+    var vals = v1 + 3 * N * e               # (3, x2, x1, e)
     # 1. Q1 on the coset from R over all of G1: q1m (t, j1)
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
@@ -326,8 +357,13 @@ def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
         a=tab.base + tab.qinv2, sa_m=h2 * 2, sa_k=2, b=t2, sb_k=e, sb_hi=h2 * e, sb_lo=2,
         c=q2coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), h2, h1 * 8, h2)
-    # 6. the odd-digit DFT into plain slots, 3 e columns
-    comptime k6 = k_to_stored_e[p]
-    ctx.enqueue_function[k6](base, Int64(q1coef), Int64(q2coef), Int64(stored_q),
-                             Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2),
-                             grid_dim=ceildiv(3 * e * p.N(), BLOCK), block_dim=BLOCK)
+    # 6, 7. values on H of A, B, Q2 (batch of three): the even rows of g_l^(j k) are omega_l^(x k)
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+        a=tab.base + tab.wfwd1, sa_m=2 * h1 * 2, sa_k=2, b=q1coef, sb_k=e, sb_hi=h1 * e, sb_lo=2,
+        c=v1, sc_m=h2 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h1, h2 * 8, h1, batch=3)
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+        a=tab.base + tab.wfwd2, sa_m=2 * h2 * 2, sa_k=2, b=v1, sb_k=e, sb_hi=h2 * e, sb_lo=2,
+        c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
+    # 8. coordinate columns as the quotient tree's trace
+    comptime k8 = k_values_to_trace[p]
+    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), grid_dim=ceildiv(3 * e * N, BLOCK), block_dim=BLOCK)

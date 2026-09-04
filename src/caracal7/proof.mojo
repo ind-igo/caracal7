@@ -20,6 +20,8 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
 from caracal7.arena import Arena
+from caracal7.residual import ENTRY, shift_points
+from caracal7.hash import Hash
 
 comptime VERSION: UInt32 = 1
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
@@ -84,11 +86,14 @@ struct Shape(Writable):
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
-    def __init__[p: Params](out self, columns_w: Int, points: Int, entries: Int) raises:
+    def __init__[p: Params](out self, columns_w: Int, families: List[UInt8]) raises:
+        """P and the entry count come from the family table (residual.mojo)."""
+        if len(families) % ENTRY != 0:
+            raise Error("family table is not whole entries")
         self.columns_w = columns_w
         self.columns_q = 3 * p.e
-        self.points = points
-        self.entries = entries
+        self.points = len(shift_points(families)) // 4
+        self.entries = len(families) // ENTRY
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
@@ -112,10 +117,10 @@ struct Shape(Writable):
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
-def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8], families: List[UInt8]) -> List[UInt8]:
+def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], mut families: List[UInt8]) -> List[UInt8]:
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
-    level, shape, public inputs, and the family table (the compiled statement of statement-layer 2,
-    which the residual is evaluated against). Prover and verifier build the same bytes."""
+    level, shape, public inputs, and H(family table) as the statement artifact hash of
+    statement-layer 6 step 1. Prover and verifier build the same bytes."""
     var w = _U32Writer()
     w.u32(Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
@@ -131,8 +136,10 @@ def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8], families: 
     w.u32(shape.clear_length)
     w.u32(len(public_inputs))
     w.bytes.extend(public_inputs.copy())
-    w.u32(len(families))
-    w.bytes.extend(families.copy())
+    var digest = List[UInt8](length=H.DIGEST, fill=0)
+    H.leaf(rebind[Pointer[UInt8, MutAnyOrigin]](families.unsafe_ptr()), len(families),
+           rebind[Pointer[UInt8, MutAnyOrigin]](digest.unsafe_ptr()))
+    w.bytes.extend(digest^)
     return w.bytes.copy()
 
 

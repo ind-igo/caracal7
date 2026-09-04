@@ -17,7 +17,7 @@ comptime p = REFERENCE
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var s = tail_schedule[p]()
     assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
-    var shape = Shape.__init__[p](53, 34, 13)
+    var shape = Shape.__init__[p](53, synthetic_families().bytes)
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 48)
 
@@ -35,7 +35,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].L, 18432)
     assert_equal(s[1].cosets, 4)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
-    var shape = Shape.__init__[big](357, 34, 500)
+    var shape = Shape.__init__[big](357, synthetic_families().bytes)
     assert_equal(shape.clear_length, 576)
 
 
@@ -50,48 +50,50 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var shape = Shape.__init__[narrow](43, 34, 500)
+    var shape = Shape.__init__[narrow](43, synthetic_families().bytes)
     assert_equal(shape.clear_length, 3969)
 
 
 def test_layout_plans_the_arena() raises:
-    var shape = Shape.__init__[p](53, 34, 13)
+    var shape = Shape.__init__[p](53, synthetic_families().bytes)
     var L = ProverLayout.__init__[p, Blake3](shape)
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
     # every offset is inside the arena and 256-aligned
-    for off in [L.tree_w, L.tree_q, L.families, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
+    for off in [L.tree_w, L.tree_q, L.families, L.shifts, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
                 L.prefix, L.stage1, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
 
-def test_prove_stops_at_first_missing_stage() raises:
+def test_prove_and_verify_reach_the_tail() raises:
+    """The reference profile has no committed tail level, so the level-1 stages are the whole proof:
+    prove finishes, the verifier passes steps 1, 2 and 5 and stops at the tail; a tampered opening
+    fails the residual identity."""
     var ctx = DeviceContext()
     var f = synthetic_families()
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, 34, f.count), f.bytes.copy())
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
+    assert_equal(shape.points, 4)                 # z, (omega1 z1, z2), (omega1^3 z1, z2), (z1, omega2 z2)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
+    var proof = prover.prove(ctx, List[UInt8]())
+    var fixed = shape.fixed_bytes[p, 32](0)
+    assert_true(len(proof) > fixed, "proof shorter than its fixed part")
+    print("proof bytes:", len(proof), " fixed:", fixed)
     var stopped = String("")
     try:
-        _ = prover.prove(ctx, List[UInt8]())
+        _ = verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes)
     except e:
         stopped = String(e)
-    assert_equal(stopped, "not implemented: build_queries")
-
-
-def test_verify_stops_at_first_missing_step() raises:
-    var shape = Shape.__init__[p](53, 34, 13)
-    var bytes = List[UInt8]()
-    for b in [1, 0, 0, 0, 0, 0, 0, 0]:          # version 1, empty public inputs
-        bytes.append(UInt8(b))
-    for _ in range(2 * 32 + 34 * shape.columns() * p.e):   # W root, Q root, openings: all zero
-        bytes.append(0)
-    var stopped = String("")
+    assert_equal(stopped, "not implemented: verifier step 7 (tail)")
+    var bad = proof.copy()
+    bad[8 + 64 + 5] ^= 1                          # inside the openings
+    stopped = ""
     try:
-        _ = verify[p, Blake3](bytes^, shape, List[UInt8](), synthetic_families().bytes)
+        _ = verify[p, Blake3](bad^, shape, List[UInt8](), f.bytes)
     except e:
         stopped = String(e)
-    assert_equal(stopped, "not implemented: verifier step 5 (residual identity at z)")
+    assert_equal(stopped, "residual identity fails at z")
 
 
 def main() raises:

@@ -1,7 +1,7 @@
 """Residual stage on the synthetic families, reference profile: LDE against direct evaluation, the
 residual vanishing on H and matching a host walk of the entry table on G, the DEEP identity
 R(z) = (A(z) + z2^h2 B(z)) (z1^h1 - 1) + Q2(z) (z2^h2 - 1) at a random z in E^2, the degree bounds
-on B and Q2, and the plain-slot columns."""
+on B and Q2, and the coordinate columns as values on H."""
 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
@@ -206,7 +206,7 @@ def test_deep_identity_at_random_z() raises:
                                   ext_mul[4](z2, ext_embed[4](ext_pow[1](r.d.g2, en.dj2_b)))))
     var rz = residual_at(r.fam, r.alpha, z1, z2, e1, e2, reads)
     var q1coef = 2 * h1 * G2 * p.e
-    var q2coef = q1coef + G2 * h1 * p.e + h1 * h2 * p.e
+    var q2coef = q1coef + G2 * h1 * p.e
     var a = r.poly_at(q1coef, h2, z1, z2)
     var b = r.poly_at(q1coef + h2 * h1 * p.e, h2, z1, z2)
     var q2 = r.poly_at(q2coef, h2, z1, z2)
@@ -226,29 +226,18 @@ def test_deep_identity_at_random_z() raises:
     assert_equal(top, 0)
 
 
-def test_plain_slots() raises:
+def test_quotient_trace_is_values_on_h() raises:
     var r = Run()
     var q1coef = 2 * h1 * G2 * p.e
-    var q2coef = q1coef + G2 * h1 * p.e + h1 * h2 * p.e
-    var rho1 = r.d.rho1
-    var rho2 = r.d.rho2
-    var slots: List[Int] = [0, 1, 7, 8, 255, 256, 1000, N - 1]
-    for c in [0, 17, 16 + 5, 32 + 15]:
-        var q = c // p.e
-        var tau = c % p.e
-        var src = q1coef if q == 0 else (q1coef + h2 * h1 * p.e if q == 1 else q2coef)
-        for slot in slots:
-            var x1 = slot % (1 << p.a1)
-            var x2 = (slot >> p.a1) % (1 << p.a2)
-            var rr = slot >> (p.a1 + p.a2)
-            var acc = SIMD[DType.uint8, 1](0)
-            for y2 in range(p.m2):
-                for y1 in range(p.m1):
-                    var s = f_mul(ext_pow[0](SIMD[DType.uint8, 1](rho1), y1 * (rr % p.m1)),
-                                  ext_pow[0](SIMD[DType.uint8, 1](rho2), y2 * (rr // p.m1)))
-                    var v = r.scratch[src + ((x2 + (1 << p.a2) * y2) * h1 + x1 + (1 << p.a1) * y1) * p.e + tau]
-                    acc = f_add(acc, f_mul(SIMD[DType.uint8, 1](v), s))
-            assert_equal(Int(r.stored[c * N + slot]), Int(acc[0]))
+    var srcs: List[Int] = [q1coef, q1coef + h2 * h1 * p.e, q1coef + G2 * h1 * p.e]
+    var rows: List[Int] = [0, 1, 5, h2 - 1]
+    var cols: List[Int] = [0, 1, 40, h1 - 1]
+    for q in range(3):
+        for x2 in rows:
+            for x1 in cols:
+                var v = r.poly_at(srcs[q], h2, ext_embed[4](ext_pow[1](r.d.omega1, x1)), ext_embed[4](ext_pow[1](r.d.omega2, x2)))
+                for tau in range(p.e):
+                    assert_equal(Int(r.stored[(q * p.e + tau) * N + x2 * h1 + x1]), Int(v[tau]))
 
 
 def main() raises:

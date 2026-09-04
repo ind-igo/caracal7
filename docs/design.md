@@ -6,7 +6,7 @@ Spec: `wiki/projects/caracal7/specs/caracal-prover.md` (main), `statement-layer.
 
 1. **Device resident.** Every prover stage is a GPU kernel from its first commit, including the Blake3 transcript and challenge derivation (section 10: tree and transcript on device). The host only enqueues launches in stage order and reads the finished proof bytes. The verifier is a separate program and runs on the host.
 2. **One buffer type.** All committed data is bytes: one `UInt8` per `F` coordinate. `F2`, `F4`, and `E` values are 2, 4, and `e` consecutive bytes. No struct-of-arrays and no per-field buffer types. Kernels are specialized on the coordinate count, not on a field type.
-3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant.
+3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant. Exception, recorded 2026-09-04: the GEMM skeleton of section 9 takes `M, N, K` and its operand strides at runtime, because one kernel serves every GEMM-shaped stage; its tile shape and the reduction cadence stay comptime.
 4. **No copies between stages.** Unified memory on M1 makes host and device views of one buffer cheap. A stage writes its output where the next stage reads it. There are no host reads between barriers: challenges are derived on device from the device-resident transcript, and kernels read them from device memory.
 5. **Scalar reference in the test, never a CPU prover.** Each kernel's test runs a few lines of scalar Mojo on a small size and compares. The reference does not grow into a second implementation.
 6. **Allocate once, at setup.** One device arena per prover instance, sized from `Params` and the IR program; every buffer of section 3 is an offset into it, assigned by a bump pointer at setup. Fixed ceilings for columns per tree, P, tail levels, and queries size the arena. No allocation after setup, and the arena is reused across proofs with the same profile. The proof output and host staging buffers follow the same rule. Threadgroup memory and register tiles are static per kernel already.
@@ -77,9 +77,9 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `tail_round` | w~, y → s_i | one per row | Hadamard and reduce over all but one digit, three evaluations |
 | `tail_fold` | y, r̄ → y_next | one per row | GEMV with the 8-column matrix |
 | `tail_encode` | y → tail_code | one per (coord, butterfly) | e/4 independent F4 DFTs on coefficient data, no inverse; last pass writes the `(s, 8, e)` leaf-major layout |
-| `lde` | coeff → lde | one per (column, line) | coset LDE of 10.2: twist by `g^i`, forward DFT; shares the `idft2` stages |
-| `residual` | lde, tables → residual | one per row of G | the fused pass of statement-layer 5 over the linear and quadratic tables; milestone 1 runs it on synthetic families |
-| `quotient` | residual → coeff of A, B, Q2 | one per row, then `idft2` | multiply by `−1/2`, one axis-1 LDE of `S1`, inverse 2D DFT to E coefficients, then `to_stored` in plain slots |
+| `lde` | coeff → lde | GEMM skeleton, one launch per axis | forward DFT onto `G` with the twist inside the `g_l^(j k)` tables (dense; mixed radix when `h_l` grows) |
+| `residual` | lde, tables → residual | the GEMM skeleton, `C[8 lanes, point]` | the fused pass of statement-layer 5 as one GEMM of the kappa table against family rows gathered from the LDE; milestone 1 runs it on synthetic families |
+| `quotient` | residual → trace of A, B, Q2 | GEMM skeleton launches | `Q1` on the coset from `R` over `G1`, inverse DFTs to the `A`, `B`, `Q2` coefficients, forward DFTs to their values on `H`; the coordinate columns then take the witness encoder path |
 
 Milestone 1 ends with the W and Q trees, the residual and quotient on synthetic families, openings at P points, the tail, and the verifier, as the spec's build order says. Milestone 2 adds the Z tree: `factor`, `batch_invert`, `chain_scan`, the small grid and Q3. Milestone 3 adds `radix_sort`.
 

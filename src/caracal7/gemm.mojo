@@ -21,7 +21,7 @@ from layout import TileTensor, TensorLayout, row_major, stack_allocation
 from caracal7.field import f_reduce
 from caracal7.backend import BACKEND, Tile, tile_mac
 
-comptime REDUCE_EVERY = BACKEND.max_terms   # 128 * 126^2 < 2^21, the f_reduce input bound
+comptime REDUCE_EVERY = BACKEND.max_terms
 comptime TILE_DEFAULT = BACKEND.tile
 
 
@@ -62,6 +62,7 @@ def gemm127_tiled[
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
     comptime assert M % T.BM == 0 and N % T.BN == 0 and K % T.BK == 0, "tile must divide the problem"
     comptime assert REDUCE_EVERY % T.BK == 0, "the lazy reduction cadence needs BK | REDUCE_EVERY"
+    comptime assert REDUCE_EVERY * 126 * 126 < (1 << 21), "unsigned lanes overflow the f_reduce input bound"
     comptime BM = T.BM
     comptime BN = T.BN
     comptime BK = T.BK
@@ -116,6 +117,7 @@ def gemm127_vec[
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
     comptime assert M % T.BM == 0 and N % T.BN == 0 and K % T.BK == 0, "tile must divide the problem"
     comptime assert REDUCE_EVERY % T.BK == 0, "the lazy reduction cadence needs BK | REDUCE_EVERY"
+    comptime assert REDUCE_EVERY * 126 * 126 < (1 << 21), "unsigned lanes overflow the f_reduce input bound"
     comptime BM = T.BM
     comptime BN = T.BN
     comptime BK = T.BK
