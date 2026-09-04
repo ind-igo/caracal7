@@ -5,8 +5,9 @@ Generators (recorded in docs/decisions.md):
     rho_l   = omega_l^(2^a_l), the order-m_l generator of mu_l (lies in F)
     g       generator of the order-L0 subgroup of F4*: gamma4^((127^4 - 1) / L0)
     gA      = g^M (order 2^b), gB = g^(2^b) (order M), where L0 = 2^b * M, M odd
+    gamma4  a primitive element of F4*; coset k of an RS domain is gamma4^k D0
 
-Leaf s of the level-1 code is the point g^s, s in [L0).
+Leaf s of an RS domain with m cosets is the point gamma4^(s // L0) g^(s mod L0), s in [m L0).
 """
 
 from max.gpu.host import DeviceContext, HostBuffer
@@ -52,6 +53,20 @@ def f2_primitive() raises -> F2:
     raise Error("no primitive element of F2 found")
 
 
+def f4_primitive() raises -> F4:
+    """A generator of F4*."""
+    for lo in range(1, 127):
+        for hi in range(1, 127):
+            var c = F4(UInt8(lo), 0, UInt8(hi), 1)
+            var ok = True
+            for p in [2, 3, 5, 7, 1613]:
+                if _is_one[2](ext_pow[2](c, F4_ORDER // p)):
+                    ok = False
+            if ok:
+                return c
+    raise Error("no primitive element of F4 found")
+
+
 def f4_subgroup_generator(order: Int) raises -> F4:
     """An element of exact order `order` (order | 161280) in F4*."""
     for lo in range(1, 127):
@@ -67,6 +82,33 @@ def f4_subgroup_generator(order: Int) raises -> F4:
     raise Error("no generator found")
 
 
+struct RsDomain(TrivialRegisterPassable):
+    """An RS evaluation domain: m cosets gamma4^k D0 of the order-L0 subgroup D0 = <g> (spec 9.1)."""
+    var L0: Int
+    var m: Int
+    var g: F4
+    var gk: SIMD[DType.uint8, 16]     # gamma4^k for k < 4, 4 bytes each
+
+    def __init__(out self, L0: Int, m: Int) raises:
+        self.L0 = L0
+        self.m = m
+        self.g = f4_subgroup_generator(L0)
+        var gamma = f4_primitive()
+        self.gk = SIMD[DType.uint8, 16](0)
+        var pw = F4(1, 0, 0, 0)
+        for k in range(4):
+            for c in range(4):
+                self.gk[k * 4 + c] = pw[c]
+            pw = ext_mul[2](pw, gamma)
+
+    def rep(self, k: Int) -> F4:
+        return F4(self.gk[4 * k], self.gk[4 * k + 1], self.gk[4 * k + 2], self.gk[4 * k + 3])
+
+    def point(self, s: Int) -> F4:
+        """The point of leaf s in [m L0)."""
+        return ext_mul[2](self.rep(s // self.L0), ext_pow[2](self.g, s % self.L0))
+
+
 struct Domains(TrivialRegisterPassable):
     var omega1: F2
     var omega2: F2
@@ -75,6 +117,7 @@ struct Domains(TrivialRegisterPassable):
     var g: F4
     var g1: F2          # generator of G1 (order 2 h1); omega1 = g1^2
     var g2: F2
+    var level1: RsDomain
 
     def __init__[p: Params](out self) raises:
         var gamma2 = f2_primitive()
@@ -88,7 +131,96 @@ struct Domains(TrivialRegisterPassable):
             raise Error("rho_l not in F")
         self.rho1 = r1[0]
         self.rho2 = r2[0]
-        self.g = f4_subgroup_generator(p.L0)
+        self.level1 = RsDomain(p.L0, p.m_cosets)
+        self.g = self.level1.g
+
+
+def rs_factors(M: Int) -> Tuple[Int, Int, Int]:
+    """The Good-Thomas radices of the odd part M | 315, in stage order: (5 or 1, 7 or 1, 9 or 3 or 1)."""
+    var f9 = 9 if M % 9 == 0 else (3 if M % 3 == 0 else 1)
+    return (5 if M % 5 == 0 else 1, 7 if M % 7 == 0 else 1, f9)
+
+
+struct RsTables(TrivialRegisterPassable):
+    """Twiddles of one RS domain L = m * 2^b * M for messages of length K (encode.rs_encode):
+    ga (2^b, 4) gA^n; wr (r, r, 4) w_r^(t k) per radix; crt / ruri (M, 2) the Good-Thomas index maps
+    lin -> i2 and lin -> t2 as u16; twist (m, K, 4) gamma4^(k i), the coset twist (absent at m = 1)."""
+    var base: Int
+    var ga: Int
+    var w5: Int
+    var w7: Int
+    var w9: Int
+    var crt: Int
+    var ruri: Int
+    var twist: Int
+    var bytes: Int
+
+    def __init__(out self, base: Int, L0: Int, m: Int, K: Int):
+        var b = two_adic(L0)
+        var M = L0 >> b
+        var off = 0
+        self.base = base
+        self.ga = off; off += (1 << b) * 4
+        self.w5 = off; off += 5 * 5 * 4
+        self.w7 = off; off += 7 * 7 * 4
+        self.w9 = off; off += 9 * 9 * 4
+        self.crt = off; off += M * 2
+        self.ruri = off; off += M * 2
+        self.twist = off; off += (m * K * 4 if m > 1 else 0)
+        self.bytes = off
+
+
+def build_rs_tables(ctx: DeviceContext, rs: RsTables, dom: RsDomain, K: Int) raises -> HostBuffer[DType.uint8]:
+    """The tables of `rs` for domain `dom`; upload at rs.base."""
+    var h = ctx.enqueue_create_host_buffer[DType.uint8](rs.bytes)
+    ctx.synchronize()
+    _fill_rs(h, 0, rs, dom, K)
+    return h^
+
+
+def _fill_rs(h: HostBuffer[DType.uint8], at: Int, rs: RsTables, dom: RsDomain, K: Int) raises:
+    var b = two_adic(dom.L0)
+    var M = dom.L0 >> b
+    var f5: Int
+    var f7: Int
+    var f9: Int
+    f5, f7, f9 = rs_factors(M)
+    if f5 * f7 * f9 != M:
+        raise Error("odd part of L0 must divide 315")
+    var gA = ext_pow[2](dom.g, M)
+    var gB = ext_pow[2](dom.g, 1 << b)
+    for n in range(1 << b):
+        _put(h, at + rs.ga + n * 4, ext_pow[2](gA, n))
+    for pair in [(f5, rs.w5), (f7, rs.w7), (f9, rs.w9)]:
+        var r = pair[0]
+        if r > 1:
+            var w = ext_pow[2](gB, M // r)
+            for tt in range(r):
+                for k in range(r):
+                    _put(h, at + pair[1] + (tt * r + k) * 4, ext_pow[2](w, (tt * k) % r))
+    for lin in range(M):
+        var d5 = lin // (f7 * f9)
+        var d7 = (lin // f9) % f7
+        var d9 = lin % f9
+        var i2 = 0
+        var t2 = 0
+        for pair in [(f5, d5), (f7, d7), (f9, d9)]:
+            var f = pair[0]
+            if f > 1:
+                var q = M // f
+                i2 = (i2 + pair[1] * q * modinv(q % f, f)) % M
+                t2 = (t2 + q * pair[1]) % M
+        h[at + rs.crt + lin * 2] = UInt8(i2 & 255)
+        h[at + rs.crt + lin * 2 + 1] = UInt8(i2 >> 8)
+        h[at + rs.ruri + lin * 2] = UInt8(t2 & 255)
+        h[at + rs.ruri + lin * 2 + 1] = UInt8(t2 >> 8)
+    if dom.m > 1:
+        for k in range(dom.m):
+            var rep = dom.rep(k)
+            var pw = F4(1, 0, 0, 0)
+            for i in range(K):
+                _put(h, at + rs.twist + (k * K + i) * 4, pw)
+                pw = ext_mul[2](pw, rep)
 
 
 struct TableLayout(TrivialRegisterPassable):
@@ -98,12 +230,7 @@ struct TableLayout(TrivialRegisterPassable):
     var winv2: Int      # (h2, h2, 2)
     var rho1: Int       # (m1)          F: rho1^y
     var rho2: Int       # (m2)
-    var ga: Int         # (2^b, 4)      F4: gA^n
-    var w5: Int         # (5, 5, 4)     F4: w5^(t k)
-    var w7: Int         # (7, 7, 4)
-    var w9: Int         # (9, 9, 4)
-    var crt: Int        # (315, 2)     lin -> i2 = crt(d5, d7, d9), little-endian u16
-    var ruri: Int       # (315, 2)     lin -> t2 = (63 t5 + 45 t7 + 35 t9) mod 315
+    var rs: RsTables    # level-1 RS domain, absolute offsets
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
     var g1p: Int        # (2 h1, 2)     g1^j
     var g2p: Int        # (2 h2, 2)
@@ -119,19 +246,13 @@ struct TableLayout(TrivialRegisterPassable):
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
-        comptime b = two_adic(p.L0)
         var off = 0
         self.base = base
         self.winv1 = off; off += p.h1() * p.h1() * 2
         self.winv2 = off; off += p.h2() * p.h2() * 2
         self.rho1 = off; off += p.m1
         self.rho2 = off; off += p.m2
-        self.ga = off; off += (1 << b) * 4
-        self.w5 = off; off += 5 * 5 * 4
-        self.w7 = off; off += 7 * 7 * 4
-        self.w9 = off; off += 9 * 9 * 4
-        self.crt = off; off += 315 * 2
-        self.ruri = off; off += 315 * 2
+        self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
         self.g2p = off; off += 2 * p.h2() * 2
         self.wfwd1 = off; off += 2 * p.h1() * p.h1() * 2
@@ -157,8 +278,6 @@ def _put[w: SIMDLength](h: HostBuffer[DType.uint8], off: Int, v: SIMD[DType.uint
 
 def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) raises -> HostBuffer[DType.uint8]:
     """Fill a host buffer with every table; the caller uploads it to the arena at `t.base`."""
-    comptime b = two_adic(p.L0)
-    comptime M = p.L0 >> b
     var h = ctx.enqueue_create_host_buffer[DType.uint8](t.bytes)
     ctx.synchronize()
 
@@ -177,35 +296,7 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     for y in range(p.m2):
         h[t.rho2 + y] = f_pow(SIMD[DType.uint8, 1](d.rho2), y)[0]
 
-    var gA = ext_pow[2](d.g, M)
-    var gB = ext_pow[2](d.g, 1 << b)
-    for n in range(1 << b):
-        _put(h, t.ga + n * 4, ext_pow[2](gA, n))
-    var w5 = ext_pow[2](gB, M // 5)
-    var w7 = ext_pow[2](gB, M // 7)
-    var w9 = ext_pow[2](gB, M // 9)
-    for tt in range(5):
-        for k in range(5):
-            _put(h, t.w5 + (tt * 5 + k) * 4, ext_pow[2](w5, (tt * k) % 5))
-    for tt in range(7):
-        for k in range(7):
-            _put(h, t.w7 + (tt * 7 + k) * 4, ext_pow[2](w7, (tt * k) % 7))
-    for tt in range(9):
-        for k in range(9):
-            _put(h, t.w9 + (tt * 9 + k) * 4, ext_pow[2](w9, (tt * k) % 9))
-    var e5 = modinv(63, 5)
-    var e7 = modinv(45, 7)
-    var e9 = modinv(35, 9)
-    for lin in range(315):
-        var d5 = lin // 63
-        var d7 = (lin // 9) % 7
-        var d9 = lin % 9
-        var i2 = (d5 * 63 * e5 + d7 * 45 * e7 + d9 * 35 * e9) % 315
-        var t2 = (63 * d5 + 45 * d7 + 35 * d9) % 315
-        h[t.crt + lin * 2] = UInt8(i2 & 255)
-        h[t.crt + lin * 2 + 1] = UInt8(i2 >> 8)
-        h[t.ruri + lin * 2] = UInt8(t2 & 255)
-        h[t.ruri + lin * 2 + 1] = UInt8(t2 >> 8)
+    _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
 
     _residual_tables[p](h, t, d)
     return h^

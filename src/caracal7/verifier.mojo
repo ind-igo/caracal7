@@ -19,8 +19,8 @@ from caracal7.merkle import check_multiproof, distinct_sorted
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8], mut families: List[UInt8]) raises -> Bool:
-    if len(families) != shape.entries * ENTRY:
-        raise Error("family table does not match shape.entries")
+    if len(families) != shape.entries * ENTRY or len(shift_points(families)) != shape.points * 4:
+        raise Error("family table does not match the shape")
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
 
@@ -68,7 +68,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         raise Error("residual identity fails at z")
 
     # step 7, clear-vector case: y_2 is sent in the clear and level 1 is opened against it
-    comptime assert p.m_cosets == 1, "leaf s is the point g^s"   # ponytail: coset twist with the encoder's
+    comptime assert p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
     if len(shape.tail) > 0:
         raise Error("not implemented: verifier tail levels")
     var y = r.take(shape.clear_length * p.e)
@@ -85,7 +85,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     # consistency: coord_tau(Enc(y)(s)) = sum_c beta_c coord_tau(X[s, c]) in E (x) F4, coordinate-wise
     var opened = distinct_sorted(positions)
     for i in range(len(opened)):
-        var enc = encode_at[p](y, ext_pow[2](d.g, opened[i]))
+        var enc = encode_at[p](y, d.level1.point(opened[i]))
         for tau in range(4):
             var rhs = E(0)
             for c in range(shape.columns()):

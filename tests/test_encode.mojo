@@ -5,9 +5,9 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.field import F2, F4, f_mul, f_add, ext_mul, ext_pow
 from caracal7.params import REFERENCE
-from caracal7.tables import Domains, TableLayout, build_tables
+from caracal7.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
 from caracal7.arena import Arena, Bump
-from caracal7.encode import EncLayout, encode, slot_target, pack_slot
+from caracal7.encode import EncLayout, encode, slot_target, pack_slot, rs_encode_on
 
 comptime p = REFERENCE
 comptime COLS = 3
@@ -135,6 +135,47 @@ def test_rs_encode_evaluates_message() raises:
                 pw = ext_mul[2](pw, pt)
             var got = _f4(code, (s * COLS + c) * 4)
             assert_true(got == acc, "code mismatch at s=" + String(s) + " col " + String(c))
+
+
+def _rs_domain_check(L0: Int, m: Int, K: Int, cols: Int) raises:
+    """rs_encode_on against direct evaluation on every coset, pseudo-random F4 data."""
+    var ctx = DeviceContext()
+    var dom = RsDomain(L0, m)
+    var bump = Bump()
+    var rs = RsTables(bump.alloc(0), L0, m, K)
+    _ = bump.alloc(rs.bytes)
+    var src = bump.alloc(K * cols * 4)
+    var etmp = bump.alloc(L0 * cols * 4)
+    var code = bump.alloc(m * L0 * cols * 4)
+    var arena = Arena(ctx, bump.used)
+    arena.upload(ctx, rs.base, build_rs_tables(ctx, rs, dom, K))
+    var sh = ctx.enqueue_create_host_buffer[DType.uint8](K * cols * 4)
+    ctx.synchronize()
+    for i in range(K * cols * 4):
+        sh[i] = UInt8((i * 7919 + 13) % 127)
+    arena.upload(ctx, src, sh)
+    rs_encode_on(ctx, arena.base(), src, etmp, code, cols, K, L0, m, rs)
+    var oh = ctx.enqueue_create_host_buffer[DType.uint8](m * L0 * cols * 4)
+    arena.download(ctx, code, oh)
+    ctx.synchronize()
+    var msg = _to_list(sh)
+    var out = _to_list(oh)
+    for c in [0, cols - 1]:
+        for k in range(m):
+            for s0 in [0, 1, 7, L0 // 3, L0 - 1]:
+                var s = k * L0 + s0
+                var pt = dom.point(s)
+                var acc = F4(0)
+                var pw = F4(1, 0, 0, 0)
+                for i in range(K):
+                    acc = f_add(acc, ext_mul[2](_f4(msg, (i * cols + c) * 4), pw))
+                    pw = ext_mul[2](pw, pt)
+                assert_true(_f4(out, (s * cols + c) * 4) == acc, "coset code mismatch at s=" + String(s))
+
+
+def test_rs_encode_on_cosets_and_small_odd_parts() raises:
+    _rs_domain_check(4608, 4, 576, 32)     # tail level 3 of the 288 x 128 grid: M = 9, four cosets, K / M > F4_MAC_MAX
+    _rs_domain_check(672, 2, 300, 5)       # M = 21: radix 3 and 7, two cosets, ragged columns
 
 
 def main() raises:

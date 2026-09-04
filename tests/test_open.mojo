@@ -106,7 +106,7 @@ def test_openings_and_fold() raises:
         assert_true(acc == _e(y, slot), "fold mismatch")
     # the alphabet rule at a few code positions: Enc(y)(g^s) = sum_c beta_c X[s, c] coordinate-wise in E (x) F4
     for s in [0, 1, 4097, p.L() - 1]:
-        var enc = encode_at[p](y, ext_pow[2](d.g, s))
+        var enc = encode_at[p](y, d.level1.point(s))
         var nonzero = False
         for tau in range(4):
             var want = E(0)

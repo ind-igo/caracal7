@@ -17,13 +17,15 @@ From `packed` on the column index is fastest: a SIMD group of threads handles on
 consecutive columns, so every load and store of the RS passes is contiguous (ladder step 2), and
 the twiddle loads are group-wide broadcasts. Full coalescing needs 32+ columns per launch.
 
-RS encode of the K = N/4 message symbols on the order-L0 subgroup, L0 = 2^b * 315:
-    Good-Thomas across 2^b x 315, then 5 x 7 x 9 inside 315, no twiddles between stages.
-    input index  i  <-> (i mod 2^b, i mod 315), i mod 315 <-> (i mod 5, i mod 7, i mod 9)
-    output index s  =  (315 t1 + 2^b t2) mod L0,  t2 = (63 t5 + 45 t7 + 35 t9) mod 315
-    pass A       Y[t1, lin] = sum_{i = i2 + 315 q < K} x_i gA^(t1 (i mod 2^b)),   i2 = crt(lin)
+RS encode of K message symbols (i, columns, 4) on an RS domain of m cosets of the order-L0 subgroup,
+L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail levels K = rows with the
+8 E-valued columns seen as 32 F4 columns. Per coset k: twist x_i by gamma4^(k i), then
+    Good-Thomas across 2^b x M, then the radices of M (5, 7, 9 or 3) inside M, no twiddles between stages.
+    input index  i  <-> (i mod 2^b, i mod M), i mod M <-> (i mod 5, i mod 7, i mod 9)
+    output index s  =  (M t1 + 2^b t2) mod L0,  t2 = sum_r (M / r) t_r mod M
+    pass A       Y[t1, lin] = sum_{i = i2 + M q < K} x_i gA^(t1 (i mod 2^b)),   i2 = crt(lin)
     stage r      r-point DFT along digit d_r of lin, in place, twiddles w_r^(t k)
-    stage 9 also scatters to the leaf-major `code`.
+    the last stage also scatters to the leaf-major `code`, coset k at s + k L0.
 """
 
 from std.math import ceildiv
@@ -32,11 +34,10 @@ from max.gpu.host import DeviceContext
 
 from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
 from caracal7.params import Params
-from caracal7.tables import TableLayout, two_adic
+from caracal7.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.arena import Bump
 
 comptime BLOCK = 256
-comptime M_ODD = 315                # ponytail: L0 = 2^b * 315 only; other divisors of 315 when a profile needs them
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
 
@@ -53,8 +54,6 @@ struct EncLayout(TrivialRegisterPassable):
     var code: Int
 
     def __init__[p: Params](out self, mut bump: Bump, columns: Int):
-        comptime assert p.L0 >> two_adic(p.L0) == M_ODD, "L0 must be 2^b * 315"
-        comptime assert p.m_cosets == 1, "coset twist not implemented"   # ponytail: add the g_k^i twist with m_cosets > 1
         self.columns = columns
         self.trace = bump.alloc(columns * p.N())
         self.ctmp = bump.alloc(columns * p.N() * 2)
@@ -62,7 +61,7 @@ struct EncLayout(TrivialRegisterPassable):
         self.stored = bump.alloc(columns * p.N())
         self.packed = bump.alloc(columns * p.N())
         self.etmp = bump.alloc(columns * p.L0 * 4)
-        self.code = bump.alloc(p.L0 * columns * 4)
+        self.code = bump.alloc(p.L() * columns * 4)
 
 
 @always_inline
@@ -214,63 +213,73 @@ def _rs_thread(columns: Int32) -> Tuple[Int, Int, Bool]:
     return (c, row, c < Int(columns))
 
 
-def k_rs_pass_a[p: Params](base: Pointer[UInt8, MutAnyOrigin], packed: Int64, etmp: Int64, ga: Int64, crt: Int64, columns: Int32):
-    """etmp[lin, t1, c] = sum over message symbols i = crt(lin) + 315 q of x_i * gA^(t1 * (i mod 2^b))."""
-    comptime b = two_adic(p.L0)
-    comptime K = p.N() // 4
+def k_rs_pass_a(base: Pointer[UInt8, MutAnyOrigin], src: Int64, etmp: Int64, ga: Int64, crt: Int64,
+                twist: Int64, columns: Int32, K: Int32, b: Int32, M: Int32):
+    """etmp[lin, t1, c] = sum over message symbols i = crt(lin) + M q of x_i twist_i gA^(t1 * (i mod 2^b));
+    twist < 0 means none. b and M are runtime so one kernel serves every tail domain."""
     var c: Int
     var rest: Int                              # lin * 2^b + t1
     var ok: Bool
     c, rest, ok = _rs_thread(columns)
-    if not ok or rest >= p.L0:
+    var bb = Int(b)
+    var Mi = Int(M)
+    if not ok or rest >= (Mi << bb):
         return
     var gid = rest * Int(columns) + c
-    var t1 = rest & ((1 << b) - 1)
-    var lin = rest >> b
-    comptime assert (K + M_ODD - 1) // M_ODD <= F4_MAC_MAX
+    var t1 = rest & ((1 << bb) - 1)
+    var lin = rest >> bb
     var i = _u16(base, Int(crt) + lin * 2)
     var acc = SIMD[DType.int32, 4](0)
-    while i < K:
-        var x = _ld[4](base, Int(packed) + (i * Int(columns) + c) * 4)
-        var w = _ld[4](base, Int(ga) + ((t1 * (i & ((1 << b) - 1))) & ((1 << b) - 1)) * 4)
+    var terms = 0
+    while i < Int(K):
+        var x = _ld[4](base, Int(src) + (i * Int(columns) + c) * 4)
+        if twist >= 0:
+            x = ext_mul[2](x, _ld[4](base, Int(twist) + i * 4))
+        var w = _ld[4](base, Int(ga) + ((t1 * (i & ((1 << bb) - 1))) & ((1 << bb) - 1)) * 4)
         f4_mac_wide(acc, x, w)
-        i += M_ODD
+        terms += 1
+        if terms == F4_MAC_MAX:
+            acc = f_reduce_signed(acc).cast[DType.int32]()
+            terms = 0
+        i += Mi
     _st(base, Int(etmp) + gid * 4, f_reduce_signed(acc))
 
 
-def k_rs_stage[p: Params, r: Int, stride: Int, final: Bool](
-    base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, ruri: Int64, columns: Int32
-):
-    """In-place r-point DFT along one digit of lin; the last stage scatters into `code`."""
-    comptime b = two_adic(p.L0)
-    comptime LINES = M_ODD // r
+def k_rs_stage[r: Int, stride: Int](base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, ruri: Int64,
+                                    columns: Int32, b: Int32, M: Int32):
+    """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
+    The stride is comptime: a runtime division here costs a quarter of the encoder."""
+    comptime final = stride == 1
     var c: Int
     var rest: Int
     var ok: Bool
     c, rest, ok = _rs_thread(columns)
-    if not ok or rest >= (1 << b) * LINES:
+    var bb = Int(b)
+    var Mi = Int(M)
+    comptime st = stride
+    if not ok or rest >= (Mi // r) << bb:
         return
-    var t1 = rest & ((1 << b) - 1)
-    var l = rest >> b
-    var first_lin = (l // stride) * r * stride + l % stride
+    var t1 = rest & ((1 << bb) - 1)
+    var l = rest >> bb
+    var first_lin = (l // st) * r * st + l % st
     var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
     var xs = InlineArray[F4, r](fill=F4(0))
     comptime for k in range(r):
-        xs[k] = _ld[4](base, Int(etmp) + (((first_lin + k * stride) << b) * Int(columns) + col_off) * 4)
+        xs[k] = _ld[4](base, Int(etmp) + (((first_lin + k * st) << bb) * Int(columns) + col_off) * 4)
     comptime assert r <= F4_MAC_MAX
     comptime for t in range(r):
         var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
             f4_mac_wide(wide, _ld[4](base, Int(wr) + (t * r + k) * 4), xs[k])
         var acc = f_reduce_signed(wide)
-        var lin = first_lin + t * stride
+        var lin = first_lin + t * st
         comptime if final:
-            var s = M_ODD * t1 + (_u16(base, Int(ruri) + lin * 2) << b)    # < 2 L0
-            if s >= p.L0:
-                s -= p.L0
+            var s = Mi * t1 + (_u16(base, Int(ruri) + lin * 2) << bb)    # < 2 L0
+            if s >= (Mi << bb):
+                s -= (Mi << bb)
             _st(base, Int(code) + (s * Int(columns) + c) * 4, acc)
         else:
-            _st(base, Int(etmp) + ((lin << b) * Int(columns) + col_off) * 4, acc)
+            _st(base, Int(etmp) + ((lin << bb) * Int(columns) + col_off) * 4, acc)
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -309,24 +318,51 @@ def pack[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: E
 
 
 def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:
-    """packed -> code: pass A, then the 5, 7, 9 stages. `mask` selects passes for the bench only."""
-    comptime b = two_adic(p.L0)
-    var cols = Int32(e.columns)
-    var gx = ceildiv(e.columns, CW)
-    var ruri = Int64(tab.base + tab.ruri)
-    comptime if mask & 1:
-        comptime k5 = k_rs_pass_a[p]
-        ctx.enqueue_function[k5](base, Int64(e.packed), Int64(e.etmp), Int64(tab.base + tab.ga), Int64(tab.base + tab.crt), cols,
-                                 grid_dim=(gx, ceildiv(p.L0, RW)), block_dim=(CW, RW))
-    comptime if mask & 2:
-        comptime s5 = k_rs_stage[p, 5, 63, False]
-        ctx.enqueue_function[s5](base, Int64(e.etmp), Int64(tab.base + tab.w5), Int64(e.code), ruri, cols,
-                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 5), RW)), block_dim=(CW, RW))
-    comptime if mask & 4:
-        comptime s7 = k_rs_stage[p, 7, 9, False]
-        ctx.enqueue_function[s7](base, Int64(e.etmp), Int64(tab.base + tab.w7), Int64(e.code), ruri, cols,
-                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 7), RW)), block_dim=(CW, RW))
-    comptime if mask & 8:
-        comptime s9 = k_rs_stage[p, 9, 1, True]
-        ctx.enqueue_function[s9](base, Int64(e.etmp), Int64(tab.base + tab.w9), Int64(e.code), ruri, cols,
-                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 9), RW)), block_dim=(CW, RW))
+    """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only."""
+    rs_encode_on[mask](ctx, base, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
+
+
+def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+                                 src: Int, etmp: Int, code: Int, columns: Int, K: Int, L0: Int, m: Int, rs: RsTables) raises:
+    """src (K, columns, 4) -> code (m L0, columns, 4) on the domain of `rs`: pass A, then the radix
+    stages of M, per coset. etmp holds (L0, columns, 4)."""
+    var b = two_adic(L0)
+    var M = L0 >> b
+    var F5: Int
+    var F7: Int
+    var F9: Int
+    F5, F7, F9 = rs_factors(M)
+    if F5 * F7 * F9 != M or M == 1:
+        raise Error("odd part of L0 must divide 315 and be > 1")
+    var cols = Int32(columns)
+    var gx = ceildiv(columns, CW)
+    var ruri = Int64(rs.base + rs.ruri)
+    for k in range(m):
+        var twist = Int64(rs.base + rs.twist + k * K * 4) if m > 1 else Int64(-1)
+        var code_k = Int64(code + k * L0 * columns * 4)
+        comptime if mask & 1:
+            ctx.enqueue_function[k_rs_pass_a](base, Int64(src), Int64(etmp), Int64(rs.base + rs.ga), Int64(rs.base + rs.crt), twist,
+                                              cols, Int32(K), Int32(b), Int32(M),
+                                              grid_dim=(gx, ceildiv(L0, RW)), block_dim=(CW, RW))
+        comptime if mask & 2:
+            if F5 > 1:
+                _stage[5](ctx, base, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9, gx)
+        comptime if mask & 4:
+            if F7 > 1:
+                _stage[7](ctx, base, etmp, rs.base + rs.w7, code_k, ruri, cols, b, M, F9, gx)
+        comptime if mask & 8:
+            if F9 == 9:
+                _stage[9](ctx, base, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
+            elif F9 == 3:
+                _stage[3](ctx, base, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
+
+
+def _stage[r: Int](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], etmp: Int, wr: Int, code_k: Int64, ruri: Int64,
+                   cols: Int32, b: Int, M: Int, stride: Int, gx: Int) raises:
+    """Dispatch the runtime stride (a product of the later radices) to a comptime one."""
+    comptime for st in [1, 3, 7, 9, 21, 63]:
+        if stride == st:
+            ctx.enqueue_function[k_rs_stage[r, st]](base, Int64(etmp), Int64(wr), code_k, ruri, cols, Int32(b), Int32(M),
+                                                    grid_dim=(gx, ceildiv((1 << b) * (M // r), RW)), block_dim=(CW, RW))
+            return
+    raise Error("unsupported radix stride")

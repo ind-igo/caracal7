@@ -203,6 +203,8 @@ def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, po
     Returns the opened rows in ascending distinct position order."""
     var known = distinct_sorted(positions)
     var m = len(known)
+    if len(proof) < m * row_bytes:
+        raise Error("multiproof truncated")
     var rows = List[UInt8](capacity=m * row_bytes)
     for i in range(m * row_bytes):
         rows.append(proof[i])
