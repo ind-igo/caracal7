@@ -81,3 +81,11 @@ buffers and their RS intermediates (4 x 80640 x 4 bytes per column).
 - `hash.mojo` is standard Blake3 (hash mode, keyed mode, tree mode up to 4 MiB per message), verified against the official vectors at 0, 1, 63, 64, 65, 1024, 1025, 2048, 2049, 3072 bytes and one keyed vector. Merkle leaves and nodes are plain Blake3 of the row or of `left || right`, so any Blake3 tool can recompute a root.
 - Transcript composition: `state <- blake3_keyed(key=state, ds || message)`; challenge block `t` is `blake3_keyed(key=state, LE64(t))`. F elements are rejection-sampled bytes below 127, positions rejection-sampled u32 below `L`. The counter resets on every absorb. `sample` is one function that runs in the one-thread kernel and in `HostTranscript`, so the verifier mirror cannot drift.
 - The absorb kernel is one thread and reads bytes one at a time. ponytail: large absorbs (openings, clear vector) can Merkle-reduce in parallel and absorb the root; do it when the transcript shows up in the profile.
+
+## Merkle tree and multiproof
+
+- Levels have ceil(n/2) nodes; an odd last node is copied up unchanged. L0 = 2^b * 315 is never a power of two, and padding to one would double the leaf hashing for nothing. The verifier knows every level size, so the copy rule is unambiguous.
+- Tree layout (node, DIGEST), level 0 first, root last. One launch per level, thread per node.
+- Multiproof: `[u32 bytes][rows at the sorted distinct positions][sibling frontier]`, the frontier walked level by level in ascending order, each sibling once. One thread walks the frontier (positions stay in registers, at most 1024 queries), then a thread block per row copies the opened rows. The exact byte count lives on the device; the host reads back the bound and trims by the header, so no challenge ever reaches the host.
+- `check_multiproof` in merkle.mojo is the verifier side, written next to the kernel that produces the bytes.
+- Measured: 80640 leaves x 404 B in 6.7 ms (4.9 GB/s) on the M1, byte-at-a-time loads. ponytail: word loads in `_hash` when the tree shows up next to the encoder in the profile.

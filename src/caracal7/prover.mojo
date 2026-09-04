@@ -18,7 +18,7 @@ from caracal7.transcript import TranscriptLayout, absorb, squeeze_elements, sque
 from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION
 from caracal7.hash import Hash
-from caracal7.merkle import merkle, query_gather, root_offset
+from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient
 from caracal7.open import build_queries, open, fold
 from caracal7.tail import tail_encode, expected_symbols, tail_materialize, tail_round, tail_fold
@@ -37,7 +37,7 @@ struct TailLayout(TrivialRegisterPassable):
     def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel, v_count: Int):
         self.y = bump.alloc(lvl.length * p.e)
         self.code = bump.alloc(lvl.L * 8 * p.e)
-        self.tree = bump.alloc((2 * lvl.L - 1) * H.DIGEST)
+        self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST)
         self.v = bump.alloc(v_count * p.e)
         self.w_tilde = bump.alloc(lvl.length * p.e)
         self.rounds = bump.alloc(9 * p.e)
@@ -49,7 +49,7 @@ struct ProverLayout:
     var transcript: TranscriptLayout
     var enc_w: EncLayout            # witness tree: trace .. code
     var enc_q: EncLayout            # quotient tree: stored .. code (trace/coeff unused; quotient writes stored)
-    var tree_w: Int                 # (node, 32), leaves first, 2 L0 - 1 nodes
+    var tree_w: Int                 # (node, 32), level 0 first, tree_nodes(L0) nodes
     var tree_q: Int
     var lde: Int                    # (column, G2, G1, 2)   witness columns on the residual grid
     var residual: Int               # (G2, G1, e)
@@ -72,8 +72,8 @@ struct ProverLayout:
         self.transcript = TranscriptLayout(bump, largest)
         self.enc_w = EncLayout.__init__[p](bump, shape.columns_w)
         self.enc_q = EncLayout.__init__[p](bump, shape.columns_q)
-        self.tree_w = bump.alloc((2 * p.L() - 1) * H.DIGEST)
-        self.tree_q = bump.alloc((2 * p.L() - 1) * H.DIGEST)
+        self.tree_w = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
+        self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.lde = bump.alloc(shape.columns_w * G * 2)
         self.residual = bump.alloc(G * p.e)
         self.quotient = bump.alloc(3 * G * p.e)
@@ -81,7 +81,7 @@ struct ProverLayout:
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
         self.fold_y = bump.alloc(N * p.e)
         self.positions = bump.alloc(p.queries() * 4)
-        self.proof_stage = bump.alloc(p.queries() * (shape.columns() * 4 * p.n_cw() + 3 * H.DIGEST * 20))
+        self.proof_stage = bump.alloc(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()))
         self.tail = List[TailLayout]()
         for i in range(len(shape.tail)):
             var prev_q = p.queries() if i == 0 else shape.tail[i - 1].queries
