@@ -140,3 +140,21 @@ Before the residual stage, the `Backend` / `tile_mac` rule of design section 9 w
 - Not done: the `n_cw > 1` split (comptime assert in the verifier, `n_cw() = 1` in Params); the materialize kernels compute `pt_q^i` by a pow per `(slot, q)`; `k_round_sum` is one thread over 1024 partials; the level-2 expected symbols are one thread per query over `N / 4` symbols.
 - Review fix (Codex): a domain with odd part 1 (a pure power of two) has no scatter path in the encoder, so `Params.check` rejects such an `L0` and `tail_schedule` skips such divisors; before, they passed both and failed at the first encode.
 - Review fixes (Opus): the proof docstring no longer lists a params digest (the parameters are bound through the transcript prefix) and says two multiproofs at level 1; `Shape.__init__` calls `Params.check`; a sampled position missing from the opened list raises instead of indexing row 0; the verifier checks `shape.clear_length` against the schedule before reading the clear vector; the RS tables are 4-byte aligned in the table span. Observation left as a spec question: `v` is redundant (the verifier recomputes every entry from the opened rows); dropping it saves ~7 KB at 288 x 128 and needs the opened rows absorbed instead.
+
+## Whole-proof profile (2026-09-05)
+
+`prove(profile=True)` synchronizes after every stage; `bench/bench_prover.mojo` prints the split. M1 Pro, 8 + 48 columns, 4 points, warm:
+
+| stage | 72 x 32 (85 ms) | 288 x 128 (843 ms) |
+|---|---:|---:|
+| open | 24 | 381 |
+| expected symbols, level 2 | - | 125 |
+| encode Q (48 columns) | 6 | 68 |
+| build_queries | 4 | 55 |
+| quotient | 1 | 36 |
+| encode W | 4 | 25 |
+| transcript clear (36 KB single thread) | 22 | 5 |
+| rounds, materialize, tail encodes | - | 20 + 17 + 22 |
+| finish (host assembly) | 12 | 16 |
+
+`open` is the budget: a lane GEMM with `M = 8`, `N = columns`, `K = N` slots and one block per point, so 4 blocks run on the whole GPU (the `ponytail:` in open.mojo). Split-K is the fix. `expected symbols` at level 2 is one thread per query over `N / 4` symbols; `transcript clear` is the one-thread absorb over the clear vector. Everything the design calls the budget (the encoders) is under 15% here; the rung-1 stages written last are the time.

@@ -6,7 +6,7 @@ Spec: `wiki/projects/caracal7/specs/caracal-prover.md` (main), `statement-layer.
 
 1. **Device resident.** Every prover stage is a GPU kernel from its first commit, including the Blake3 transcript and challenge derivation (section 10: tree and transcript on device). The host only enqueues launches in stage order and reads the finished proof bytes. The verifier is a separate program and runs on the host.
 2. **One buffer type.** All committed data is bytes: one `UInt8` per `F` coordinate. `F2`, `F4`, and `E` values are 2, 4, and `e` consecutive bytes. No struct-of-arrays and no per-field buffer types. Kernels are specialized on the coordinate count, not on a field type.
-3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant. Exception, recorded 2026-09-04: the GEMM skeleton of section 9 takes `M, N, K` and its operand strides at runtime, because one kernel serves every GEMM-shaped stage; its tile shape and the reduction cadence stay comptime.
+3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant. Exceptions: the GEMM skeleton of section 9 takes `M, N, K` and its operand strides at runtime, because one kernel serves every GEMM-shaped stage (2026-09-04); the RS encoder takes the domain (`2^b`, `M`, cosets) and the message length at runtime and the tail kernels take the level sizes and query counts at runtime, because the tail schedule is derived at runtime from `Params` and one kernel serves every level (2026-09-05). Tile shapes, reduction cadences, radices and stage strides stay comptime.
 4. **No copies between stages.** Unified memory on M1 makes host and device views of one buffer cheap. A stage writes its output where the next stage reads it. There are no host reads between barriers: challenges are derived on device from the device-resident transcript, and kernels read them from device memory.
 5. **Scalar reference in the test, never a CPU prover.** Each kernel's test runs a few lines of scalar Mojo on a small size and compares. The reference does not grow into a second implementation.
 6. **Allocate once, at setup.** One device arena per prover instance, sized from `Params` and the IR program; every buffer of section 3 is an offset into it, assigned by a bump pointer at setup. Fixed ceilings for columns per tree, P, tail levels, and queries size the arena. No allocation after setup, and the arena is reused across proofs with the same profile. The proof output and host staging buffers follow the same rule. Threadgroup memory and register tiles are static per kernel already.
@@ -41,9 +41,9 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 |---|---|---|
 | `trace` | (column, x2, x1) | witness in row order of section 2, one byte per value; a chain is contiguous |
 | `coeff` | (column, x2, x1, 2) | F2 monomial coefficients after the inverse 2D DFT, the two coordinates adjacent |
-| `stored` | (column, slot) | mixed basis, N bytes per column. F-valued columns use the Frobenius-real slots of 9.1. E-valued columns (A, B, Q2) use the plain `(x1, x2, r)` slots of 9.2, one stored column per E coordinate, written directly by the quotient path |
-| `packed` | (column, i, 4) | F4 symbols, N/4 per column |
-| `code` | (s, column, n_cw, 4) | codeword rows, leaf-major: leaf `s` is contiguous, `4 * n_cw * columns` bytes |
+| `stored` | (column, slot) | mixed basis, N bytes per column, the Frobenius-real slots of 9.1 for every column; the quotient coordinate columns (A, B, Q2 as values on H, 9.2) are ordinary columns and enter the encoder as a trace |
+| `packed` | (i, column, 4) | F4 symbols, N/4 per column, column fastest so the RS passes are coalesced |
+| `code` | (s, column, 4) | codeword rows, leaf-major: leaf `s` is contiguous, `4 * columns` bytes (`n_cw = 1`; the split multiplies the row) |
 | `tree` | (level, node, 32) | Blake3 digests, leaves first |
 | `lde` | (column, G2, G1, coord) | evaluations on the residual grid G; 2 coordinates for witness columns, e for accumulators |
 | `residual` | (G2, G1, e) | batched residual, E-valued |
@@ -65,18 +65,18 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | kernel | in → out | threads | notes |
 |---|---|---|---|
 | `idft2` | trace → coeff | one per (column, line) | inverse 2D DFT over F2, axis by axis, mixed radix 2/3/7 stages; each stage a batched small GEMM |
-| `to_stored` | coeff → stored | one per (column, slot) | length-m DFT over F per axis on the odd digit, then the Frobenius-real slot bijection of 9.1; the quotient specialization writes E coordinates to plain slots (9.2) |
+| `to_stored` | coeff → stored | one per (column, slot) | length-m DFT over F per axis on the odd digit, then the Frobenius-real slot bijection of 9.1 |
 | `pack` | stored → packed | one per (column, i) | gather 4 slots on the packing digit into one F4 symbol |
 | `rs_encode` | packed → code | one per (column, butterfly) | coset twist by `g_k^i`, then the order-L0 DFT over F4 in two passes: the power-of-two part, then the 315-point Good-Thomas part; each stage a block GEMM with 4×4 F-matrices as twiddles |
 | `merkle` | code → tree | one per node per level | Blake3, 1,024-byte leaves, 32-byte nodes, one launch per level |
-| `open` | stored, w_z → alpha | one per (column, point) | contraction `<w_z, stored(c)>` in E; `w_z` is built on device from the twelve tensor factors of 9.1 for F-valued columns and the single `Mon(x) L(r)` product for quotient coordinate columns |
+| `open` | stored, w_z → alpha | lane GEMM on the skeleton | contraction `<w_z, stored(c)>` in E for every column of every tree; `w_z` is built on device per (point, slot) from the pieces of 9.1 (`slot_weight`, shared with the verifier) |
 | `fold` | stored, beta → fold_y | one per slot | GEMV over all columns of all three trees |
 | `query_gather` | code, tree, S → proof bytes | one per query, then one per frontier node | opened leaf rows and a Merkle multiproof: the unique sibling frontier of S is computed first, each sibling emitted once |
 | `expected_symbols` | y_next, G rows at S → v_l | one per (query, coordinate) | the values the previous level must match at the opened positions (9.3) |
 | `tail_materialize` | tensor terms → w_tilde | one per slot | sum of the active claim batch: up to `12 P + 4 n_cw |S_1|` tensor terms at level 2, `|S_{l-1}|` plus the running claim later |
 | `tail_round` | w~, y → s_i | one per row | Hadamard and reduce over all but one digit, three evaluations |
 | `tail_fold` | y, r̄ → y_next | one per row | GEMV with the 8-column matrix |
-| `tail_encode` | y → tail_code | one per (coord, butterfly) | e/4 independent F4 DFTs on coefficient data, no inverse; last pass writes the `(s, 8, e)` leaf-major layout |
+| `tail_encode` | y → tail_code | the RS encoder on 32 F4 columns | the 8 E-valued columns are 32 F4 columns to `rs_encode_on`, no inverse; its scatter pass writes the `(s, 8, e)` leaf-major layout |
 | `lde` | coeff → lde | GEMM skeleton, one launch per axis | forward DFT onto `G` with the twist inside the `g_l^(j k)` tables (dense; mixed radix when `h_l` grows) |
 | `residual` | lde, tables → residual | the GEMM skeleton, `C[8 lanes, point]` | the fused pass of statement-layer 5 as one GEMM of the kappa table against family rows gathered from the LDE; milestone 1 runs it on synthetic families |
 | `quotient` | residual → trace of A, B, Q2 | GEMM skeleton launches | `Q1` on the coset from `R` over `G1`, inverse DFTs to the `A`, `B`, `Q2` coefficients, forward DFTs to their values on `H`; the coordinate columns then take the witness encoder path |
@@ -99,7 +99,7 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 - `transcript.mojo`: device-resident. A small buffer holds the running Blake3 state; one kernel absorbs a message (tree root, clear values, sumcheck messages) with the domain separator of 9.4, one kernel squeezes challenges into a device buffer: E elements as e bytes, positions as uniform integers below L. Every kernel that needs a challenge reads it from that buffer.
 - `verifier.mojo`: host program, separate from the prover. The seven steps of statement-layer section 6 for milestone 1 reduced to the Ligerito checks; builds `w_z` from the twelve tensor factors; checks consistency at opened positions with the E ⊗ F4 alphabet rule of 9.1; runs the sumcheck checks per level. (Milestone 1 evaluates the queries directly, `O(|y_l|)` per level, and materializes `w~` as a vector; the tensor form is the verifier's own ladder.)
 - `proof.mojo`: the byte layout of statement-layer section 7. Exact encoding is fixed when the first proof is serialized.
-- `prover.mojo`: host orchestration only. It enqueues every kernel of the pipeline in stage order on one stream and synchronizes once at the end to read the proof bytes. Barriers are ordering on the stream, not host synchronization points.
+- `prover.mojo`: host orchestration only. It enqueues every kernel of the pipeline in stage order on one stream and synchronizes once at the end to read the proof bytes. Barriers are ordering on the stream, not host synchronization points. `prove(profile=True)` is the measurement mode: a synchronize after every stage and the stage times recorded; `bench/bench_prover.mojo` prints the split.
 
 ## 7. Layout
 

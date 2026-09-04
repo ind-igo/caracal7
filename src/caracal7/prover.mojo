@@ -5,6 +5,7 @@ Milestone 1: W tree and Q tree on synthetic columns, residual and quotient on sy
 openings at P points, the tail, and the clear vector. No Z tree (milestone 2), no frontend.
 """
 
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from caracal7.params import Params
@@ -138,6 +139,8 @@ struct Prover[p: Params, H: Hash]:
     var layout: ProverLayout
     var arena: Arena
     var domains: Domains
+    var profile_names: List[String]     # filled by prove(profile=True): stage label and ms, in order
+    var profile_ms: List[Int]
 
     def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
         if len(families) != shape.entries * ENTRY:
@@ -147,6 +150,8 @@ struct Prover[p: Params, H: Hash]:
         self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
+        self.profile_names = List[String]()
+        self.profile_ms = List[Int]()
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
         var pts = shift_points(self.families)
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
@@ -165,10 +170,23 @@ struct Prover[p: Params, H: Hash]:
             self.arena.upload(ctx, self.layout.tail[i].rs.base, build_rs_tables(ctx, self.layout.tail[i].rs, dom, lvl.rows))
             _upload(ctx, self.arena, self.layout.tail[i].dom, domain_bytes(dom))
 
-    def prove(mut self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
+    def _mark(mut self, ctx: DeviceContext, profile: Bool, name: String, mut t0: Int) raises:
+        """With profile on: synchronize and record the time since the last mark. Off: nothing."""
+        if profile:
+            ctx.synchronize()
+            var now = perf_counter_ns()
+            self.profile_names.append(name)
+            self.profile_ms.append((now - t0) // 1000000)
+            t0 = now
+
+    def prove(mut self, ctx: DeviceContext, public_inputs: List[UInt8], profile: Bool = False) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
         Every call is an enqueue; proof values are staged as async copies and read after the one
-        synchronize in `proof.finish`."""
+        synchronize in `proof.finish`. `profile` inserts a synchronize after every stage and records
+        the stage times in profile_names / profile_ms (a measurement mode, never the production path)."""
+        self.profile_names = List[String]()
+        self.profile_ms = List[Int]()
+        var t0 = perf_counter_ns()
         comptime N = Self.p.N()
         comptime e = Self.p.e
         var base = self.arena.base()
@@ -192,34 +210,48 @@ struct Prover[p: Params, H: Hash]:
         self.arena.upload(ctx, L.prefix, prefix_host)
         reset(ctx, base, T)
         absorb[Self.p, Self.H](ctx, base, T, DS_PREFIX, L.prefix, len(prefix))
+        self._mark(ctx, profile, "prefix", t0)
 
         # 3. commit W. Milestone 1 has no Z tree, so alpha is squeezed here as the fourth stage-1 challenge.
         encode[Self.p](ctx, base, L.enc_w, L.tables)
+        self._mark(ctx, profile, "encode W", t0)
         merkle[Self.p, Self.H](ctx, base, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
+        self._mark(ctx, profile, "merkle W", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 4)             # beta_1, delta, gamma, alpha
+        self._mark(ctx, profile, "transcript W", t0)
 
         # 8-10. residual grid, quotient, commit Q
         lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
+        self._mark(ctx, profile, "lde", t0)
         residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.residual)
+        self._mark(ctx, profile, "residual", t0)
         quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.trace)
+        self._mark(ctx, profile, "quotient", t0)
         encode[Self.p](ctx, base, L.enc_q, L.tables)
+        self._mark(ctx, profile, "encode Q", t0)
         merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
+        self._mark(ctx, profile, "merkle Q", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
+        self._mark(ctx, profile, "transcript Q", t0)
 
         # 11. openings at the P points
         build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
+        self._mark(ctx, profile, "build_queries", t0)
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.openings, S.columns())
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.openings + S.columns_w * e, S.columns())
+        self._mark(ctx, profile, "open", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
         proof.stage(self.arena, L.openings, S.points * S.columns() * e)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.beta_gamma, S.columns() + S.points)
+        self._mark(ctx, profile, "transcript openings", t0)
 
         # 12. fold to the level-2 message
         fold[Self.p](ctx, base, L.beta_gamma, L.enc_w.stored, S.columns_w, L.enc_q.stored, S.columns_q, L.fold_y)
+        self._mark(ctx, profile, "fold", t0)
 
         # 13. tail: each committed level opens the previous one
         var y = L.fold_y
@@ -231,26 +263,34 @@ struct Prover[p: Params, H: Hash]:
             var lvl = S.tail[i]
             var tl = L.tail[i]
             tail_encode(ctx, base, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs)
+            self._mark(ctx, profile, "tail encode " + String(i), t0)
             merkle[Self.p, Self.H](ctx, base, tl.code, 8 * e, lvl.L, tl.tree)
+            self._mark(ctx, profile, "tail merkle " + String(i), t0)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             self._open_previous(ctx, i, T, proof)
+            self._mark(ctx, profile, "open previous " + String(i), t0)
             var count = self._prev_queries(i)
             var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
             var prev_L0 = Self.p.L0 if i == 0 else S.tail[i - 1].L // S.tail[i - 1].cosets
             points(ctx, base, L.positions, count, prev_dom, prev_L0, L.pts)
             expected_symbols[Self.p](ctx, base, i == 0, y, y_len, L.pts, count, tl.v)
+            self._mark(ctx, profile, "expected symbols " + String(i), t0)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
             proof.stage(self.arena, tl.v, self._v_count(i) * e)
             squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
+            self._mark(ctx, profile, "transcript v " + String(i), t0)
             tail_materialize[Self.p](ctx, base, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
+            self._mark(ctx, profile, "materialize " + String(i), t0)
             for d in range(3):
                 tail_round(ctx, base, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)
                 absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
                 squeeze_elements[Self.p, Self.H](ctx, base, T, L.r + d * e, 1)          # r_d
             proof.stage(self.arena, tl.rounds, 9 * e)
+            self._mark(ctx, profile, "rounds " + String(i), t0)
             tail_fold(ctx, base, y, lvl.rows, L.r, tl.y)
             tail_fold(ctx, base, tl.w_tilde, lvl.rows, L.r, tl.running)
+            self._mark(ctx, profile, "fold " + String(i), t0)
             y = tl.y
             y_len = lvl.rows
             running = tl.running
@@ -258,8 +298,12 @@ struct Prover[p: Params, H: Hash]:
         # last: the clear vector, then open the last committed level
         absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * e)
         proof.stage(self.arena, y, y_len * e)
+        self._mark(ctx, profile, "transcript clear", t0)
         self._open_previous(ctx, len(S.tail), T, proof)
-        return proof.finish()
+        self._mark(ctx, profile, "open last", t0)
+        var out = proof.finish()
+        self._mark(ctx, profile, "finish", t0)
+        return out^
 
     def _prev_queries(self, i: Int) -> Int:
         return Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
