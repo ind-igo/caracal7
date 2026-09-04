@@ -135,6 +135,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         doms.append(RsDomain(lvl.L // lvl.cosets, lvl.cosets))
 
     # the clear vector: consistency against the last committed level, then the evaluation claim directly
+    if shape.clear_length != y_len:
+        raise Error("shape.clear_length does not match the tail schedule")
     var y = r.take(shape.clear_length * p.e)
     t.absorb(DS_CLEAR, y)
     var last = _open_previous[p, H](r, t, shape, len(shape.tail), root_w, root_q, roots)
@@ -188,11 +190,11 @@ def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript
     return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows^, rows_q=List[UInt8](), row_w=8 * p.e, row_q=0)
 
 
-def _index_of(opened: List[Int], s: Int) -> Int:
+def _index_of(opened: List[Int], s: Int) raises -> Int:
     for i in range(len(opened)):
         if opened[i] == s:
             return i
-    return 0
+    raise Error("sampled position was not opened")
 
 
 def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: List[UInt8], idx: Int, tau: Int) -> E:

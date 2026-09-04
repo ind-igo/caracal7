@@ -2,14 +2,15 @@
 
 Order, every integer little-endian, every field element e bytes:
 
-    header      version u32, params digest 32 B, public inputs (u32 length + bytes)
+    header      version u32, public inputs (u32 length + bytes); the parameters are bound through
+                the transcript prefix (prefix_bytes), not sent
     W root      H.DIGEST
     Q root      H.DIGEST                       (Z root, Z2, Q3 join in milestone 2)
     openings    alpha_{c,p}: P x (columns_w + columns_q) x e
     per level l = 2 .. ell-1:
-                Mat(y_l) root 32 B; multiproof of level l-1 (u32 length + bytes);
-                expected symbols v_{l-1}; three sumcheck messages (9 e)
-    last        clear vector y_ell (|y_ell| x e); multiproof of level ell-1 (u32 length + bytes)
+                Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; two at
+                level 1, W and Q); expected symbols v_{l-1}; three sumcheck messages (9 e)
+    last        clear vector y_ell (|y_ell| x e); multiproof(s) of level ell-1
 
 Multiproofs are length-prefixed because the sibling frontier depends on the sampled positions.
 Everything else has a size fixed by `Shape`, so the verifier can check the total length up front.
@@ -89,6 +90,7 @@ struct Shape(Writable):
 
     def __init__[p: Params](out self, columns_w: Int, families: List[UInt8]) raises:
         """P and the entry count come from the family table (residual.mojo)."""
+        p.check()
         if len(families) % ENTRY != 0:
             raise Error("family table is not whole entries")
         self.columns_w = columns_w

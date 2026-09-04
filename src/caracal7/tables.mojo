@@ -252,6 +252,7 @@ struct TableLayout(TrivialRegisterPassable):
         self.winv2 = off; off += p.h2() * p.h2() * 2
         self.rho1 = off; off += p.m1
         self.rho2 = off; off += p.m2
+        off = (off + 3) & ~3                       # the F4 and u16 tables want 4-byte alignment
         self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
         self.g2p = off; off += 2 * p.h2() * 2
