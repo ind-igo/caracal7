@@ -9,9 +9,13 @@ Buffers (bytes; shapes slowest ... fastest):
     ctmp    (column, x2, k1, 2)       F2, after the axis-1 inverse DFT
     coeff   (column, k2, k1, 2)       F2 monomial coefficients
     stored  (column, slot)            F, Frobenius-real slots (t, x1', x2, r)
-    packed  (column, i, 4)            F4, coordinate basis (1, i, j, ij)
-    etmp    (column, t1, lin, 4)      F4, RS intermediate; lin = d5*63 + d7*9 + d9
+    packed  (i, column, 4)            F4, coordinate basis (1, i, j, ij)
+    etmp    (lin, t1, column, 4)      F4, RS intermediate; lin = d5*63 + d7*9 + d9
     code    (s, column, 4)            F4, leaf-major, leaf s is the point g^s
+
+From `packed` on the column index is fastest: a SIMD group of threads handles one (i, t1) for 32
+consecutive columns, so every load and store of the RS passes is contiguous (ladder step 2), and
+the twiddle loads are group-wide broadcasts. Full coalescing needs 32+ columns per launch.
 
 RS encode of the K = N/4 message symbols on the order-L0 subgroup, L0 = 2^b * 315:
     Good-Thomas across 2^b x 315, then 5 x 7 x 9 inside 315, no twiddles between stages.
@@ -26,16 +30,15 @@ from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, F4, f_add, f_mul, ext_mul
+from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
 from caracal7.params import Params
-from caracal7.tables import TableLayout, two_adic, modinv
+from caracal7.tables import TableLayout, two_adic
 from caracal7.arena import Bump
 
 comptime BLOCK = 256
 comptime M_ODD = 315                # ponytail: L0 = 2^b * 315 only; other divisors of 315 when a profile needs them
-comptime E5 = modinv(63, 5)         # CRT reconstruction coefficients inside 315
-comptime E7 = modinv(45, 7)
-comptime E9 = modinv(35, 9)
+comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
+comptime RW = 8                     # (t1, line) rows per block (block y)
 
 
 struct EncLayout(TrivialRegisterPassable):
@@ -187,8 +190,8 @@ def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed:
     var gid = _gid()
     if gid >= Int(columns) * (N // 4):
         return
-    var c = gid // (N // 4)
-    var i = gid % (N // 4)
+    var c = gid % Int(columns)
+    var i = gid // Int(columns)
     var v = F4(0)
     comptime for j in range(4):
         v[j] = base[Int(stored) + c * N + pack_slot[p](i, j)]
@@ -198,61 +201,76 @@ def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed:
 # ---- rs_encode ----
 
 @always_inline
-def _crt315(lin: Int) -> Int:
-    var d5 = lin // 63
-    var d7 = (lin // 9) % 7
-    var d9 = lin % 9
-    return (d5 * 63 * E5 + d7 * 45 * E7 + d9 * 35 * E9) % M_ODD
+def _u16(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> Int:
+    var v = _ld[2](base, off)
+    return Int(v[0]) + (Int(v[1]) << 8)
 
 
-def k_rs_pass_a[p: Params](base: Pointer[UInt8, MutAnyOrigin], packed: Int64, etmp: Int64, ga: Int64, columns: Int32):
-    """etmp[c, t1, lin] = sum over message symbols i = crt(lin) + 315 q of x_i * gA^(t1 * (i mod 2^b))."""
+@always_inline
+def _rs_thread(columns: Int32) -> Tuple[Int, Int, Bool]:
+    """2D launch: block (CW, RW); x walks columns, y walks (t1, line) rows. Returns (c, row, valid)."""
+    var c = Int(block_idx.x) * CW + Int(thread_idx.x)
+    var row = Int(block_idx.y) * RW + Int(thread_idx.y)
+    return (c, row, c < Int(columns))
+
+
+def k_rs_pass_a[p: Params](base: Pointer[UInt8, MutAnyOrigin], packed: Int64, etmp: Int64, ga: Int64, crt: Int64, columns: Int32):
+    """etmp[lin, t1, c] = sum over message symbols i = crt(lin) + 315 q of x_i * gA^(t1 * (i mod 2^b))."""
     comptime b = two_adic(p.L0)
     comptime K = p.N() // 4
-    var gid = _gid()
-    if gid >= Int(columns) * p.L0:
+    var c: Int
+    var rest: Int                              # lin * 2^b + t1
+    var ok: Bool
+    c, rest, ok = _rs_thread(columns)
+    if not ok or rest >= p.L0:
         return
-    var c = gid // p.L0
-    var t1 = (gid % p.L0) // M_ODD
-    var lin = gid % M_ODD
-    var i = _crt315(lin)
-    var acc = F4(0)
+    var gid = rest * Int(columns) + c
+    var t1 = rest & ((1 << b) - 1)
+    var lin = rest >> b
+    comptime assert (K + M_ODD - 1) // M_ODD <= F4_MAC_MAX
+    var i = _u16(base, Int(crt) + lin * 2)
+    var acc = SIMD[DType.int32, 4](0)
     while i < K:
-        var x = _ld[4](base, Int(packed) + (c * K + i) * 4)
+        var x = _ld[4](base, Int(packed) + (i * Int(columns) + c) * 4)
         var w = _ld[4](base, Int(ga) + ((t1 * (i & ((1 << b) - 1))) & ((1 << b) - 1)) * 4)
-        acc = f_add(acc, ext_mul[2](x, w))
+        f4_mac_wide(acc, x, w)
         i += M_ODD
-    _st(base, Int(etmp) + gid * 4, acc)
+    _st(base, Int(etmp) + gid * 4, f_reduce_signed(acc))
 
 
 def k_rs_stage[p: Params, r: Int, stride: Int, final: Bool](
-    base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, columns: Int32
+    base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, ruri: Int64, columns: Int32
 ):
     """In-place r-point DFT along one digit of lin; the last stage scatters into `code`."""
     comptime b = two_adic(p.L0)
     comptime LINES = M_ODD // r
-    var gid = _gid()
-    if gid >= Int(columns) * (1 << b) * LINES:
+    var c: Int
+    var rest: Int
+    var ok: Bool
+    c, rest, ok = _rs_thread(columns)
+    if not ok or rest >= (1 << b) * LINES:
         return
-    var l = gid % LINES
-    var row = gid // LINES                       # (c, t1)
-    var c = row >> b
-    var t1 = row & ((1 << b) - 1)
-    var first = row * M_ODD + (l // stride) * r * stride + l % stride
+    var t1 = rest & ((1 << b) - 1)
+    var l = rest >> b
+    var first_lin = (l // stride) * r * stride + l % stride
+    var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
     var xs = InlineArray[F4, r](fill=F4(0))
     comptime for k in range(r):
-        xs[k] = _ld[4](base, Int(etmp) + (first + k * stride) * 4)
+        xs[k] = _ld[4](base, Int(etmp) + (((first_lin + k * stride) << b) * Int(columns) + col_off) * 4)
+    comptime assert r <= F4_MAC_MAX
     comptime for t in range(r):
-        var acc = F4(0)
+        var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
-            acc = f_add(acc, ext_mul[2](_ld[4](base, Int(wr) + (t * r + k) * 4), xs[k]))
+            f4_mac_wide(wide, _ld[4](base, Int(wr) + (t * r + k) * 4), xs[k])
+        var acc = f_reduce_signed(wide)
+        var lin = first_lin + t * stride
         comptime if final:
-            var lin = (l // stride) * r * stride + l % stride + t * stride
-            var t2 = (63 * (lin // 63) + 45 * ((lin // 9) % 7) + 35 * (lin % 9)) % M_ODD
-            var s = (M_ODD * t1 + (1 << b) * t2) % p.L0
+            var s = M_ODD * t1 + (_u16(base, Int(ruri) + lin * 2) << b)    # < 2 L0
+            if s >= p.L0:
+                s -= p.L0
             _st(base, Int(code) + (s * Int(columns) + c) * 4, acc)
         else:
-            _st(base, Int(etmp) + (first + t * stride) * 4, acc)
+            _st(base, Int(etmp) + ((lin << b) * Int(columns) + col_off) * 4, acc)
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -289,19 +307,21 @@ def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8
     """packed -> code: pass A, then the 5, 7, 9 stages. `mask` selects passes for the bench only."""
     comptime b = two_adic(p.L0)
     var cols = Int32(e.columns)
+    var gx = ceildiv(e.columns, CW)
+    var ruri = Int64(tab.base + tab.ruri)
     comptime if mask & 1:
         comptime k5 = k_rs_pass_a[p]
-        ctx.enqueue_function[k5](base, Int64(e.packed), Int64(e.etmp), Int64(tab.base + tab.ga), cols,
-                                 grid_dim=grid(e.columns * p.L0), block_dim=BLOCK)
+        ctx.enqueue_function[k5](base, Int64(e.packed), Int64(e.etmp), Int64(tab.base + tab.ga), Int64(tab.base + tab.crt), cols,
+                                 grid_dim=(gx, ceildiv(p.L0, RW)), block_dim=(CW, RW))
     comptime if mask & 2:
         comptime s5 = k_rs_stage[p, 5, 63, False]
-        ctx.enqueue_function[s5](base, Int64(e.etmp), Int64(tab.base + tab.w5), Int64(e.code), cols,
-                                 grid_dim=grid(e.columns * (1 << b) * (M_ODD // 5)), block_dim=BLOCK)
+        ctx.enqueue_function[s5](base, Int64(e.etmp), Int64(tab.base + tab.w5), Int64(e.code), ruri, cols,
+                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 5), RW)), block_dim=(CW, RW))
     comptime if mask & 4:
         comptime s7 = k_rs_stage[p, 7, 9, False]
-        ctx.enqueue_function[s7](base, Int64(e.etmp), Int64(tab.base + tab.w7), Int64(e.code), cols,
-                                 grid_dim=grid(e.columns * (1 << b) * (M_ODD // 7)), block_dim=BLOCK)
+        ctx.enqueue_function[s7](base, Int64(e.etmp), Int64(tab.base + tab.w7), Int64(e.code), ruri, cols,
+                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 7), RW)), block_dim=(CW, RW))
     comptime if mask & 8:
         comptime s9 = k_rs_stage[p, 9, 1, True]
-        ctx.enqueue_function[s9](base, Int64(e.etmp), Int64(tab.base + tab.w9), Int64(e.code), cols,
-                                 grid_dim=grid(e.columns * (1 << b) * (M_ODD // 9)), block_dim=BLOCK)
+        ctx.enqueue_function[s9](base, Int64(e.etmp), Int64(tab.base + tab.w9), Int64(e.code), ruri, cols,
+                                 grid_dim=(gx, ceildiv((1 << b) * (M_ODD // 9), RW)), block_dim=(CW, RW))

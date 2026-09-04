@@ -51,3 +51,12 @@ stage 9 12.0 ms. Every pass moves bytes at 3-4 GB/s against a ~200 GB/s roofline
 threads read 4-byte symbols 252 bytes apart in stage 5, and the scatter write is random. The next
 rung is coalescing (ladder step 2): transpose the digit order per stage so a SIMD group reads
 contiguous lines, and stage the scatter through threadgroup memory.
+
+**Rungs 2-3 on rs_encode (2026-09-04).** Three changes, measured at 64 columns: (1) `f4_mac_wide`,
+signed int32 coordinate accumulation with one reduction per output (29 -> 13.9 ms); (2) column-fastest
+layouts for `packed`, `etmp`, `code`, a SIMD group handles 32 consecutive columns for one (row, t1), so
+every load and store is contiguous and twiddles are broadcasts (13.9 -> 11.5 ms); (3) a 2D launch
+(block 32 x 8) and two 315-entry index tables `crt`, `ruri` replacing all runtime integer divisions
+(11.5 -> 4.7 ms; pass A alone 4.8 -> 1.0 ms). Now 74 us/column, 401 GMAC/s, above the GEMM's
+360 because the twiddle operand is a broadcast. Stage 9 with the scatter is 2.0 of the 4.7 ms.
+Integer division is the hidden cost on this GPU: prefer tables and shifts in every index computation.

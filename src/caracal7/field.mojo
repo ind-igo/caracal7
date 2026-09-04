@@ -38,6 +38,35 @@ def f_reduce[w: SIMDLength](x: SIMD[DType.uint32, w]) -> SIMD[DType.uint8, w]:
     return min(r, r - 127).cast[DType.uint8]()      # r in [0, 254): unsigned wrap picks the reduced value
 
 
+comptime WIDE_BIAS: Int32 = 127 * (1 << 15)   # added before reducing a signed accumulator; |acc| must stay below it
+comptime F4_MAC_MAX = 30                       # F4 MACs one wide accumulator holds: 30 * 8 * 126^2 < WIDE_BIAS
+
+
+@always_inline
+def f_reduce_signed[w: SIMDLength](x: SIMD[DType.int32, w]) -> SIMD[DType.uint8, w]:
+    """Reduce signed lanes with |x| < WIDE_BIAS to 0..126."""
+    var r = (x + WIDE_BIAS).cast[DType.uint32]()   # < 2^23
+    r = (r & 127) + (r >> 7)
+    return f_reduce(r)
+
+
+@always_inline
+def f4_mac_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 4], b: SIMD[DType.uint8, 4]):
+    """acc += a * b in F4 without reduction, as signed int32 coordinates.
+    Tower: i^2 = -1, j^2 = 2 + i; coordinates (1, i, j, ij). Reduce with f_reduce_signed after at most
+    F4_MAC_MAX calls."""
+    var x = a.cast[DType.int32]()
+    var y = b.cast[DType.int32]()
+    var p02 = x[0] * y[2] - x[1] * y[3] + x[2] * y[0] - x[3] * y[1]
+    var p03 = x[0] * y[3] + x[1] * y[2] + x[2] * y[1] + x[3] * y[0]
+    var q0 = x[2] * y[2] - x[3] * y[3]             # (a2 + a3 i)(b2 + b3 i), real
+    var q1 = x[2] * y[3] + x[3] * y[2]             # imaginary
+    acc[0] += x[0] * y[0] - x[1] * y[1] + 2 * q0 - q1
+    acc[1] += x[0] * y[1] + x[1] * y[0] + 2 * q1 + q0
+    acc[2] += p02
+    acc[3] += p03
+
+
 @always_inline
 def f_add[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
     var s = a + b                                   # < 254, no overflow

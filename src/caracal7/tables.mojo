@@ -98,6 +98,8 @@ struct TableLayout(TrivialRegisterPassable):
     var w5: Int         # (5, 5, 4)     F4: w5^(t k)
     var w7: Int         # (7, 7, 4)
     var w9: Int         # (9, 9, 4)
+    var crt: Int        # (315, 2)     lin -> i2 = crt(d5, d7, d9), little-endian u16
+    var ruri: Int       # (315, 2)     lin -> t2 = (63 t5 + 45 t7 + 35 t9) mod 315
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
@@ -112,6 +114,8 @@ struct TableLayout(TrivialRegisterPassable):
         self.w5 = off; off += 5 * 5 * 4
         self.w7 = off; off += 7 * 7 * 4
         self.w9 = off; off += 9 * 9 * 4
+        self.crt = off; off += 315 * 2
+        self.ruri = off; off += 315 * 2
         self.bytes = off
 
 
@@ -158,4 +162,17 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     for tt in range(9):
         for k in range(9):
             _put(h, t.w9 + (tt * 9 + k) * 4, ext_pow[2](w9, (tt * k) % 9))
+    var e5 = modinv(63, 5)
+    var e7 = modinv(45, 7)
+    var e9 = modinv(35, 9)
+    for lin in range(315):
+        var d5 = lin // 63
+        var d7 = (lin // 9) % 7
+        var d9 = lin % 9
+        var i2 = (d5 * 63 * e5 + d7 * 45 * e7 + d9 * 35 * e9) % 315
+        var t2 = (63 * d5 + 45 * d7 + 35 * d9) % 315
+        h[t.crt + lin * 2] = UInt8(i2 & 255)
+        h[t.crt + lin * 2 + 1] = UInt8(i2 >> 8)
+        h[t.ruri + lin * 2] = UInt8(t2 & 255)
+        h[t.ruri + lin * 2 + 1] = UInt8(t2 >> 8)
     return h^

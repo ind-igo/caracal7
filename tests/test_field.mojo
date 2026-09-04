@@ -95,5 +95,24 @@ def test_f4_scalar_action_is_coordinatewise() raises:
         assert_equal(full.slice[4, offset = 4 * t](), ext_mul[2](s, coord))
 
 
+def test_f4_mac_wide_matches_ext_mul() raises:
+    var acc = SIMD[DType.int32, 4](0)
+    var want_sum = F4(0)
+    for n in range(F4_MAC_MAX):
+        var a = F4(UInt8((n * 37 + 5) % 127), UInt8((n * 91 + 126) % 127), UInt8((n * 13) % 127), UInt8((n * 71 + 100) % 127))
+        var b = F4(UInt8((n * 59 + 2) % 127), UInt8(126), UInt8((n * 17 + 60) % 127), UInt8((n * 3 + 125) % 127))
+        f4_mac_wide(acc, a, b)
+        want_sum = f_add(want_sum, ext_mul[2](a, b))
+    assert_equal(f_reduce_signed(acc), want_sum)
+    # a worst-case negative accumulator still reduces
+    var neg = SIMD[DType.int32, 4](0)
+    for _ in range(F4_MAC_MAX):
+        f4_mac_wide(neg, F4(0, 126, 0, 126), F4(0, 126, 126, 0))
+    var want = F4(0)
+    for _ in range(F4_MAC_MAX):
+        want = f_add(want, ext_mul[2](F4(0, 126, 0, 126), F4(0, 126, 126, 0)))
+    assert_equal(f_reduce_signed(neg), want)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

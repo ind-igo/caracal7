@@ -117,7 +117,7 @@ def test_pack_gathers_slots() raises:
     for c in range(COLS):
         for i in range(K):
             for j in range(4):
-                assert_equal(Int(packed[(c * K + i) * 4 + j]), Int(stored[c * N + pack_slot[p](i, j)]))
+                assert_equal(Int(packed[(i * COLS + c) * 4 + j]), Int(stored[c * N + pack_slot[p](i, j)]))
 
 
 def test_rs_encode_evaluates_message() raises:
@@ -131,7 +131,7 @@ def test_rs_encode_evaluates_message() raises:
             var acc = F4(0)
             var pw = F4(1, 0, 0, 0)
             for i in range(K):
-                acc = f_add(acc, ext_mul[2](_f4(packed, (c * K + i) * 4), pw))
+                acc = f_add(acc, ext_mul[2](_f4(packed, (i * COLS + c) * 4), pw))
                 pw = ext_mul[2](pw, pt)
             var got = _f4(code, (s * COLS + c) * 4)
             assert_true(got == acc, "code mismatch at s=" + String(s) + " col " + String(c))
