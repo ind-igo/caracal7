@@ -1,0 +1,14 @@
+[workspace]
+authors = ["indigo <indigo.eth@protonmail.com>"]
+channels = ["https://conda.modular.com/max", "conda-forge"]
+name = "caracal7-prover"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+
+
+[dependencies]
+mojo = ">=1.0.0,<2"
+
+[tasks.test]
+cmd = "./run_tests.sh"
