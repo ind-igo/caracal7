@@ -1,7 +1,8 @@
-"""Byte GEMM mod 127 on SIMD lanes: the tile op of docs/design.md section 9, M1 path.
+"""Byte GEMM mod 127 on SIMD lanes: the ladder climb of docs/design.md section 8 on the plain F case.
 
 C[M, N] = A[M, K] . B[K, N] over F127, one byte per element, int32 accumulation,
-lazy reduction (field.f_reduce) every REDUCE_EVERY products.
+lazy reduction (field.f_reduce) every REDUCE_EVERY products. The register-tile update is
+backend.tile_mac, the same op the F2 skeleton (backend.gemm_f2) runs.
 
 Three kernels, rungs 1, 4 and 5 of the ladder in design.md section 8:
     gemm127_naive   one thread per output
@@ -18,23 +19,10 @@ from max.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major, stack_allocation
 
 from caracal7.field import f_reduce
+from caracal7.backend import BACKEND, Tile, tile_mac
 
-comptime REDUCE_EVERY = 128   # 128 * 126^2 < 2^21, the f_reduce input bound
-
-
-@fieldwise_init
-struct Tile(TrivialRegisterPassable):
-    var BM: Int
-    var BN: Int
-    var BK: Int
-    var TM: Int
-    var TN: Int
-
-    def threads(self) -> Int:
-        return (self.BM // self.TM) * (self.BN // self.TN)
-
-
-comptime TILE_DEFAULT = Tile(BM=64, BN=64, BK=16, TM=4, TN=4)
+comptime REDUCE_EVERY = BACKEND.max_terms   # 128 * 126^2 < 2^21, the f_reduce input bound
+comptime TILE_DEFAULT = BACKEND.tile
 
 
 @always_inline
@@ -88,35 +76,32 @@ def gemm127_tiled[
     var brow = Int(block_idx.y) * BM
     var bcol = Int(block_idx.x) * BN
 
-    var As = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BM, BK]())
+    var As = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())   # transposed
     var Bs = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
-    var acc = SIMD[DType.int32, TM * TN](0)      # register tile
+    var acc = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))   # register tile
 
     for kt in range(K // BK):
         # cooperative loads: consecutive threads take consecutive columns (coalesced)
         comptime for i in range(0, BM * BK, THREADS):
             var idx = i + tid
-            As[idx // BK, idx % BK] = A[brow + idx // BK, kt * BK + idx % BK]
+            As[idx % BK, idx // BK] = A[brow + idx // BK, kt * BK + idx % BK]
         comptime for i in range(0, BK * BN, THREADS):
             var idx = i + tid
             Bs[idx // BN, idx % BN] = B[kt * BK + idx // BN, bcol + idx % BN]
         barrier()
         comptime for k in range(BK):
-            var regN = SIMD[DType.int32, TN]()
-            comptime for j in range(TN):
-                regN[j] = rebind[Scalar[DType.uint8]](Bs[k, tcol * TN + j]).cast[DType.int32]()
-            comptime for i in range(TM):
-                var a = rebind[Scalar[DType.uint8]](As[trow * TM + i, k]).cast[DType.int32]()
-                comptime for j in range(TN):
-                    acc[i * TN + j] += a * regN[j]
+            var a = As.ptr.unsafe_load[width=TM](k * BM + trow * TM).cast[DType.int32]()
+            var b = Bs.ptr.unsafe_load[width=TN](k * BN + tcol * TN).cast[DType.int32]()
+            tile_mac[BACKEND](a, b, acc)
         barrier()
         if (kt * BK) % REDUCE_EVERY >= REDUCE_EVERY - BK:
-            acc = f_reduce(acc.cast[DType.uint32]()).cast[DType.int32]()
+            comptime for i in range(TM):
+                acc[i] = f_reduce(acc[i].cast[DType.uint32]()).cast[DType.int32]()
 
-    var out = f_reduce(acc.cast[DType.uint32]())
     comptime for i in range(TM):
+        var out = f_reduce(acc[i].cast[DType.uint32]())
         comptime for j in range(TN):
-            C[brow + trow * TM + i, bcol + tcol * TN + j] = rebind[C.ElementType](out[i * TN + j])
+            C[brow + trow * TM + i, bcol + tcol * TN + j] = rebind[C.ElementType](out[j])
 
 
 def gemm127_vec[
@@ -136,7 +121,7 @@ def gemm127_vec[
     comptime BK = T.BK
     comptime TM = T.TM
     comptime TN = T.TN
-    comptime V = 4                              # bytes per vector load
+    comptime V = BACKEND.vec_bytes              # bytes per vector load
     comptime THREADS = T.threads()
     comptime assert BK % V == 0 and BN % V == 0 and TM % V == 0 and TN % V == 0
     comptime assert (BM * BK // V) % THREADS == 0 and (BK * BN // V) % THREADS == 0
@@ -168,8 +153,7 @@ def gemm127_vec[
         comptime for k in range(BK):
             var a = As.ptr.unsafe_load[width=TM](k * BM + trow * TM).cast[DType.int32]()
             var b = Bs.ptr.unsafe_load[width=TN](k * BN + tcol * TN).cast[DType.int32]()
-            comptime for i in range(TM):
-                acc[i] += a[i] * b
+            tile_mac[BACKEND](a, b, acc)
         barrier()
         if (kt * BK) % REDUCE_EVERY >= REDUCE_EVERY - BK:
             comptime for i in range(TM):

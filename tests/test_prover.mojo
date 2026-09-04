@@ -9,6 +9,7 @@ from caracal7.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace
 from caracal7.verifier import verify
+from caracal7.residual import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
 
 comptime p = REFERENCE
 
@@ -16,7 +17,7 @@ comptime p = REFERENCE
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var s = tail_schedule[p]()
     assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
-    var shape = Shape.__init__[p](53, 34)
+    var shape = Shape.__init__[p](53, 34, 13)
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 48)
 
@@ -34,7 +35,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].L, 18432)
     assert_equal(s[1].cosets, 4)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
-    var shape = Shape.__init__[big](357, 34)
+    var shape = Shape.__init__[big](357, 34, 500)
     assert_equal(shape.clear_length, 576)
 
 
@@ -49,17 +50,17 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var shape = Shape.__init__[narrow](43, 34)
+    var shape = Shape.__init__[narrow](43, 34, 500)
     assert_equal(shape.clear_length, 3969)
 
 
 def test_layout_plans_the_arena() raises:
-    var shape = Shape.__init__[p](53, 34)
+    var shape = Shape.__init__[p](53, 34, 13)
     var L = ProverLayout.__init__[p, Blake3](shape)
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
     # every offset is inside the arena and 256-aligned
-    for off in [L.tree_w, L.tree_q, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
+    for off in [L.tree_w, L.tree_q, L.families, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
                 L.prefix, L.stage1, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 48 columns:", L.bytes // (1 << 20), "MiB")
@@ -67,19 +68,19 @@ def test_layout_plans_the_arena() raises:
 
 def test_prove_stops_at_first_missing_stage() raises:
     var ctx = DeviceContext()
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](53, 34))
-    var trace = List[UInt8](length=53 * p.N(), fill=0)
-    load_trace[p, Blake3](ctx, prover, trace)
+    var f = synthetic_families()
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, 34, f.count), f.bytes.copy())
+    load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var stopped = String("")
     try:
         _ = prover.prove(ctx, List[UInt8]())
     except e:
         stopped = String(e)
-    assert_equal(stopped, "not implemented: lde")
+    assert_equal(stopped, "not implemented: build_queries")
 
 
 def test_verify_stops_at_first_missing_step() raises:
-    var shape = Shape.__init__[p](53, 34)
+    var shape = Shape.__init__[p](53, 34, 13)
     var bytes = List[UInt8]()
     for b in [1, 0, 0, 0, 0, 0, 0, 0]:          # version 1, empty public inputs
         bytes.append(UInt8(b))
@@ -87,7 +88,7 @@ def test_verify_stops_at_first_missing_step() raises:
         bytes.append(0)
     var stopped = String("")
     try:
-        _ = verify[p, Blake3](bytes^, shape, List[UInt8]())
+        _ = verify[p, Blake3](bytes^, shape, List[UInt8](), synthetic_families().bytes)
     except e:
         stopped = String(e)
     assert_equal(stopped, "not implemented: verifier step 5 (residual identity at z)")

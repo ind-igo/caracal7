@@ -10,7 +10,7 @@ from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS
 
 
-def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8]) raises -> Bool:
+def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8], families: List[UInt8]) raises -> Bool:
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
 
@@ -20,7 +20,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var pub = r.prefixed()
     if pub != public_inputs:
         raise Error("public inputs differ")
-    var prefix = prefix_bytes[p](shape, public_inputs)
+    var prefix = prefix_bytes[p](shape, public_inputs, families)
     t.absorb(DS_PREFIX, prefix)
     var root_w = r.take(H.DIGEST)
     t.absorb(DS_TREE_W, root_w)
@@ -37,7 +37,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var beta_gamma = t.elements(shape.columns() + shape.points)
 
     raise Error("not implemented: verifier step 5 (residual identity at z)")
-    # step 5: residual identity at z from the openings: R_lin(z) + R_quad(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
+    # step 5: residual identity at z from the openings (residual.residual_at): R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     # step 7: per level: root, S on the previous level, multiproofs against the roots (check_multiproof),
     #         expected symbols, three sumcheck checks s_i(0) + s_i(1) = s_{i-1}(r_{i-1}); clear vector:
     #         last consistency rows and <y_ell, w~_ell> directly

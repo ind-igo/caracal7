@@ -19,7 +19,7 @@ from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.residual import lde, residual, quotient
+from caracal7.residual import lde, residual, quotient, quotient_elems, ENTRY
 from caracal7.open import build_queries, open, fold
 from caracal7.tail import tail_encode, expected_symbols, tail_materialize, tail_round, tail_fold
 
@@ -51,9 +51,11 @@ struct ProverLayout:
     var enc_q: EncLayout            # quotient tree: stored .. code (trace/coeff unused; quotient writes stored)
     var tree_w: Int                 # (node, 32), level 0 first, tree_nodes(L0) nodes
     var tree_q: Int
+    var families: Int               # (entry, ENTRY)        the family table, kappa folded in on device
+    var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
     var lde: Int                    # (column, G2, G1, 2)   witness columns on the residual grid
     var residual: Int               # (G2, G1, e)
-    var quotient: Int               # (3, G2, G1, e)        A, B, Q2 in evaluation form
+    var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
     var w_z: Int                    # (P, slot, e)          evaluation queries
     var openings: Int               # (P, column, e)
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message
@@ -80,9 +82,11 @@ struct ProverLayout:
         self.enc_q = EncLayout.__init__[p](bump, shape.columns_q)
         self.tree_w = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
+        self.families = bump.alloc(shape.entries * ENTRY)
+        self.ltmp = bump.alloc(shape.columns_w * p.h2() * 2 * p.h1() * 2)
         self.lde = bump.alloc(shape.columns_w * G * 2)
         self.residual = bump.alloc(G * p.e)
-        self.quotient = bump.alloc(3 * G * p.e)
+        self.quotient = bump.alloc(quotient_elems[p]() * p.e)
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
         self.fold_y = bump.alloc(N * p.e)
@@ -112,16 +116,25 @@ struct ProverLayout:
 
 struct Prover[p: Params, H: Hash]:
     var shape: Shape
+    var families: List[UInt8]       # the entry table as built (residual.Families), kappa bytes zero
     var layout: ProverLayout
     var arena: Arena
     var domains: Domains
 
-    def __init__(out self, ctx: DeviceContext, var shape: Shape) raises:
+    def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
+        if len(families) != shape.entries * ENTRY:
+            raise Error("family table does not match shape.entries")
         self.shape = shape^
+        self.families = families^
         self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
+        var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
+        ctx.synchronize()
+        for i in range(len(self.families)):
+            fh[i] = self.families[i]
+        self.arena.upload(ctx, self.layout.families, fh)
 
     def prove(self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
@@ -140,7 +153,7 @@ struct Prover[p: Params, H: Hash]:
         # header and transcript prefix (spec 9.4, statement-layer 6 step 1)
         proof.u32(Int(VERSION))
         proof.prefixed(public_inputs)
-        var prefix = prefix_bytes[Self.p](S, public_inputs)
+        var prefix = prefix_bytes[Self.p](S, public_inputs, self.families)
         if len(prefix) > PREFIX_MAX:
             raise Error("public inputs too large for the prefix region")
         var prefix_host = ctx.enqueue_create_host_buffer[DType.uint8](len(prefix))
@@ -159,9 +172,9 @@ struct Prover[p: Params, H: Hash]:
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 4)             # beta_1, delta, gamma, alpha
 
         # 8-10. residual grid, quotient, commit Q
-        lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.lde)
-        residual[Self.p](ctx, base, L.lde, S.columns_w, L.tables.base, L.stage1 + 3 * e, L.residual)
-        quotient[Self.p](ctx, base, L.residual, L.quotient, L.enc_q.stored)
+        lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
+        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.residual)
+        quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.stored)
         pack[Self.p](ctx, base, L.enc_q)
         rs_encode[Self.p](ctx, base, L.enc_q, L.tables)
         merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)

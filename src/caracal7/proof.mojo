@@ -80,13 +80,15 @@ struct Shape(Writable):
     var columns_w: Int          # witness tree
     var columns_q: Int          # quotient tree, 3 e coordinate columns
     var points: Int             # P opening points
+    var entries: Int            # family table entries (residual.mojo)
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
-    def __init__[p: Params](out self, columns_w: Int, points: Int) raises:
+    def __init__[p: Params](out self, columns_w: Int, points: Int, entries: Int) raises:
         self.columns_w = columns_w
         self.columns_q = 3 * p.e
         self.points = points
+        self.entries = entries
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
@@ -110,9 +112,10 @@ struct Shape(Writable):
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
-def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8]) -> List[UInt8]:
+def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8], families: List[UInt8]) -> List[UInt8]:
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
-    level, shape, public inputs. Prover and verifier build the same bytes."""
+    level, shape, public inputs, and the family table (the compiled statement of statement-layer 2,
+    which the residual is evaluated against). Prover and verifier build the same bytes."""
     var w = _U32Writer()
     w.u32(Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
@@ -128,6 +131,8 @@ def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8]) -> List[UI
     w.u32(shape.clear_length)
     w.u32(len(public_inputs))
     w.bytes.extend(public_inputs.copy())
+    w.u32(len(families))
+    w.bytes.extend(families.copy())
     return w.bytes.copy()
 
 

@@ -107,6 +107,7 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 src/caracal7/
   params.mojo       Params, derived constants
   field.mojo        F, F2, F4, E
+  backend.mojo      Backend, tile_mac, the F2 GEMM skeleton and its operand loaders (section 9)
   tables.mojo       generators, twiddle tables (host, setup)
   arena.mojo        the one device allocation (rule 6)
   encode.mojo       idft2, to_stored, pack, rs_encode
@@ -167,7 +168,7 @@ struct Backend:
 
 **Rule.** No kernel contains `is_apple_gpu()` or `is_nvidia_gpu()` directly. All dispatch goes through `Backend`. A kernel that needs something the struct does not carry adds a field to the struct.
 
-Verified 2026-09-04: there is no single MMA surface. NVIDIA and AMD go through `layout.TensorCore`; Apple M5 goes through `linalg.arch.apple.mma.MmaOpApple`; the M1 has neither. `tile_mac` wraps all three plus the SIMD-lane path.
+Materialized 2026-09-04 in `backend.mojo`: `Backend`, `tile_mac` (SIMD lanes, `mma_k = 1`) and the F2 GEMM skeleton `gemm_f2`; the residual stage is written on it, the plain GEMM shares the tile op. Verified 2026-09-04: there is no single MMA surface. NVIDIA and AMD go through `layout.TensorCore`; Apple M5 goes through `linalg.arch.apple.mma.MmaOpApple`; the M1 has neither. `tile_mac` wraps all three plus the SIMD-lane path.
 
 ## 10. Open
 

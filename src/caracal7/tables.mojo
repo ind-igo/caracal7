@@ -11,7 +11,7 @@ Leaf s of the level-1 code is the point g^s, s in [L0).
 
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import F2, F4, f_add, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
+from caracal7.field import F2, F4, f_add, f_sub, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
 from caracal7.params import Params
 
 comptime F2_ORDER = 16128            # |F2*| = 127^2 - 1
@@ -109,10 +109,13 @@ struct TableLayout(TrivialRegisterPassable):
     var g2p: Int        # (2 h2, 2)
     var wfwd1: Int      # (2 h1, h1, 2) g1^(j k): coefficient k -> point j
     var wfwd2: Int      # (2 h2, h2, 2)
-    var s1ext: Int      # (h1, h1, 2)   S1 on the coset from S1 on H1: (1/h1) sum_k g1^((2t + 1 - 2s) k)
+    var q1m: Int        # (h1, 2 h1, 2) Q1 on the coset from R on G1: 63 at j = 2t + 1, 64 * (1/h1) sum_k g1^((2t + 1 - 2s) k) at j = 2s
+    var q2m: Int        # (h1, h1, 2)   63 * winv1: Q2 = S1 / (-2) on H1, coefficients from values
     var qinv1: Int      # (h1, h1, 2)   coset values t -> coefficient k: g1^-k h1^-1 omega1^(-t k)
     var ginv2: Int      # (2 h2, 2 h2, 2) G2 values j -> coefficient k: (2 h2)^-1 g2^(-j k)
     var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
+    var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
+    var gate2: Int      # (2 h2, 2)     g2^j - e2
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
@@ -133,11 +136,18 @@ struct TableLayout(TrivialRegisterPassable):
         self.g2p = off; off += 2 * p.h2() * 2
         self.wfwd1 = off; off += 2 * p.h1() * p.h1() * 2
         self.wfwd2 = off; off += 2 * p.h2() * p.h2() * 2
-        self.s1ext = off; off += p.h1() * p.h1() * 2
+        self.q1m = off; off += p.h1() * 2 * p.h1() * 2
+        self.q2m = off; off += p.h1() * p.h1() * 2
         self.qinv1 = off; off += p.h1() * p.h1() * 2
         self.ginv2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
         self.qinv2 = off; off += p.h2() * p.h2() * 2
+        self.gate1 = off; off += 2 * p.h1() * 2
+        self.gate2 = off; off += 2 * p.h2() * 2
         self.bytes = off
+
+
+def _get(h: HostBuffer[DType.uint8], off: Int) -> F2:
+    return F2(h[off], h[off + 1])
 
 
 def _put[w: SIMDLength](h: HostBuffer[DType.uint8], off: Int, v: SIMD[DType.uint8, w]):
@@ -219,13 +229,25 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
             _put(h, t.wfwd2 + (j * h2 + k) * 2, ext_pow[1](d.g2, (j * k) % (2 * h2)))
         for k in range(2 * h2):
             _put(h, t.ginv2 + (j * 2 * h2 + k) * 2, f_mul(ext_pow[1](g2_inv, (j * k) % (2 * h2)), inv_2h2))
+    var e1 = ext_pow[1](d.omega1, h1 - 1)
+    var e2 = ext_pow[1](d.omega2, h2 - 1)
+    for j in range(2 * h1):
+        _put(h, t.gate1 + j * 2, f_sub(ext_pow[1](d.g1, j), e1))
+    for j in range(2 * h2):
+        _put(h, t.gate2 + j * 2, f_sub(ext_pow[1](d.g2, j), e2))
+    for i in range(h1 * 2 * h1 * 2):
+        h[t.q1m + i] = 0
     for tt in range(h1):
+        # Q1(g1^(2t+1)) = (R - S1) / (-2), S1 the axis-1 interpolant of R on H1: one row over all of G1
+        _put(h, t.q1m + (tt * 2 * h1 + 2 * tt + 1) * 2, F2(63, 0))
         for s in range(h1):
             var acc = F2(0)
             for k in range(h1):
                 acc = f_add(acc, ext_pow[1](d.g1, ((2 * (tt - s) + 1) * k) % (2 * h1)))
-            _put(h, t.s1ext + (tt * h1 + s) * 2, f_mul(acc, inv_h1))
+            _put(h, t.q1m + (tt * 2 * h1 + 2 * s) * 2, f_mul(f_mul(acc, inv_h1), F2(64)))
         for k in range(h1):
+            var wi = _get(h, t.winv1 + (k * h1 + tt) * 2)
+            _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))
             var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                       # g1^-k / h1
             _put(h, t.qinv1 + (k * h1 + tt) * 2, ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1))))
     for tt in range(h2):
