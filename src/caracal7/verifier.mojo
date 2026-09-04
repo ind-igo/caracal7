@@ -7,28 +7,12 @@ Every step is a host function over proof bytes and a host `H: Hash`; none of the
 from caracal7.params import Params
 from caracal7.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION
-
-
-struct HostTranscript[H: Hash]:
-    """Host mirror of transcript.mojo: same separators, same serialization, same squeeze."""
-    var state: List[UInt8]
-
-    def __init__(out self):
-        self.state = List[UInt8](length=Self.H.DIGEST, fill=0)
-
-    def absorb(mut self, ds: UInt8, msg: List[UInt8]) raises:
-        raise Error("not implemented: HostTranscript.absorb")
-
-    def elements(mut self, count: Int) raises -> List[UInt8]:
-        raise Error("not implemented: HostTranscript.elements")
-
-    def positions(mut self, count: Int, below: Int) raises -> List[Int]:
-        raise Error("not implemented: HostTranscript.positions")
+from caracal7.transcript import HostTranscript, DS_TREE_W
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8]) raises -> Bool:
     var r = ProofReader(proof_bytes^)
-    var t = HostTranscript[H]()
+    var t = HostTranscript[p, H]()
 
     # step 1: header, prefix, W root, stage-1 challenges
     if r.u32() != Int(VERSION):

@@ -57,7 +57,7 @@ def test_prove_stops_at_first_missing_stage() raises:
         _ = prover.prove(ctx, List[UInt8]())
     except e:
         stopped = String(e)
-    assert_equal(stopped, "not implemented: transcript.absorb")
+    assert_equal(stopped, "not implemented: merkle")
 
 
 def test_verify_stops_at_first_missing_step() raises:
