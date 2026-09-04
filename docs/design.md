@@ -9,6 +9,7 @@ Spec: `wiki/projects/caracal7/specs/caracal-prover.md` (main), `statement-layer.
 3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant.
 4. **No copies between stages.** Unified memory on M1 makes host and device views of one buffer cheap. A stage writes its output where the next stage reads it. There are no host reads between barriers: challenges are derived on device from the device-resident transcript, and kernels read them from device memory.
 5. **Scalar reference in the test, never a CPU prover.** Each kernel's test runs a few lines of scalar Mojo on a small size and compares. The reference does not grow into a second implementation.
+6. **Allocate once, at setup.** One device arena per prover instance, sized from `Params` and the IR program; every buffer of section 3 is an offset into it, assigned by a bump pointer at setup. Fixed ceilings for columns per tree, P, tail levels, and queries size the arena. No allocation after setup, and the arena is reused across proofs with the same profile. The proof output and host staging buffers follow the same rule. Threadgroup memory and register tiles are static per kernel already.
 
 ## 2. Parameters
 
