@@ -184,6 +184,19 @@ def pack_slot[p: Params](i: Int, j: Int) -> Int:
     return t + 2 * (x1p + H1 * (j + 4 * x2h + (1 << p.a2) * r))
 
 
+@always_inline
+def pack_index[p: Params](slot: Int) -> Tuple[Int, Int]:
+    """The inverse of pack_slot: slot -> (i, j)."""
+    comptime H1 = 1 << (p.a1 - 1)
+    var t = slot & 1
+    var rest = slot >> 1
+    var x1p = rest % H1
+    rest //= H1
+    var x2 = rest % (1 << p.a2)
+    var r = rest // (1 << p.a2)
+    return (t + 2 * (x1p + H1 * ((x2 >> 2) + (1 << (p.a2 - 2)) * r)), x2 & 3)
+
+
 def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed: Int64, columns: Int32):
     comptime N = p.N()
     var gid = _gid()

@@ -3,16 +3,13 @@ spec section 10 in order on one stream. One synchronize at the end reads the pro
 
 Milestone 1: W tree and Q tree on synthetic columns, residual and quotient on synthetic families,
 openings at P points, the tail, and the clear vector. No Z tree (milestone 2), no frontend.
-
-A stage that does not exist yet raises "not implemented: <kernel>" at the point where it would be
-enqueued. Nothing fakes an output; the first end-to-end proof appears when the last raise is gone.
 """
 
 from max.gpu.host import DeviceContext
 
 from caracal7.params import Params
 from caracal7.arena import Arena, Bump
-from caracal7.tables import Domains, TableLayout, build_tables
+from caracal7.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
 from caracal7.encode import EncLayout, encode
 from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND, DS_CLEAR
@@ -21,26 +18,37 @@ from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT
 from caracal7.open import build_queries, open, fold
-from caracal7.tail import tail_encode, expected_symbols, tail_materialize, tail_round, tail_fold
+from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, expected_symbols
+from caracal7.tail import tail_materialize, tail_round, tail_fold
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
 
 struct TailLayout(TrivialRegisterPassable):
     """Arena offsets of one committed tail level (spec 9.3), all E-valued."""
-    var y: Int          # (slot, e)          message y_l
+    var y: Int          # (rows, e)          the folded message y_{l+1} = Mat(y_l) r_bar
+    var running: Int    # (rows, e)          the folded query, the next level's running claim
+    var etmp: Int       # (L0, 32, 4)        encoder scratch
     var code: Int       # (s, 8, e)          leaf-major codeword rows
     var tree: Int       # (node, 32)
     var v: Int          # expected symbols for the previous level
-    var w_tilde: Int    # (slot, e)          batched query
+    var w_tilde: Int    # (slot, e)          batched query on y_l
     var rounds: Int     # (3, 3, e)          sumcheck messages
+    var rs: RsTables    # this level's RS domain tables
+    var dom: Int        # DOM_BYTES          this level's domain (tail.domain_bytes)
 
     def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel, v_count: Int):
-        self.y = bump.alloc(lvl.length * p.e)
+        var L0 = lvl.L // lvl.cosets
+        self.y = bump.alloc(lvl.rows * p.e)
+        self.running = bump.alloc(lvl.rows * p.e)
+        self.etmp = bump.alloc(L0 * 32 * 4)
         self.code = bump.alloc(lvl.L * 8 * p.e)
         self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST)
         self.v = bump.alloc(v_count * p.e)
         self.w_tilde = bump.alloc(lvl.length * p.e)
         self.rounds = bump.alloc(9 * p.e)
+        self.rs = RsTables(bump.alloc(0), L0, lvl.cosets, lvl.rows)
+        _ = bump.alloc(self.rs.bytes)
+        self.dom = bump.alloc(DOM_BYTES)
 
 
 struct ProverLayout:
@@ -60,6 +68,10 @@ struct ProverLayout:
     var w_z: Int                    # (P, slot, e)          evaluation queries
     var openings: Int               # (P, column, e)
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message
+    var running0: Int               # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
+    var dom1: Int                   # DOM_BYTES             the level-1 domain
+    var pts: Int                    # (max queries, 4)      leaf points of the opened positions
+    var partial: Int                # (ROUND_THREADS, 3, e) sumcheck partial sums
     var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
     var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
     # challenges, one region each so nothing is overwritten before its consumer runs
@@ -92,6 +104,8 @@ struct ProverLayout:
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
         self.fold_y = bump.alloc(N * p.e)
+        self.running0 = bump.alloc(N * p.e)
+        self.dom1 = bump.alloc(DOM_BYTES)
         var stage = max(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()),
                         multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries()))
         var max_queries = p.queries()
@@ -106,6 +120,8 @@ struct ProverLayout:
         self.z = bump.alloc(2 * p.e)
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
         self.positions = bump.alloc(max_queries * 4)
+        self.pts = bump.alloc(max_queries * 4)
+        self.partial = bump.alloc(ROUND_THREADS * 3 * p.e)
         self.batch = bump.alloc((max_v + 1) * p.e)
         self.r = bump.alloc(3 * p.e)
         self.tail = List[TailLayout]()
@@ -142,6 +158,12 @@ struct Prover[p: Params, H: Hash]:
             ph[i] = pts[i]
         self.arena.upload(ctx, self.layout.families, fh)
         self.arena.upload(ctx, self.layout.shifts, ph)
+        _upload(ctx, self.arena, self.layout.dom1, domain_bytes(self.domains.level1))
+        for i in range(len(self.shape.tail)):
+            var lvl = self.shape.tail[i]
+            var dom = RsDomain(lvl.L // lvl.cosets, lvl.cosets)
+            self.arena.upload(ctx, self.layout.tail[i].rs.base, build_rs_tables(ctx, self.layout.tail[i].rs, dom, lvl.rows))
+            _upload(ctx, self.arena, self.layout.tail[i].dom, domain_bytes(dom))
 
     def prove(mut self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
@@ -202,27 +224,36 @@ struct Prover[p: Params, H: Hash]:
         # 13. tail: each committed level opens the previous one
         var y = L.fold_y
         var y_len = N
+        var running = L.running0
+        if len(S.tail) > 0:
+            running0[Self.p](ctx, base, L.w_z, L.beta_gamma + S.columns() * e, S.points, L.running0)
         for i in range(len(S.tail)):
             var lvl = S.tail[i]
             var tl = L.tail[i]
-            tail_encode[Self.p](ctx, base, y, lvl.rows, lvl.L, tl.code)
+            tail_encode(ctx, base, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs)
             merkle[Self.p, Self.H](ctx, base, tl.code, 8 * e, lvl.L, tl.tree)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             self._open_previous(ctx, i, T, proof)
-            expected_symbols[Self.p](ctx, base, y, L.positions, self._prev_queries(i), tl.v)
+            var count = self._prev_queries(i)
+            var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
+            var prev_L0 = Self.p.L0 if i == 0 else S.tail[i - 1].L // S.tail[i - 1].cosets
+            points(ctx, base, L.positions, count, prev_dom, prev_L0, L.pts)
+            expected_symbols[Self.p](ctx, base, i == 0, y, y_len, L.pts, count, tl.v)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
             proof.stage(self.arena, tl.v, self._v_count(i) * e)
             squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
-            tail_materialize[Self.p](ctx, base, y_len, L.batch, tl.w_tilde)
+            tail_materialize[Self.p](ctx, base, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
             for d in range(3):
-                tail_round[Self.p](ctx, base, tl.w_tilde, y, y_len, d, tl.rounds + d * 3 * e)
+                tail_round(ctx, base, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)
                 absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
                 squeeze_elements[Self.p, Self.H](ctx, base, T, L.r + d * e, 1)          # r_d
             proof.stage(self.arena, tl.rounds, 9 * e)
-            tail_fold[Self.p](ctx, base, y, lvl.rows, L.r, tl.y)
+            tail_fold(ctx, base, y, lvl.rows, L.r, tl.y)
+            tail_fold(ctx, base, tl.w_tilde, lvl.rows, L.r, tl.running)
             y = tl.y
             y_len = lvl.rows
+            running = tl.running
 
         # last: the clear vector, then open the last committed level
         absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * e)
@@ -256,6 +287,14 @@ struct Prover[p: Params, H: Hash]:
             var bound = query_gather[Self.p, Self.H](ctx, base, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
                                                      L.positions, lvl.queries, L.proof_stage)
             proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+
+
+def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: List[UInt8]) raises:
+    var h = ctx.enqueue_create_host_buffer[DType.uint8](len(l))
+    ctx.synchronize()
+    for i in range(len(l)):
+        h[i] = l[i]
+    arena.upload(ctx, off, h)
 
 
 def load_trace[p: Params, H: Hash](ctx: DeviceContext, prover: Prover[p, H], trace: List[UInt8]) raises:

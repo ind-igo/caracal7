@@ -2,6 +2,7 @@
 stage that does not exist, in spec order."""
 
 from std.testing import assert_equal, assert_true, TestSuite
+from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from caracal7.params import REFERENCE, Params
@@ -97,6 +98,39 @@ def test_prove_and_verify() raises:
         except e:
             stopped = String(e)
         assert_equal(stopped, tamper[1])
+
+
+def test_prove_and_verify_with_tail() raises:
+    """288 x 128: two committed tail levels (4608 rows on 161280, 576 rows on 4 x 4608), 576 in the clear."""
+    comptime big = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
+                          tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+    var ctx = DeviceContext()
+    var f = synthetic_families()
+    var shape = Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes)
+    assert_equal(len(shape.tail), 2)
+    var prover = Prover[big, Blake3](ctx, Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    load_trace[big, Blake3](ctx, prover, synthetic_trace[big](1))
+    var t0 = perf_counter_ns()
+    var proof = prover.prove(ctx, List[UInt8]())
+    var t1 = perf_counter_ns()
+    assert_true(verify[big, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
+    var t2 = perf_counter_ns()
+    print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
+          " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
+    # a flipped byte in the first level's sumcheck messages: after its root, the two level-1 multiproofs and v
+    var pos = 8 + 64 + shape.points * shape.columns() * big.e + 32
+    for _ in range(2):
+        var n = Int(proof[pos]) | Int(proof[pos + 1]) << 8 | Int(proof[pos + 2]) << 16 | Int(proof[pos + 3]) << 24
+        pos += 4 + n
+    pos += 4 * big.queries() * big.e
+    var bad = proof.copy()
+    bad[pos + 3] ^= 1
+    var stopped = String("")
+    try:
+        _ = verify[big, Blake3](bad^, shape, List[UInt8](), f.bytes)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "sumcheck fails at a tail level")
 
 
 def main() raises:
