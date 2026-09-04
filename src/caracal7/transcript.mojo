@@ -29,15 +29,12 @@ comptime _SCRATCH = 72
 
 
 struct TranscriptLayout(TrivialRegisterPassable):
-    """Arena offsets: the hash state and one challenge buffer sized for the largest squeeze."""
+    """Arena offset of the hash state. Challenges are squeezed into caller-owned regions, one per
+    challenge of the schedule, so nothing is overwritten before the kernel that reads it runs."""
     var state: Int
-    var challenges: Int
-    var challenge_bytes: Int
 
-    def __init__(out self, mut bump: Bump, challenge_bytes: Int):
+    def __init__(out self, mut bump: Bump):
         self.state = bump.alloc(STATE_BYTES)
-        self.challenges = bump.alloc(challenge_bytes)
-        self.challenge_bytes = challenge_bytes
 
 
 def _get_counter(state: Pointer[UInt8, MutAnyOrigin]) -> Int:
@@ -89,12 +86,22 @@ def sample[H: Hash](state: Pointer[UInt8, MutAnyOrigin], dst: Pointer[UInt8, Mut
     _set_counter(state, counter)
 
 
+def k_reset(base: Pointer[UInt8, MutAnyOrigin], state: Int64):
+    comptime for i in range(STATE_BYTES):
+        base[unsafe_offset=Int(state) + i] = 0
+
+
 def k_absorb[H: Hash](base: Pointer[UInt8, MutAnyOrigin], state: Int64, ds: UInt8, src: Int64, bytes: Int32):
     absorb_into[H](base.unsafe_offset(Int(state)), ds, base.unsafe_offset(Int(src)), Int(bytes))
 
 
 def k_sample[H: Hash](base: Pointer[UInt8, MutAnyOrigin], state: Int64, dst: Int64, count: Int32, below: Int32):
     sample[H](base.unsafe_offset(Int(state)), base.unsafe_offset(Int(dst)), Int(count), Int(below))
+
+
+def reset(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout) raises:
+    """Zero the state: every proof starts from the same transcript as the verifier."""
+    ctx.enqueue_function[k_reset](base, Int64(t.state), grid_dim=1, block_dim=1)
 
 
 def absorb[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
@@ -104,20 +111,16 @@ def absorb[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOr
 
 
 def squeeze_elements[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
-                                         count: Int) raises:
-    """Write `count` E elements (e bytes each) to t.challenges."""
-    if count * p.e > t.challenge_bytes:
-        raise Error("challenge buffer too small")
-    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(t.challenges), Int32(count * p.e), Int32(0),
+                                         dst: Int, count: Int) raises:
+    """Write `count` E elements (e bytes each) to arena offset `dst`."""
+    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(dst), Int32(count * p.e), Int32(0),
                                       grid_dim=1, block_dim=1)
 
 
 def squeeze_positions[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
-                                          count: Int, below: Int) raises:
-    """Write `count` uniform positions below `below` (u32 each) to t.challenges."""
-    if count * 4 > t.challenge_bytes:
-        raise Error("challenge buffer too small")
-    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(t.challenges), Int32(count), Int32(below),
+                                          dst: Int, count: Int, below: Int) raises:
+    """Write `count` uniform positions below `below` (u32 each) to arena offset `dst`."""
+    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(dst), Int32(count), Int32(below),
                                       grid_dim=1, block_dim=1)
 
 

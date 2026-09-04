@@ -64,5 +64,15 @@ def test_absorb_is_keyed_hash() raises:
     assert_equal(_hex(key), "2ea26063087b8022ad6417194c7f35f75c3baa86f93326c5df51bbb841d1552f")
 
 
+def test_squeeze_is_keyed_hash_of_counter() raises:
+    # blake3_keyed(key = bytes 0..31, message = LE64(0))
+    var key = List[UInt8](capacity=32)
+    for i in range(32):
+        key.append(UInt8(i))
+    var out = List[UInt8](length=32, fill=0)
+    Blake3.squeeze(_ptr(key), 0, _ptr(out))
+    assert_equal(_hex(out), "782c6ee8963e660954892cf37288ab697922f0fe3744dfa8b08162ac6438e8c1")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

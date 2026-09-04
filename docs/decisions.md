@@ -89,3 +89,15 @@ buffers and their RS intermediates (4 x 80640 x 4 bytes per column).
 - Multiproof: `[u32 bytes][rows at the sorted distinct positions][sibling frontier]`, the frontier walked level by level in ascending order, each sibling once. One thread walks the frontier (positions stay in registers, at most 1024 queries), then a thread block per row copies the opened rows. The exact byte count lives on the device; the host reads back the bound and trims by the header, so no challenge ever reaches the host.
 - `check_multiproof` in merkle.mojo is the verifier side, written next to the kernel that produces the bytes.
 - Measured: 80640 leaves x 404 B in 6.7 ms (4.9 GB/s) on the M1, byte-at-a-time loads. ponytail: word loads in `_hash` when the tree shows up next to the encoder in the profile.
+
+## Audit fixes (skeleton orchestration)
+
+Two independent reviews of everything through the Merkle commit found the kernels and math sound and the host skeleton wrong in the ways a skeleton is: one challenge buffer overwritten before its readers ran, `positions` never written, one multiproof region reused without a read-back, the Q tree encoded from an unfilled `packed`, the transcript state never zeroed, no `alpha`, and a prefix that hashed twiddle tables instead of the parameters and public inputs. Fixed as follows.
+
+- **One arena region per challenge** (`stage1`, `z`, `beta_gamma`, `positions`, `batch`, `r`), sized from `Shape`; every squeeze names its destination. Nothing is reused within a proof.
+- **Proof values are staged, not read back.** `ProofWriter.stage` enqueues an async copy out of the arena in stream order; `finish` synchronizes once and assembles. A multiproof region can be reused because the copy is queued before the next gather. `fixed_bytes` mirrors the writer exactly.
+- **Transcript prefix** is `prefix_bytes`: version, every `Params` field, derived query count and `n_cw`, the shape, the tail schedule per level, and the public inputs. Prover and verifier build the same bytes; the state is zeroed at the start of every proof.
+- **Milestone 1 has no Z tree**, so `alpha` is the fourth stage-1 challenge. When the Z tree lands, it moves back behind its own barrier.
+- **Tail schedule** tracks the remaining binary digits (the odd digit is never folded), uses `tail_digits`, and chooses the smallest `m * d >= 16 rows` with `d | 161280` and `m` in {1, 2, 4}. The spec's worked rows pick larger domains at rates 1/28 and 1/32 without stating the rule; smallest domain is the least encoder and tree work and is a one-line change if measurement or query count says otherwise.
+- `e` must be 16 (`field.mojo` fixes E). Blake3 chunk stack 24 deep (16 GiB). The GEMM lazy-reduction cadence asserts `BK | 128`.
+- Not done: the rate-driven `n_cw` split (milestone 2 with the proxy grid), and the `<w_z, stored(c)> = c(z)` test, which is the first test of the open stage.

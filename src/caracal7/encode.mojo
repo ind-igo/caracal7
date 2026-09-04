@@ -298,9 +298,14 @@ def to_packed[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     comptime k3 = k_to_stored[p]
     ctx.enqueue_function[k3](base, Int64(e.coeff), Int64(e.stored), Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2), cols,
                              grid_dim=grid(n_grid), block_dim=BLOCK)
+    pack[p](ctx, base, e)
+
+
+def pack[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout) raises:
+    """stored -> packed. Also the entry point of the quotient tree, which writes `stored` directly."""
     comptime k4 = k_pack[p]
-    ctx.enqueue_function[k4](base, Int64(e.stored), Int64(e.packed), cols,
-                             grid_dim=grid(n_grid // 4), block_dim=BLOCK)
+    ctx.enqueue_function[k4](base, Int64(e.stored), Int64(e.packed), Int32(e.columns),
+                             grid_dim=grid(e.columns * p.N() // 4), block_dim=BLOCK)
 
 
 def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:

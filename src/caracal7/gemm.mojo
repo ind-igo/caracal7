@@ -73,6 +73,7 @@ def gemm127_tiled[
 ):
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
     comptime assert M % T.BM == 0 and N % T.BN == 0 and K % T.BK == 0, "tile must divide the problem"
+    comptime assert REDUCE_EVERY % T.BK == 0, "the lazy reduction cadence needs BK | REDUCE_EVERY"
     comptime BM = T.BM
     comptime BN = T.BN
     comptime BK = T.BK
@@ -129,6 +130,7 @@ def gemm127_vec[
     """Operands are addressed through raw pointers with row-major strides K, N, N."""
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
     comptime assert M % T.BM == 0 and N % T.BN == 0 and K % T.BK == 0, "tile must divide the problem"
+    comptime assert REDUCE_EVERY % T.BK == 0, "the lazy reduction cadence needs BK | REDUCE_EVERY"
     comptime BM = T.BM
     comptime BN = T.BN
     comptime BK = T.BK

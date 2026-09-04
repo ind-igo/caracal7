@@ -16,45 +16,54 @@ Everything else has a size fixed by `Shape`, so the verifier can check the total
 """
 
 from std.math import log2
+from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
+from caracal7.arena import Arena
 
 comptime VERSION: UInt32 = 1
-comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain divides it
-comptime TAIL_FOLD = 8              # 2^tail_digits columns per tail matrix
-comptime TAIL_RATE_INV = 16         # rate rule of spec 9.5: L_l is the smallest divisor of 161280 >= 16 n_l
+comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
+comptime TAIL_RATE_INV = 16         # rate rule of spec 9.5: L_l is the smallest m * d >= 16 n_l, d | 161280, m in {1, 2, 4}
 
 
 @fieldwise_init
 struct TailLevel(TrivialRegisterPassable, Writable):
     var length: Int      # |y_l| in E elements
-    var rows: Int        # n_l = length / 8
-    var L: Int           # domain size
+    var rows: Int        # n_l = length / 2^tail_digits
+    var L: Int           # domain size, cosets * L0
+    var cosets: Int      # m: 1, 2, or 4
     var queries: Int     # |S_l|
 
     def write_to(self, mut w: Some[Writer]):
-        w.write("TailLevel(len=", self.length, ", rows=", self.rows, ", L=", self.L, ", q=", self.queries, ")")
+        w.write("TailLevel(len=", self.length, ", rows=", self.rows, ", L=", self.L, "=", self.cosets,
+                "x", self.L // self.cosets, ", q=", self.queries, ")")
 
 
 def tail_schedule[p: Params]() raises -> List[TailLevel]:
     """Committed tail levels l = 2 .. ell-1, derived from N and e (design section 2). The level after
-    the last entry is sent in the clear; with no entries, y_2 itself is the clear vector."""
+    the last entry is sent in the clear; with no entries, y_2 itself is the clear vector. A level folds
+    `tail_digits` binary digits, so the tail stops when fewer remain (the odd digit is never folded)."""
     var levels = List[TailLevel]()
     var length = p.N()
-    while length > p.tail_clear_max:
-        var rows = length // TAIL_FOLD
+    var digits = p.a1 + p.a2
+    while length > p.tail_clear_max and digits >= p.tail_digits:
+        var rows = length >> p.tail_digits
         var L = 0
-        for d in range(1, H4_ORDER + 1):
-            if H4_ORDER % d == 0 and d >= TAIL_RATE_INV * rows:
-                L = d
-                break
+        var cosets = 0
+        for m in [1, 2, 4]:
+            for d in range(1, H4_ORDER + 1):
+                if H4_ORDER % d == 0 and m * d >= TAIL_RATE_INV * rows and (L == 0 or m * d < L):
+                    L = m * d
+                    cosets = m
+                    break
         if L == 0:
             raise Error("tail level does not fit the F4 domain")
         # queries at the exact rate rows / L, same formula as level 1
         var rate = Float64(rows) / Float64(L)
         var queries = Int((Float64(p.lambda_bits) / _log2(2.0 / (1.0 + rate))).__ceil__())
-        levels.append(TailLevel(length=length, rows=rows, L=L, queries=queries))
+        levels.append(TailLevel(length=length, rows=rows, L=L, cosets=cosets, queries=queries))
         length = rows
+        digits -= p.tail_digits
     return levels^
 
 
@@ -81,14 +90,15 @@ struct Shape(Writable):
         return self.columns_w + self.columns_q
 
     def fixed_bytes[p: Params, digest: Int](self, public_bytes: Int) -> Int:
-        """Proof length without the length-prefixed multiproofs."""
-        var n = 4 + digest + 4 + public_bytes + digest + digest
+        """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
+        opened (two at level 1: W and Q). Mirrors ProofWriter's order exactly."""
+        var n = 4 + 4 + public_bytes + digest + digest
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
             var prev_queries = p.queries() if i == 0 else self.tail[i - 1].queries
             var v_count = 4 * p.n_cw() * prev_queries if i == 0 else prev_queries
-            n += digest + 4 + v_count * p.e + 9 * p.e
-        n += self.clear_length * p.e + 4
+            n += digest + (2 if i == 0 else 1) * 4 + v_count * p.e + 9 * p.e
+        n += self.clear_length * p.e + (2 if len(self.tail) == 0 else 1) * 4
         return n
 
     def write_to(self, mut w: Some[Writer]):
@@ -96,7 +106,28 @@ struct Shape(Writable):
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
-struct ProofWriter:
+def prefix_bytes[p: Params](shape: Shape, public_inputs: List[UInt8]) -> List[UInt8]:
+    """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
+    level, shape, public inputs. Prover and verifier build the same bytes."""
+    var w = _U32Writer()
+    w.u32(Int(VERSION))
+    for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
+              p.lambda_bits, p.queries(), p.n_cw()]:
+        w.u32(v)
+    w.u32(shape.columns_w)
+    w.u32(shape.columns_q)
+    w.u32(shape.points)
+    w.u32(len(shape.tail))
+    for lvl in shape.tail:
+        for v in [lvl.length, lvl.rows, lvl.L, lvl.cosets, lvl.queries]:
+            w.u32(v)
+    w.u32(shape.clear_length)
+    w.u32(len(public_inputs))
+    w.bytes.extend(public_inputs.copy())
+    return w.bytes.copy()
+
+
+struct _U32Writer:
     var bytes: List[UInt8]
 
     def __init__(out self):
@@ -106,12 +137,64 @@ struct ProofWriter:
         for i in range(4):
             self.bytes.append(UInt8((v >> (8 * i)) & 255))
 
-    def raw(mut self, src: List[UInt8]):
-        self.bytes.extend(src.copy())
 
-    def prefixed(mut self, src: List[UInt8]):
+struct ProofWriter:
+    """Collects the proof in order. Host values are copied in; device values are staged as async
+    copies out of the arena and assembled after the one synchronize at the end of `prove`, so the
+    prover never waits on a read-back mid-stream. A staged multiproof carries its byte count in its
+    first u32 (merkle.mojo) and is emitted length-prefixed and trimmed."""
+    var ctx: DeviceContext
+    var bufs: List[HostBuffer[DType.uint8]]
+    var multiproof: List[Bool]
+
+    def __init__(out self, ctx: DeviceContext):
+        self.ctx = ctx
+        self.bufs = List[HostBuffer[DType.uint8]]()
+        self.multiproof = List[Bool]()
+
+    def raw(mut self, src: List[UInt8]) raises:
+        if len(src) == 0:
+            return
+        var h = self.ctx.enqueue_create_host_buffer[DType.uint8](len(src))
+        self.ctx.synchronize()
+        for i in range(len(src)):
+            h[i] = src[i]
+        self.bufs.append(h^)
+        self.multiproof.append(False)
+
+    def u32(mut self, v: Int) raises:
+        var w = _U32Writer()
+        w.u32(v)
+        self.raw(w.bytes)
+
+    def prefixed(mut self, src: List[UInt8]) raises:
         self.u32(len(src))
         self.raw(src)
+
+    def stage(mut self, arena: Arena, off: Int, bytes: Int, multiproof: Bool = False) raises:
+        var h = self.ctx.enqueue_create_host_buffer[DType.uint8](bytes)
+        arena.download(self.ctx, off, h)
+        self.bufs.append(h^)
+        self.multiproof.append(multiproof)
+
+    def finish(mut self) raises -> List[UInt8]:
+        self.ctx.synchronize()
+        var out = List[UInt8]()
+        for i in range(len(self.bufs)):
+            ref h = self.bufs[i]
+            var start = 0
+            var stop = len(h)
+            if self.multiproof[i]:
+                stop = Int(h[0]) | Int(h[1]) << 8 | Int(h[2]) << 16 | Int(h[3]) << 24
+                if stop < 4 or stop > len(h):
+                    raise Error("multiproof header out of range")
+                start = 4
+                var w = _U32Writer()
+                w.u32(stop - 4)
+                out.extend(w.bytes.copy())
+            for j in range(start, stop):
+                out.append(h[j])
+        return out^
 
 
 struct ProofReader:

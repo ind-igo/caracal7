@@ -193,3 +193,29 @@ def ext_embed[k: Int, w: SIMDLength](a: SIMD[DType.uint8, w]) -> SIMD[DType.uint
     comptime for t in range(w):
         r[t] = a[t]
     return r
+
+
+# ---- E x F2 wide MAC (residual stage): E over F2 has coordinates (2k, 2k+1) = (u, v) of one F2 slot ----
+comptime E_MAC_MAX = 64      # 64 * 2 * 126^2 < WIDE_BIAS
+
+
+def e_mac_f2_wide(mut ev: SIMD[DType.int32, 8], mut od: SIMD[DType.int32, 8], a: E, b: F2):
+    """(ev, od) += a * b with a in E (even lanes u, odd lanes v) and b = b0 + b1 i in F2."""
+    var ae: SIMD[DType.uint8, 8]
+    var ao: SIMD[DType.uint8, 8]
+    ae, ao = a.deinterleave()
+    var ae32 = ae.cast[DType.int32]()
+    var ao32 = ao.cast[DType.int32]()
+    var b0 = Int32(b[0])
+    var b1 = Int32(b[1])
+    ev += ae32 * b0 - ao32 * b1
+    od += ae32 * b1 + ao32 * b0
+
+
+def e_wide_reduce(mut ev: SIMD[DType.int32, 8], mut od: SIMD[DType.int32, 8]) -> E:
+    """Reduce the two lane sets to F and interleave back to E; the accumulators restart from the result."""
+    var re = f_reduce_signed(ev)
+    var ro = f_reduce_signed(od)
+    ev = re.cast[DType.int32]()
+    od = ro.cast[DType.int32]()
+    return re.interleave(ro)

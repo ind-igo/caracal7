@@ -90,6 +90,14 @@ def test_tree_and_multiproof() raises:
     with assert_raises(contains="root mismatch"):
         _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, proof)
     proof[len(proof) - 1] ^= 1
+    var short = proof.copy()
+    _ = short.pop()
+    with assert_raises(contains="truncated"):
+        _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, short)
+    var long = proof.copy()
+    long.append(0)
+    with assert_raises(contains="trailing"):
+        _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, long)
     proof[3] ^= 1
     with assert_raises(contains="root mismatch"):
         _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, proof)

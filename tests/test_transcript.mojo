@@ -6,7 +6,7 @@ from max.gpu.host import DeviceContext
 from caracal7.params import REFERENCE
 from caracal7.hash import Blake3
 from caracal7.arena import Arena, Bump
-from caracal7.transcript import TranscriptLayout, HostTranscript, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
+from caracal7.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
 
 comptime p = REFERENCE
 comptime MSG = 3000
@@ -28,39 +28,37 @@ def _download(ctx: DeviceContext, arena: Arena, off: Int, n: Int) raises -> List
 def test_device_matches_host() raises:
     var ctx = DeviceContext()
     var bump = Bump()
-    var t = TranscriptLayout(bump, max(ELEMS * p.e, POS * 4))
+    var t = TranscriptLayout(bump)
+    var chal = bump.alloc(max(ELEMS * p.e, POS * 4))
     var msg_off = bump.alloc(MSG)
     var arena = Arena(ctx, bump.used)
-    var zero = ctx.enqueue_create_host_buffer[DType.uint8](bump.used)
     var mh = ctx.enqueue_create_host_buffer[DType.uint8](MSG)
     ctx.synchronize()
     var msg = List[UInt8](capacity=MSG)
-    for i in range(bump.used):
-        zero[i] = 0
     for i in range(MSG):
         mh[i] = UInt8((i * 31 + 7) % 251)
         msg.append(mh[i])
-    arena.upload(ctx, 0, zero)
     arena.upload(ctx, msg_off, mh)
 
     var host = HostTranscript[p, Blake3]()
+    reset(ctx, arena.base(), t)
     absorb[p, Blake3](ctx, arena.base(), t, DS_PREFIX, msg_off, MSG)
     host.absorb(DS_PREFIX, msg)
-    squeeze_elements[p, Blake3](ctx, arena.base(), t, ELEMS)
+    squeeze_elements[p, Blake3](ctx, arena.base(), t, chal, ELEMS)
     var want_e = host.elements(ELEMS)
-    var got_e = _download(ctx, arena, t.challenges, ELEMS * p.e)
+    var got_e = _download(ctx, arena, chal, ELEMS * p.e)
     assert_equal(got_e, want_e)
     for b in got_e:
         assert_true(b < 127)
 
-    absorb[p, Blake3](ctx, arena.base(), t, DS_TREE_W, t.challenges, 32)   # absorb the first 32 challenge bytes
+    absorb[p, Blake3](ctx, arena.base(), t, DS_TREE_W, chal, 32)   # absorb the first 32 challenge bytes
     var first = List[UInt8](capacity=32)
     for i in range(32):
         first.append(got_e[i])
     host.absorb(DS_TREE_W, first)
-    squeeze_positions[p, Blake3](ctx, arena.base(), t, POS, BELOW)
+    squeeze_positions[p, Blake3](ctx, arena.base(), t, chal, POS, BELOW)
     var want_p = host.positions(POS, BELOW)
-    var got = _download(ctx, arena, t.challenges, POS * 4)
+    var got = _download(ctx, arena, chal, POS * 4)
     var distinct = 0
     for i in range(POS):
         var v = Int(got[4 * i]) | Int(got[4 * i + 1]) << 8 | Int(got[4 * i + 2]) << 16 | Int(got[4 * i + 3]) << 24
@@ -69,6 +67,12 @@ def test_device_matches_host() raises:
         if i > 0 and v != want_p[i - 1]:
             distinct += 1
     assert_true(distinct > POS // 2)
+
+    # a second proof starts from the same state: reset, absorb, squeeze again equals the first run
+    reset(ctx, arena.base(), t)
+    absorb[p, Blake3](ctx, arena.base(), t, DS_PREFIX, msg_off, MSG)
+    squeeze_elements[p, Blake3](ctx, arena.base(), t, chal, ELEMS)
+    assert_equal(_download(ctx, arena, chal, ELEMS * p.e), want_e)
 
 
 def test_state_depends_on_separator() raises:

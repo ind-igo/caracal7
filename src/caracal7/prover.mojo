@@ -13,17 +13,17 @@ from max.gpu.host import DeviceContext
 from caracal7.params import Params
 from caracal7.arena import Arena, Bump
 from caracal7.tables import Domains, TableLayout, build_tables
-from caracal7.encode import EncLayout, encode, rs_encode
-from caracal7.transcript import TranscriptLayout, absorb, squeeze_elements, squeeze_positions
+from caracal7.encode import EncLayout, encode, pack, rs_encode
+from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND, DS_CLEAR
-from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION
+from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient
 from caracal7.open import build_queries, open, fold
 from caracal7.tail import tail_encode, expected_symbols, tail_materialize, tail_round, tail_fold
 
-
+comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
 
 struct TailLayout(TrivialRegisterPassable):
     """Arena offsets of one committed tail level (spec 9.3), all E-valued."""
@@ -57,8 +57,15 @@ struct ProverLayout:
     var w_z: Int                    # (P, slot, e)          evaluation queries
     var openings: Int               # (P, column, e)
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message
-    var positions: Int              # (queries, u32)        S_1
-    var proof_stage: Int            # gathered rows and siblings, read back as proof bytes
+    var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
+    var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
+    # challenges, one region each so nothing is overwritten before its consumer runs
+    var stage1: Int                 # (4, e)                beta_1, delta, gamma, alpha
+    var z: Int                      # (2, e)
+    var beta_gamma: Int             # (columns + P, e)      beta per column, gamma per point
+    var positions: Int              # (max queries, u32)    S of the level being opened
+    var batch: Int                  # (max v_count + 1, e)  tail batching scalars
+    var r: Int                      # (3, e)                sumcheck round challenges of the current level
     var tail: List[TailLayout]
     var bytes: Int
 
@@ -68,8 +75,7 @@ struct ProverLayout:
         var bump = Bump()
         self.tables = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(self.tables.bytes)
-        var largest = max(shape.columns() * p.e, p.queries() * 4)
-        self.transcript = TranscriptLayout(bump, largest)
+        self.transcript = TranscriptLayout(bump)
         self.enc_w = EncLayout.__init__[p](bump, shape.columns_w)
         self.enc_q = EncLayout.__init__[p](bump, shape.columns_q)
         self.tree_w = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
@@ -80,8 +86,22 @@ struct ProverLayout:
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
         self.fold_y = bump.alloc(N * p.e)
-        self.positions = bump.alloc(p.queries() * 4)
-        self.proof_stage = bump.alloc(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()))
+        var stage = max(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()),
+                        multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries()))
+        var max_queries = p.queries()
+        var max_v = 4 * p.n_cw() * p.queries()
+        for lvl in shape.tail:
+            stage = max(stage, multiproof_region[H](8 * p.e, lvl.L, lvl.queries))
+            max_queries = max(max_queries, lvl.queries)
+            max_v = max(max_v, lvl.queries)
+        self.proof_stage = bump.alloc(stage)
+        self.prefix = bump.alloc(PREFIX_MAX)
+        self.stage1 = bump.alloc(4 * p.e)
+        self.z = bump.alloc(2 * p.e)
+        self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
+        self.positions = bump.alloc(max_queries * 4)
+        self.batch = bump.alloc((max_v + 1) * p.e)
+        self.r = bump.alloc(3 * p.e)
         self.tail = List[TailLayout]()
         for i in range(len(shape.tail)):
             var prev_q = p.queries() if i == 0 else shape.tail[i - 1].queries
@@ -105,45 +125,60 @@ struct Prover[p: Params, H: Hash]:
 
     def prove(self, ctx: DeviceContext, public_inputs: List[UInt8]) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
-        Every call is an enqueue; the only host reads are the proof bytes at the end."""
+        Every call is an enqueue; proof values are staged as async copies and read after the one
+        synchronize in `proof.finish`."""
         comptime N = Self.p.N()
+        comptime e = Self.p.e
         var base = self.arena.base()
         ref L = self.layout
         var T = L.transcript
         ref S = self.shape
         var row_w = 4 * Self.p.n_cw() * S.columns_w
         var row_q = 4 * Self.p.n_cw() * S.columns_q
-        var proof = ProofWriter()
+        var proof = ProofWriter(ctx)
 
-        # header and transcript prefix (statement-layer 6 step 1)
+        # header and transcript prefix (spec 9.4, statement-layer 6 step 1)
         proof.u32(Int(VERSION))
         proof.prefixed(public_inputs)
-        absorb[Self.p, Self.H](ctx, base, T, DS_PREFIX, L.tables.base, L.tables.bytes)   # ponytail: the tables stand in for the params digest
+        var prefix = prefix_bytes[Self.p](S, public_inputs)
+        if len(prefix) > PREFIX_MAX:
+            raise Error("public inputs too large for the prefix region")
+        var prefix_host = ctx.enqueue_create_host_buffer[DType.uint8](len(prefix))
+        ctx.synchronize()
+        for i in range(len(prefix)):
+            prefix_host[i] = prefix[i]
+        self.arena.upload(ctx, L.prefix, prefix_host)
+        reset(ctx, base, T)
+        absorb[Self.p, Self.H](ctx, base, T, DS_PREFIX, L.prefix, len(prefix))
 
-        # 3. commit W
+        # 3. commit W. Milestone 1 has no Z tree, so alpha is squeezed here as the fourth stage-1 challenge.
         encode[Self.p](ctx, base, L.enc_w, L.tables)
         merkle[Self.p, Self.H](ctx, base, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, 3)                        # beta_1, delta, gamma (unused in milestone 1)
+        proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
+        squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 4)             # beta_1, delta, gamma, alpha
 
         # 8-10. residual grid, quotient, commit Q
         lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.lde)
-        residual[Self.p](ctx, base, L.lde, S.columns_w, L.tables.base, T.challenges, L.residual)
+        residual[Self.p](ctx, base, L.lde, S.columns_w, L.tables.base, L.stage1 + 3 * e, L.residual)
         quotient[Self.p](ctx, base, L.residual, L.quotient, L.enc_q.stored)
-        rs_encode[Self.p](ctx, base, L.enc_q, L.tables)                       # pack is part of the quotient write
+        pack[Self.p](ctx, base, L.enc_q)
+        rs_encode[Self.p](ctx, base, L.enc_q, L.tables)
         merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, 2)                        # z = (z1, z2)
+        proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
+        squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
 
         # 11. openings at the P points
-        build_queries[Self.p](ctx, base, T.challenges, S.points, L.w_z)
+        build_queries[Self.p](ctx, base, L.z, S.points, L.w_z)
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, False, L.openings)
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, True, L.openings + S.points * S.columns_w * Self.p.e)
-        absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * Self.p.e)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, S.columns() + S.points)   # beta per column, gamma per point
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, True, L.openings + S.points * S.columns_w * e)
+        absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
+        proof.stage(self.arena, L.openings, S.points * S.columns() * e)
+        squeeze_elements[Self.p, Self.H](ctx, base, T, L.beta_gamma, S.columns() + S.points)
 
         # 12. fold to the level-2 message
-        fold[Self.p](ctx, base, T.challenges, L.enc_w.stored, S.columns_w, L.enc_q.stored, S.columns_q, L.fold_y)
+        fold[Self.p](ctx, base, L.beta_gamma, L.enc_w.stored, S.columns_w, L.enc_q.stored, S.columns_q, L.fold_y)
 
         # 13. tail: each committed level opens the previous one
         var y = L.fold_y
@@ -152,26 +187,29 @@ struct Prover[p: Params, H: Hash]:
             var lvl = S.tail[i]
             var tl = L.tail[i]
             tail_encode[Self.p](ctx, base, y, lvl.rows, lvl.L, tl.code)
-            merkle[Self.p, Self.H](ctx, base, tl.code, 8 * Self.p.e, lvl.L, tl.tree)
+            merkle[Self.p, Self.H](ctx, base, tl.code, 8 * e, lvl.L, tl.tree)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
+            proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             self._open_previous(ctx, i, T, proof)
             expected_symbols[Self.p](ctx, base, y, L.positions, self._prev_queries(i), tl.v)
-            absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * Self.p.e)
-            squeeze_elements[Self.p, Self.H](ctx, base, T, self._v_count(i) + 1)   # batching scalars
-            tail_materialize[Self.p](ctx, base, y_len, T.challenges, tl.w_tilde)
+            absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
+            proof.stage(self.arena, tl.v, self._v_count(i) * e)
+            squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
+            tail_materialize[Self.p](ctx, base, y_len, L.batch, tl.w_tilde)
             for d in range(3):
-                tail_round[Self.p](ctx, base, tl.w_tilde, y, y_len, d, tl.rounds + d * 3 * Self.p.e)
-                absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * Self.p.e, 3 * Self.p.e)
-                squeeze_elements[Self.p, Self.H](ctx, base, T, 1)                  # r_d
-            tail_fold[Self.p](ctx, base, y, lvl.rows, T.challenges, tl.y)
+                tail_round[Self.p](ctx, base, tl.w_tilde, y, y_len, d, tl.rounds + d * 3 * e)
+                absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
+                squeeze_elements[Self.p, Self.H](ctx, base, T, L.r + d * e, 1)          # r_d
+            proof.stage(self.arena, tl.rounds, 9 * e)
+            tail_fold[Self.p](ctx, base, y, lvl.rows, L.r, tl.y)
             y = tl.y
             y_len = lvl.rows
 
         # last: the clear vector, then open the last committed level
-        absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * Self.p.e)
+        absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * e)
+        proof.stage(self.arena, y, y_len * e)
         self._open_previous(ctx, len(S.tail), T, proof)
-        ctx.synchronize()
-        raise Error("not implemented: proof serialization")   # read back roots, openings, v, rounds, clear vector
+        return proof.finish()
 
     def _prev_queries(self, i: Int) -> Int:
         return Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
@@ -180,21 +218,25 @@ struct Prover[p: Params, H: Hash]:
         return 4 * Self.p.n_cw() * Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
 
     def _open_previous(self, ctx: DeviceContext, i: Int, T: TranscriptLayout, mut proof: ProofWriter) raises:
-        """Sample S on the level before tail level i (level 1 when i == 0) and gather its multiproof."""
+        """Sample S on the level before tail level i (level 1 when i == 0), gather its multiproof(s),
+        and stage them. The stage region is reused: the copy out is enqueued before the next gather."""
         var base = self.arena.base()
         ref L = self.layout
         ref S = self.shape
         if i == 0:
-            squeeze_positions[Self.p, Self.H](ctx, base, T, Self.p.queries(), Self.p.L())
-            _ = query_gather[Self.p, Self.H](ctx, base, L.enc_w.code, 4 * Self.p.n_cw() * S.columns_w, Self.p.L(), L.tree_w,
-                                   T.challenges, Self.p.queries(), L.proof_stage)
-            _ = query_gather[Self.p, Self.H](ctx, base, L.enc_q.code, 4 * Self.p.n_cw() * S.columns_q, Self.p.L(), L.tree_q,
-                                   T.challenges, Self.p.queries(), L.proof_stage)
+            squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, Self.p.queries(), Self.p.L())
+            var bound = query_gather[Self.p, Self.H](ctx, base, L.enc_w.code, 4 * Self.p.n_cw() * S.columns_w, Self.p.L(),
+                                                     L.tree_w, L.positions, Self.p.queries(), L.proof_stage)
+            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+            bound = query_gather[Self.p, Self.H](ctx, base, L.enc_q.code, 4 * Self.p.n_cw() * S.columns_q, Self.p.L(),
+                                                 L.tree_q, L.positions, Self.p.queries(), L.proof_stage)
+            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
         else:
             var lvl = S.tail[i - 1]
-            squeeze_positions[Self.p, Self.H](ctx, base, T, lvl.queries, lvl.L)
-            _ = query_gather[Self.p, Self.H](ctx, base, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
-                                   T.challenges, lvl.queries, L.proof_stage)
+            squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, lvl.queries, lvl.L)
+            var bound = query_gather[Self.p, Self.H](ctx, base, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
+                                                     L.positions, lvl.queries, L.proof_stage)
+            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
 
 
 def load_trace[p: Params, H: Hash](ctx: DeviceContext, prover: Prover[p, H], trace: List[UInt8]) raises:

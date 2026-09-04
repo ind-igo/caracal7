@@ -48,8 +48,8 @@ struct Params(TrivialRegisterPassable, Writable):
         return self.leaf_bytes // (4 * self.n_cw())
 
     def check(self) raises:
-        if self.e % 4 != 0 or self.e < 16:
-            raise Error("e must be a multiple of 4 and >= 16")
+        if self.e != 16:
+            raise Error("e must be 16: field.mojo fixes E = F_(127^16)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

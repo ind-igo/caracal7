@@ -11,7 +11,7 @@ Leaf s of the level-1 code is the point g^s, s in [L0).
 
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import F2, F4, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
+from caracal7.field import F2, F4, f_add, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
 from caracal7.params import Params
 
 comptime F2_ORDER = 16128            # |F2*| = 127^2 - 1
@@ -73,11 +73,15 @@ struct Domains(TrivialRegisterPassable):
     var rho1: UInt8
     var rho2: UInt8
     var g: F4
+    var g1: F2          # generator of G1 (order 2 h1); omega1 = g1^2
+    var g2: F2
 
     def __init__[p: Params](out self) raises:
         var gamma2 = f2_primitive()
-        self.omega1 = ext_pow[1](gamma2, F2_ORDER // p.h1())
-        self.omega2 = ext_pow[1](gamma2, F2_ORDER // p.h2())
+        self.g1 = ext_pow[1](gamma2, F2_ORDER // (2 * p.h1()))
+        self.g2 = ext_pow[1](gamma2, F2_ORDER // (2 * p.h2()))
+        self.omega1 = ext_pow[1](self.g1, 2)
+        self.omega2 = ext_pow[1](self.g2, 2)
         var r1 = ext_pow[1](self.omega1, 1 << p.a1)
         var r2 = ext_pow[1](self.omega2, 1 << p.a2)
         if r1[1] != 0 or r2[1] != 0:
@@ -100,6 +104,15 @@ struct TableLayout(TrivialRegisterPassable):
     var w9: Int         # (9, 9, 4)
     var crt: Int        # (315, 2)     lin -> i2 = crt(d5, d7, d9), little-endian u16
     var ruri: Int       # (315, 2)     lin -> t2 = (63 t5 + 45 t7 + 35 t9) mod 315
+    # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
+    var g1p: Int        # (2 h1, 2)     g1^j
+    var g2p: Int        # (2 h2, 2)
+    var wfwd1: Int      # (2 h1, h1, 2) g1^(j k): coefficient k -> point j
+    var wfwd2: Int      # (2 h2, h2, 2)
+    var s1ext: Int      # (h1, h1, 2)   S1 on the coset from S1 on H1: (1/h1) sum_k g1^((2t + 1 - 2s) k)
+    var qinv1: Int      # (h1, h1, 2)   coset values t -> coefficient k: g1^-k h1^-1 omega1^(-t k)
+    var ginv2: Int      # (2 h2, 2 h2, 2) G2 values j -> coefficient k: (2 h2)^-1 g2^(-j k)
+    var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
@@ -116,6 +129,14 @@ struct TableLayout(TrivialRegisterPassable):
         self.w9 = off; off += 9 * 9 * 4
         self.crt = off; off += 315 * 2
         self.ruri = off; off += 315 * 2
+        self.g1p = off; off += 2 * p.h1() * 2
+        self.g2p = off; off += 2 * p.h2() * 2
+        self.wfwd1 = off; off += 2 * p.h1() * p.h1() * 2
+        self.wfwd2 = off; off += 2 * p.h2() * p.h2() * 2
+        self.s1ext = off; off += p.h1() * p.h1() * 2
+        self.qinv1 = off; off += p.h1() * p.h1() * 2
+        self.ginv2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
+        self.qinv2 = off; off += p.h2() * p.h2() * 2
         self.bytes = off
 
 
@@ -175,4 +196,39 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
         h[t.crt + lin * 2 + 1] = UInt8(i2 >> 8)
         h[t.ruri + lin * 2] = UInt8(t2 & 255)
         h[t.ruri + lin * 2 + 1] = UInt8(t2 >> 8)
+
+    _residual_tables[p](h, t, d)
     return h^
+
+
+def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: Domains) raises:
+    comptime h1 = p.h1()
+    comptime h2 = p.h2()
+    var g1_inv = ext_pow[1](d.g1, 2 * h1 - 1)
+    var g2_inv = ext_pow[1](d.g2, 2 * h2 - 1)
+    var inv_h1 = F2(f_inv(UInt8(h1 % 127)))
+    var inv_h2 = F2(f_inv(UInt8(h2 % 127)))
+    var inv_2h2 = F2(f_inv(UInt8((2 * h2) % 127)))
+    for j in range(2 * h1):
+        _put(h, t.g1p + j * 2, ext_pow[1](d.g1, j))
+        for k in range(h1):
+            _put(h, t.wfwd1 + (j * h1 + k) * 2, ext_pow[1](d.g1, (j * k) % (2 * h1)))
+    for j in range(2 * h2):
+        _put(h, t.g2p + j * 2, ext_pow[1](d.g2, j))
+        for k in range(h2):
+            _put(h, t.wfwd2 + (j * h2 + k) * 2, ext_pow[1](d.g2, (j * k) % (2 * h2)))
+        for k in range(2 * h2):
+            _put(h, t.ginv2 + (j * 2 * h2 + k) * 2, f_mul(ext_pow[1](g2_inv, (j * k) % (2 * h2)), inv_2h2))
+    for tt in range(h1):
+        for s in range(h1):
+            var acc = F2(0)
+            for k in range(h1):
+                acc = f_add(acc, ext_pow[1](d.g1, ((2 * (tt - s) + 1) * k) % (2 * h1)))
+            _put(h, t.s1ext + (tt * h1 + s) * 2, f_mul(acc, inv_h1))
+        for k in range(h1):
+            var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                       # g1^-k / h1
+            _put(h, t.qinv1 + (k * h1 + tt) * 2, ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1))))
+    for tt in range(h2):
+        for k in range(h2):
+            var w = f_mul(ext_pow[1](g2_inv, k), inv_h2)
+            _put(h, t.qinv2 + (k * h2 + tt) * 2, ext_mul[1](w, ext_pow[1](g2_inv, (2 * tt * k) % (2 * h2))))

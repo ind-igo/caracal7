@@ -43,7 +43,7 @@ comptime _CHUNK_END: UInt32 = 2
 comptime _PARENT: UInt32 = 4
 comptime _ROOT: UInt32 = 8
 comptime _KEYED: UInt32 = 16
-comptime _STACK = 12                 # ponytail: 2^12 chunks = 4 MiB per message; enough for every absorb
+comptime _STACK = 24                 # 2^24 chunks = 16 GiB per message: no absorb can reach it
 
 
 def _rotr(x: UInt32, n: Int) -> UInt32:

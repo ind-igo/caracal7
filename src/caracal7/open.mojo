@@ -6,7 +6,7 @@ from caracal7.params import Params
 
 
 def build_queries[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                             points: Int, count: Int, w_z: Int) raises:
+                             z: Int, points: Int, w_z: Int) raises:
     """w_z (P, slot, e) from the twelve tensor factors of 9.1 per point; quotient columns use the
     single Mon(x) L(r) product (9.2), which is the same buffer read with a different slot map."""
     raise Error("not implemented: build_queries")
