@@ -1,7 +1,7 @@
 from std.testing import assert_equal, TestSuite
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
-from caracal7.gemm import launch_naive, launch_tiled, TILE_DEFAULT, Tile
+from caracal7.gemm import launch_naive, launch_tiled, launch_vec, TILE_DEFAULT, Tile
 
 comptime M = 128
 comptime N = 192
@@ -31,8 +31,10 @@ def _check[which: Int]() raises:
     var C = TileTensor(c_dev, cl)
     comptime if which == 0:
         launch_naive[M, N, K](ctx, A, B, C)
-    else:
+    elif which == 1:
         launch_tiled[M, N, K, TILE_DEFAULT](ctx, A, B, C)
+    else:
+        launch_vec[M, N, K, TILE_DEFAULT](ctx, A, B, C)
     ctx.enqueue_copy(c_host, c_dev)
     ctx.synchronize()
     var bad = 0
@@ -52,6 +54,10 @@ def test_naive_matches_scalar() raises:
 
 def test_tiled_matches_scalar() raises:
     _check[1]()
+
+
+def test_vec_matches_scalar() raises:
+    _check[2]()
 
 
 def main() raises:

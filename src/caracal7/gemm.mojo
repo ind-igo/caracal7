@@ -3,9 +3,11 @@
 C[M, N] = A[M, K] . B[K, N] over F127, one byte per element, int32 accumulation,
 lazy reduction (field.f_reduce) every REDUCE_EVERY products.
 
-Two kernels, rungs 1 and 4 of the ladder in design.md section 8:
+Three kernels, rungs 1, 4 and 5 of the ladder in design.md section 8:
     gemm127_naive   one thread per output
     gemm127_tiled   threadgroup tiles BM x BK, BK x BN; each thread owns a TM x TN register tile
+    gemm127_vec     as tiled, plus 4-byte vector loads and a transposed A tile so the
+                    register loads are vectors too (Boehm kernel 6). Row-major operands only.
 """
 
 from std.math import ceildiv
@@ -116,6 +118,66 @@ def gemm127_tiled[
             C[brow + trow * TM + i, bcol + tcol * TN + j] = rebind[C.ElementType](out[i * TN + j])
 
 
+def gemm127_vec[
+    M: Int, N: Int, K: Int, T: Tile,
+    AL: TensorLayout, BL: TensorLayout, CL: TensorLayout,
+](
+    A: TileTensor[DType.uint8, AL, MutAnyOrigin],
+    B: TileTensor[DType.uint8, BL, MutAnyOrigin],
+    C: TileTensor[DType.uint8, CL, MutAnyOrigin],
+):
+    """Operands are addressed through raw pointers with row-major strides K, N, N."""
+    comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
+    comptime assert M % T.BM == 0 and N % T.BN == 0 and K % T.BK == 0, "tile must divide the problem"
+    comptime BM = T.BM
+    comptime BN = T.BN
+    comptime BK = T.BK
+    comptime TM = T.TM
+    comptime TN = T.TN
+    comptime V = 4                              # bytes per vector load
+    comptime THREADS = T.threads()
+    comptime assert BK % V == 0 and BN % V == 0 and TM % V == 0 and TN % V == 0
+    comptime assert (BM * BK // V) % THREADS == 0 and (BK * BN // V) % THREADS == 0
+
+    var tid = Int(thread_idx.x)
+    var trow = tid // (BN // TN)
+    var tcol = tid % (BN // TN)
+    var brow = Int(block_idx.y) * BM
+    var bcol = Int(block_idx.x) * BN
+
+    var As = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())   # transposed
+    var Bs = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var acc = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))   # one row vector per i: keeps Metal from seeing a TM*TN-lane vector
+
+    for kt in range(K // BK):
+        comptime for i in range(0, BM * BK // V, THREADS):
+            var idx = i + tid
+            var r = idx // (BK // V)
+            var k0 = (idx % (BK // V)) * V
+            var v = A.ptr.unsafe_load[width=V]((brow + r) * K + kt * BK + k0)
+            comptime for j in range(V):                # scatter into the transposed tile
+                As.ptr.unsafe_store((k0 + j) * BM + r, v[j])
+        comptime for i in range(0, BK * BN // V, THREADS):
+            var idx = i + tid
+            var k = idx // (BN // V)
+            var n0 = (idx % (BN // V)) * V
+            Bs.ptr.unsafe_store[width=V](k * BN + n0, B.ptr.unsafe_load[width=V]((kt * BK + k) * N + bcol + n0))
+        barrier()
+        comptime for k in range(BK):
+            var a = As.ptr.unsafe_load[width=TM](k * BM + trow * TM).cast[DType.int32]()
+            var b = Bs.ptr.unsafe_load[width=TN](k * BN + tcol * TN).cast[DType.int32]()
+            comptime for i in range(TM):
+                acc[i] += a[i] * b
+        barrier()
+        if (kt * BK) % REDUCE_EVERY >= REDUCE_EVERY - BK:
+            comptime for i in range(TM):
+                acc[i] = f_reduce(acc[i].cast[DType.uint32]()).cast[DType.int32]()
+
+    comptime for i in range(TM):
+        C.ptr.unsafe_store[width=TN]((brow + trow * TM + i) * N + bcol + tcol * TN,
+                                     f_reduce(acc[i].cast[DType.uint32]()))
+
+
 # ---- launchers: grid and block shapes live here, not at the call site ----
 
 def launch_naive[M: Int, N: Int, K: Int, AL: TensorLayout, BL: TensorLayout, CL: TensorLayout](
@@ -135,4 +197,14 @@ def launch_tiled[M: Int, N: Int, K: Int, T: Tile, AL: TensorLayout, BL: TensorLa
     C: TileTensor[DType.uint8, CL, MutAnyOrigin],
 ) raises:
     comptime kernel = gemm127_tiled[M, N, K, T, AL, BL, CL]
+    ctx.enqueue_function[kernel](A, B, C, grid_dim=(N // T.BN, M // T.BM), block_dim=T.threads())
+
+
+def launch_vec[M: Int, N: Int, K: Int, T: Tile, AL: TensorLayout, BL: TensorLayout, CL: TensorLayout](
+    ctx: DeviceContext,
+    A: TileTensor[DType.uint8, AL, MutAnyOrigin],
+    B: TileTensor[DType.uint8, BL, MutAnyOrigin],
+    C: TileTensor[DType.uint8, CL, MutAnyOrigin],
+) raises:
+    comptime kernel = gemm127_vec[M, N, K, T, AL, BL, CL]
     ctx.enqueue_function[kernel](A, B, C, grid_dim=(N // T.BN, M // T.BM), block_dim=T.threads())

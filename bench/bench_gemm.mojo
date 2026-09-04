@@ -3,7 +3,7 @@
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
-from caracal7.gemm import launch_naive, launch_tiled, TILE_DEFAULT, Tile
+from caracal7.gemm import launch_naive, launch_tiled, launch_vec, TILE_DEFAULT, Tile
 
 comptime M = 1024
 comptime N = 1024
@@ -64,4 +64,23 @@ def main() raises:
         launch_tiled[M, N, K, T2](ctx, A, B, C)
     ctx.synchronize()
     report("tiled 64/8/4x4", Int(perf_counter_ns() - t0))
+
+
+    comptime V1 = Tile(BM=64, BN=64, BK=16, TM=4, TN=4)
+    launch_vec[M, N, K, V1](ctx, A, B, C)
+    ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(REPS):
+        launch_vec[M, N, K, V1](ctx, A, B, C)
+    ctx.synchronize()
+    report("vec Tile(BM=64, BN=64, BK=16, TM=4, TN=4)", Int(perf_counter_ns() - t0))
+
+    comptime V2 = Tile(BM=64, BN=64, BK=16, TM=4, TN=8)
+    launch_vec[M, N, K, V2](ctx, A, B, C)
+    ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(REPS):
+        launch_vec[M, N, K, V2](ctx, A, B, C)
+    ctx.synchronize()
+    report("vec Tile(BM=64, BN=64, BK=16, TM=4, TN=8)", Int(perf_counter_ns() - t0))
 
