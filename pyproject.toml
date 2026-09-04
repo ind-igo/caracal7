@@ -1,0 +1,7 @@
+[project]
+name = "caracal7-prover"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "max[all]>=26.5.0",
+]

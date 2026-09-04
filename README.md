@@ -31,8 +31,8 @@ docs/           decisions.md
 ## Use
 
 ```
-pixi install
-pixi run test
+uv sync
+./run_tests.sh
 ```
 
 Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later behind fixed buffer interfaces.

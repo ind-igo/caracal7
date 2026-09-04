@@ -3,5 +3,5 @@
 set -e
 for t in tests/test_*.mojo; do
   echo "== $t"
-  mojo run -I src "$t"
+  uv run mojo run -I src "$t"
 done
