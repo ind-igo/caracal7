@@ -4,10 +4,10 @@ Spec: `wiki/projects/caracal7/specs/caracal-prover.md` (main), `statement-layer.
 
 ## 1. Rules
 
-1. **GPU first.** Every stage with a row, column, slot, or codeword index is a GPU kernel from its first commit. The CPU does the transcript, challenge derivation, the verifier, and orchestration. Nothing else.
+1. **Device resident.** Every prover stage is a GPU kernel from its first commit, including the Blake3 transcript and challenge derivation (section 10: tree and transcript on device). The host only enqueues launches in stage order and reads the finished proof bytes. The verifier is a separate program and runs on the host.
 2. **One buffer type.** All committed data is bytes: one `UInt8` per `F` coordinate. `F2`, `F4`, and `E` values are 2, 4, and `e` consecutive bytes. No struct-of-arrays and no per-field buffer types. Kernels are specialized on the coordinate count, not on a field type.
 3. **Parameters are comptime.** One `Params` struct carries every knob. Kernels take it as a parameter, so every loop bound and stride is a constant.
-4. **No copies between stages.** Unified memory on M1 makes host and device views of one buffer cheap. A stage writes its output where the next stage reads it. The only host reads between barriers are the 32-byte transcript digests.
+4. **No copies between stages.** Unified memory on M1 makes host and device views of one buffer cheap. A stage writes its output where the next stage reads it. There are no host reads between barriers: challenges are derived on device from the device-resident transcript, and kernels read them from device memory.
 5. **Scalar reference in the test, never a CPU prover.** Each kernel's test runs a few lines of scalar Mojo on a small size and compares. The reference does not grow into a second implementation.
 
 ## 2. Parameters
@@ -62,7 +62,7 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `pack` | stored → packed | one per (column, i) | gather 4 slots on the packing digit into one F4 symbol |
 | `rs_encode` | packed → code | one per (column, butterfly) | coset twist by `g_k^i`, then the order-L0 DFT over F4 in two passes: the power-of-two part, then the 315-point Good-Thomas part; each stage a block GEMM with 4×4 F-matrices as twiddles |
 | `merkle` | code → tree | one per node per level | Blake3, 1,024-byte leaves, 32-byte nodes, one launch per level |
-| `open` | stored, w_z → alpha | one per (column, point) | contraction `<w_z, stored(c)>` in E; `w_z` is built on the host as the twelve tensor factors and expanded on device |
+| `open` | stored, w_z → alpha | one per (column, point) | contraction `<w_z, stored(c)>` in E; `w_z` is built on device from the twelve tensor factors of 9.1 |
 | `fold` | stored, beta → fold_y | one per slot | GEMV over all columns of all three trees |
 | `query_gather` | code, tree, S → proof bytes | one per query | leaf rows and Merkle paths |
 | `tail_materialize` | tensor terms → w~ | one per slot | sum of a few dozen tensor products, E-valued |
@@ -80,12 +80,12 @@ The first kernel written is `rs_encode`, because it decides prover time and tell
 
 Twiddles are precomputed tables in device memory: the order-`L0` subgroup generator powers as 4×4 F-matrices for the F4 DFT, and the F2 roots for the grid DFTs. One table per `Params`, built once.
 
-## 6. CPU side
+## 6. Transcript, host, verifier
 
-- `transcript.mojo`: Blake3 with domain separators per line of 9.4; challenge derivation; positions as uniform integers below L. Runs on the host; the only device to host traffic is the digest of each committed tree.
-- `verifier.mojo`: the seven steps of statement-layer section 6 for milestone 1 reduced to the Ligerito checks; builds `w_z` from the twelve tensor factors; checks consistency at opened positions with the E ⊗ F4 alphabet rule of 9.1; runs the sumcheck checks per level.
+- `transcript.mojo`: device-resident. A small buffer holds the running Blake3 state; one kernel absorbs a message (tree root, clear values, sumcheck messages) with the domain separator of 9.4, one kernel squeezes challenges into a device buffer: E elements as e bytes, positions as uniform integers below L. Every kernel that needs a challenge reads it from that buffer.
+- `verifier.mojo`: host program, separate from the prover. The seven steps of statement-layer section 6 for milestone 1 reduced to the Ligerito checks; builds `w_z` from the twelve tensor factors; checks consistency at opened positions with the E ⊗ F4 alphabet rule of 9.1; runs the sumcheck checks per level.
 - `proof.mojo`: the byte layout of statement-layer section 7. Exact encoding is fixed when the first proof is serialized.
-- `prover.mojo`: orchestration, launches kernels in stage order, synchronizes at barriers only.
+- `prover.mojo`: host orchestration only. It enqueues every kernel of the pipeline in stage order on one stream and synchronizes once at the end to read the proof bytes. Barriers are ordering on the stream, not host synchronization points.
 
 ## 7. Layout
 
