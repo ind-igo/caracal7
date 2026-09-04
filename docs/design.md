@@ -138,7 +138,7 @@ The ceiling is in the design, the polish is by measurement. Every layout, skelet
 
 The design is backend agnostic. Apple and NVIDIA differ in the one place that matters, the inner product of a tile, and that difference is a comptime configuration, not a second code path.
 
-**What differs.** NVIDIA has integer tensor cores: an `s8 × s8 → s32` MMA, exact for our 7-bit values, at several times the fp32 rate. Apple has `simdgroup_matrix` for fp16, bf16, and fp32 only; fp32 is exact for our products (under 2^14) up to 1,024 accumulated terms, fp16 is not exact at all. Apple threadgroup memory is 32 KB, NVIDIA 48 to 228 KB. Both have 32-wide SIMD groups. So the tile op, the accumulator type, the reduction cadence, and the tile sizes differ; nothing else does.
+**What differs.** NVIDIA has integer tensor cores: an `s8 × s8 → s32` MMA, exact for our 7-bit values, at several times the fp32 rate, reachable through `layout.tensor_core.TensorCore` (dtype-parametric, NVIDIA and AMD). Apple M5 and later (GPU family 10) have the same in `linalg.arch.apple.mma.MmaOpApple`: 16 × 16 × 16 tiles, `int8 → int32` instantiated, one simdgroup of 32 threads per op. Apple M1 to M4 have no matrix op reachable from Mojo: every MMA instantiation fails pipeline creation on the M1 Pro with "simdgroup_matrix operations are supported by GPUFamily10 and later" (probed 2026-09-04, int8, fp16, and fp32 inputs). The ethproofs host is an M1, so the client target runs on SIMD lanes only. Apple threadgroup memory is 32 KB, NVIDIA 48 to 228 KB. Both have 32-wide SIMD groups. So the tile op, the accumulator type, the reduction cadence, and the tile sizes differ; nothing else does.
 
 **The configuration.** One comptime struct, selected once by `is_apple_gpu()` / `is_nvidia_gpu()` and passed as a parameter to every kernel:
 
@@ -148,24 +148,24 @@ struct Backend:
     comptime threadgroup_bytes: Int   # 32 KB Apple, 48 KB+ NVIDIA
     comptime mma: Bool                # tensor-core tile op available
     comptime mma_m: Int; comptime mma_n: Int; comptime mma_k: Int
-    comptime in_dtype: DType          # int8 NVIDIA, float32 Apple, uint8 scalar fallback
-    comptime acc_dtype: DType         # int32 NVIDIA, float32 Apple, uint16/int32 scalar
-    comptime max_terms: Int           # products accumulated before a mod-127 reduction: 1,024 fp32, 2^17 int32
+    comptime in_dtype: DType          # int8 for MMA backends, uint8 on SIMD lanes
+    comptime acc_dtype: DType         # int32 for MMA backends, uint16 or int32 on SIMD lanes
+    comptime max_terms: Int           # products accumulated before a mod-127 reduction: 4 in uint16, 2^17 in int32
     comptime vec_bytes: Int           # bytes per thread load, 16
     comptime tile: TileParams         # BM, BN, BK, TM, TN defaults, overridden by the autotune sweep
 ```
 
-**The one hot op.** `tile_mac[B: Backend](a_tile, b_tile, acc)`: multiply a `(mma_m × mma_k)` tile by a `(mma_k × mma_n)` tile and accumulate. Three implementations behind one signature: NVIDIA MMA, Apple simdgroup matrix in fp32, scalar SIMD lanes with lazy integer reduction. The GEMM skeleton of section 8, the buffer shapes, the transcript, and every kernel above the tile op are shared. The scalar path is also the reference the other two are tested against.
+**The one hot op.** `tile_mac[B: Backend](a_tile, b_tile, acc)`: multiply a `(mma_m × mma_k)` tile by a `(mma_k × mma_n)` tile and accumulate. Three implementations behind one signature: NVIDIA `TensorCore` int8 MMA, Apple M5 `MmaOpApple` int8 MMA, and SIMD lanes with lazy integer reduction (the M1 path, verified with a 64 × 64 × 64 byte GEMM). The GEMM skeleton of section 8, the buffer shapes, the transcript, and every kernel above the tile op are shared. The SIMD-lane path is also the reference the two MMA paths are tested against. Both MMA structs are importable from the stable toolchain (probed), though `MmaOpApple` lives under `linalg` and is not a documented public surface; pin the toolchain version when it is used.
 
 **Consequences for the DFT.** MMA shapes fix `K`; a radix-`r` stage with `r` in {2, 3, 5, 7} does not fill `K = 16` or 32. Stages are therefore grouped into one matrix per pass whose order is a product of radices near the MMA `K` (for L0 = 80,640 = 2^8 · 315: the 315-point Good–Thomas pass is one 315 × 315 matrix applied as 20 blocks of 16, or three radix stages 5 · 7 · 9 padded per backend). Which grouping wins is per backend and comes out of the autotune sweep, not the design.
 
 **Rule.** No kernel contains `is_apple_gpu()` or `is_nvidia_gpu()` directly. All dispatch goes through `Backend`. A kernel that needs something the struct does not carry adds a field to the struct.
 
-To verify before the encoder is written: whether Mojo 1.0 exposes the Apple simdgroup matrix op and the NVIDIA int8 MMA through the same stdlib surface (`max.gpu` mma), or whether the tile op needs inline intrinsics per backend.
+Verified 2026-09-04: there is no single MMA surface. NVIDIA and AMD go through `layout.TensorCore`; Apple M5 goes through `linalg.arch.apple.mma.MmaOpApple`; the M1 has neither. `tile_mac` wraps all three plus the SIMD-lane path.
 
 ## 10. Open
 
 - Apple GPU in Mojo: shared-memory size, `barrier`, and whether Blake3 on device reaches the CPU rate. Learned from `rs_encode` and `merkle`.
-- The tile op per backend (section 9): fp32 simdgroup matrix on Apple against integer SIMD lanes, int8 MMA on NVIDIA. Measure in `rs_encode`.
+- The SIMD-lane tile op is the only path on the M1 client target, so it gets the full ladder of section 8. The MMA paths are written when an NVIDIA or M5 device is available to test on.
 - Whether `code` should be leaf-major from the encoder or transposed once (section 3).
 - The tower constants `c_2`, `c_3`, `c_4` for `e = 16`.
