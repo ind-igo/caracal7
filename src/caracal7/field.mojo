@@ -1,8 +1,166 @@
-"""F127 base field. Placeholder until milestone 1 lands the tower E."""
+"""Fields: F = F127 on bytes, and the quadratic tower F2, F4, F8, E = F16.
 
-comptime P: UInt8 = 127
+Storage: one byte per F coordinate, values 0..126. A level-k tower element is
+SIMD[uint8, 2^k]; the low half is the coordinate on 1, the high half on the
+level generator g_k, with g_k^2 = C_k (a non-square in the level-(k-1) field).
+
+Tower constants (docs/decisions.md):
+    k=1  F2 = F[i],   i^2 = -1
+    k=2  F4 = F2[j],  j^2 = 2 + i
+    k=3  F8 = F4[u],  u^2 = j
+    k=4  E  = F8[y],  y^2 = u
+"""
+
+from std.math import min
+
+comptime P: Int = 127
+comptime E_LEVEL: Int = 4          # E = F_{127^16}
+comptime E_WIDTH: Int = 1 << E_LEVEL
+
+comptime F2 = SIMD[DType.uint8, 2]
+comptime F4 = SIMD[DType.uint8, 4]
+comptime E = SIMD[DType.uint8, 16]
+
+comptime C1 = SIMD[DType.uint8, 1](126)                 # -1
+comptime C2 = SIMD[DType.uint8, 2](2, 1)                # 2 + i
+comptime C3 = SIMD[DType.uint8, 4](0, 0, 1, 0)          # j
+comptime C4 = SIMD[DType.uint8, 8](0, 0, 0, 0, 1, 0, 0, 0)  # u
 
 
-def add(a: UInt8, b: UInt8) -> UInt8:
-    var s = a + b
-    return s - P if s >= P else s
+# ---- F127 on byte lanes -------------------------------------------------
+
+@always_inline
+def f_reduce[w: SIMDLength](x: SIMD[DType.uint32, w]) -> SIMD[DType.uint8, w]:
+    """Reduce lanes below 2^21 to 0..126: three rounds of (x & 127) + (x >> 7), then 127 -> 0."""
+    var r = (x & 127) + (x >> 7)
+    r = (r & 127) + (r >> 7)
+    r = (r & 127) + (r >> 7)
+    return min(r, r - 127).cast[DType.uint8]()      # r in [0, 254): unsigned wrap picks the reduced value
+
+
+@always_inline
+def f_add[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
+    var s = a + b                                   # < 254, no overflow
+    return min(s, s - 127)
+
+
+@always_inline
+def f_sub[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
+    var s = a + 127 - b                             # in [1, 253]
+    return min(s, s - 127)
+
+
+@always_inline
+def f_neg[w: SIMDLength](a: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
+    var s = 127 - a                                 # in [1, 127]
+    return min(s, s - 127)
+
+
+@always_inline
+def f_mul[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
+    var p = a.cast[DType.uint16]() * b.cast[DType.uint16]()   # < 2^14
+    var r = (p & 127) + (p >> 7)
+    r = (r & 127) + (r >> 7)
+    return min(r, r - 127).cast[DType.uint8]()
+
+
+def f_pow[w: SIMDLength](a: SIMD[DType.uint8, w], n: Int) -> SIMD[DType.uint8, w]:
+    var base = a
+    var acc = SIMD[DType.uint8, w](1)
+    var k = n
+    while k > 0:
+        if k & 1:
+            acc = f_mul(acc, base)
+        base = f_mul(base, base)
+        k >>= 1
+    return acc
+
+
+def f_inv(a: Scalar[DType.uint8]) raises -> Scalar[DType.uint8]:
+    if a == 0:
+        raise Error("f_inv(0)")
+    return f_pow(a, 125)
+
+
+# ---- Quadratic tower ----------------------------------------------------
+
+@always_inline
+def _level_const[k: Int]() -> SIMD[DType.uint8, 1 << (k - 1)]:
+    """C_k as an element of the level-(k-1) field."""
+    comptime if k == 1:
+        return rebind[SIMD[DType.uint8, 1 << (k - 1)]](C1)
+    elif k == 2:
+        return rebind[SIMD[DType.uint8, 1 << (k - 1)]](C2)
+    elif k == 3:
+        return rebind[SIMD[DType.uint8, 1 << (k - 1)]](C3)
+    else:
+        return rebind[SIMD[DType.uint8, 1 << (k - 1)]](C4)
+
+
+@always_inline
+def ext_mul[k: Int](a: SIMD[DType.uint8, 1 << k], b: SIMD[DType.uint8, 1 << k]) -> SIMD[DType.uint8, 1 << k]:
+    """Schoolbook on the tower: (a0 + a1 g)(b0 + b1 g) = (a0 b0 + C a1 b1) + (a0 b1 + a1 b0) g."""
+    comptime if k == 0:
+        return f_mul(a, b)
+    else:
+        comptime h = 1 << (k - 1)
+        var a0 = a.slice[h]()
+        var a1 = a.slice[h, offset=h]()
+        var b0 = b.slice[h]()
+        var b1 = b.slice[h, offset=h]()
+        var lo = f_add(ext_mul[k - 1](a0, b0), ext_mul[k - 1](_level_const[k](), ext_mul[k - 1](a1, b1)))
+        var hi = f_add(ext_mul[k - 1](a0, b1), ext_mul[k - 1](a1, b0))
+        return rebind[SIMD[DType.uint8, 1 << k]](lo.join(hi))
+
+
+@always_inline
+def ext_conj[k: Int](a: SIMD[DType.uint8, 1 << k]) -> SIMD[DType.uint8, 1 << k]:
+    """a0 - a1 g: the level-k conjugate (k >= 1)."""
+    comptime h = 1 << (k - 1)
+    var a0 = a.slice[h]()
+    var a1 = a.slice[h, offset=h]()
+    return rebind[SIMD[DType.uint8, 1 << k]](a0.join(f_neg(a1)))
+
+
+@always_inline
+def ext_norm[k: Int](a: SIMD[DType.uint8, 1 << k]) -> SIMD[DType.uint8, 1 << (k - 1)]:
+    """N(a) = a0^2 - C a1^2 in the level-(k-1) field (k >= 1)."""
+    comptime h = 1 << (k - 1)
+    var a0 = a.slice[h]()
+    var a1 = a.slice[h, offset=h]()
+    return f_sub(ext_mul[k - 1](a0, a0), ext_mul[k - 1](_level_const[k](), ext_mul[k - 1](a1, a1)))
+
+
+def ext_inv[k: Int](a: SIMD[DType.uint8, 1 << k]) raises -> SIMD[DType.uint8, 1 << k]:
+    """Norm descent: a^-1 = conj(a) / N(a). Raises on zero."""
+    comptime if k == 0:
+        return f_inv(a[0])
+    else:
+        comptime h = 1 << (k - 1)
+        var n_inv = ext_inv[k - 1](ext_norm[k](a))
+        var c = ext_conj[k](a)
+        var c0 = c.slice[h]()
+        var c1 = c.slice[h, offset=h]()
+        return rebind[SIMD[DType.uint8, 1 << k]](ext_mul[k - 1](c0, n_inv).join(ext_mul[k - 1](c1, n_inv)))
+
+
+def ext_pow[k: Int](a: SIMD[DType.uint8, 1 << k], n: Int) -> SIMD[DType.uint8, 1 << k]:
+    var base = a
+    var acc = SIMD[DType.uint8, 1 << k](0)
+    acc[0] = 1
+    var m = n
+    while m > 0:
+        if m & 1:
+            acc = ext_mul[k](acc, base)
+        base = ext_mul[k](base, base)
+        m >>= 1
+    return acc
+
+
+@always_inline
+def ext_embed[k: Int, w: SIMDLength](a: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, 1 << k]:
+    """Zero-pad a lower-level element into level k."""
+    var r = SIMD[DType.uint8, 1 << k](0)
+    comptime for t in range(w):
+        r[t] = a[t]
+    return r
