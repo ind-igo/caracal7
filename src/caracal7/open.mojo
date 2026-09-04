@@ -18,9 +18,9 @@ from std.math import ceildiv
 from max.gpu.host import DeviceContext
 from std.gpu import thread_idx, block_idx, block_dim
 
-from caracal7.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_inv0, ext_embed
+from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed
 from caracal7.params import Params
-from caracal7.tables import TableLayout
+from caracal7.tables import TableLayout, Domains
 from caracal7.encode import slot_target
 from caracal7.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
 
@@ -30,11 +30,6 @@ comptime BLOCK = 256
 @always_inline
 def _e(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
     return base.unsafe_load[width=16](off)
-
-
-@always_inline
-def _f(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
-    return ext_embed[4](SIMD[DType.uint8, 1](base[unsafe_offset=off]))
 
 
 @always_inline
@@ -57,22 +52,11 @@ def f_pow_inv_m(m: Int) -> Int:
     return 0
 
 
-def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shifts: Int64, points: Int32,
-                                g1p: Int64, g2p: Int64, rho1: Int64, rho2: Int64, w_z: Int64):
-    comptime N = p.N()
+@always_inline
+def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> E:
+    """w_z[slot] of spec 9.1 for the point (z1, z2); shared by the kernel and the verifier."""
     comptime H1 = 1 << (p.a1 - 1)
     comptime H2 = 1 << (p.a2 - 1)
-    var gid = Int(block_idx.x * block_dim.x + thread_idx.x)
-    if gid >= Int(points) * N:
-        return
-    var pt = gid // N
-    var slot = gid % N
-    var sh = Int(shifts) + pt * 4
-    var dj1 = Int(base[unsafe_offset=sh]) | Int(base[unsafe_offset=sh + 1]) << 8
-    var dj2 = Int(base[unsafe_offset=sh + 2]) | Int(base[unsafe_offset=sh + 3]) << 8
-    var z1 = ext_mul[4](_e(base, Int(z)), ext_embed[4](base.unsafe_load[width=2](Int(g1p) + dj1 * 2)))
-    var z2 = ext_mul[4](_e(base, Int(z) + p.e), ext_embed[4](base.unsafe_load[width=2](Int(g2p) + dj2 * 2)))
-
     var x1: Int
     var x2: Int
     var r: Int
@@ -80,8 +64,8 @@ def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shi
     x1, x2, r, coord = slot_target[p](slot)
     var r1 = r % p.m1
     var r2 = r // p.m1
-    var rr1 = _f(base, Int(rho1) + r1)                       # the odd-digit point r as a field element
-    var rr2 = _f(base, Int(rho2) + r2)
+    var rr1 = _rho(rho1, r1)                                  # the odd-digit point r as a field element
+    var rr2 = _rho(rho2, r2)
     var L = ext_mul[4](_lagrange(ext_pow[4](z1, 1 << p.a1), p.m1, rr1), _lagrange(ext_pow[4](z2, 1 << p.a2), p.m2, rr2))
     var mon = ext_mul[4](ext_pow[4](z1, x1), ext_pow[4](z2, x2))
 
@@ -95,25 +79,45 @@ def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shi
         var par = ext_embed[4](SIMD[DType.uint8, 1](1))
         if x1 != 0:
             var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
-            par = ext_mul[4](ext_pow[4](z1, (1 << p.a1) - x1), _f(base, Int(rho1) + (r1 * s1) % p.m1))
+            par = ext_mul[4](ext_pow[4](z1, (1 << p.a1) - x1), _rho(rho1, (r1 * s1) % p.m1))
         if x2 != 0:
             var s2 = ((1 << (7 - p.a2)) * x2 - 1) % p.m2
-            par = ext_mul[4](par, ext_mul[4](ext_pow[4](z2, (1 << p.a2) - x2), _f(base, Int(rho2) + (r2 * s2) % p.m2)))
+            par = ext_mul[4](par, ext_mul[4](ext_pow[4](z2, (1 << p.a2) - x2), _rho(rho2, (r2 * s2) % p.m2)))
         if coord == 0:
             w = f_add(mon, par)
         else:
             var i = E(0)
             i[1] = 1
             w = ext_mul[4](i, f_sub(mon, par))
-    base.unsafe_store[width=16](Int(w_z) + gid * p.e, ext_mul[4](w, L))
+    return ext_mul[4](w, L)
+
+
+@always_inline
+def _rho(rho: UInt8, k: Int) -> E:
+    return ext_embed[4](f_pow(SIMD[DType.uint8, 1](rho), k))
+
+
+def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shifts: Int64, points: Int32,
+                                g1p: Int64, g2p: Int64, rho1: UInt8, rho2: UInt8, w_z: Int64):
+    comptime N = p.N()
+    var gid = Int(block_idx.x * block_dim.x + thread_idx.x)
+    if gid >= Int(points) * N:
+        return
+    var pt = gid // N
+    var sh = Int(shifts) + pt * 4
+    var dj1 = Int(base[unsafe_offset=sh]) | Int(base[unsafe_offset=sh + 1]) << 8
+    var dj2 = Int(base[unsafe_offset=sh + 2]) | Int(base[unsafe_offset=sh + 3]) << 8
+    var z1 = ext_mul[4](_e(base, Int(z)), ext_embed[4](base.unsafe_load[width=2](Int(g1p) + dj1 * 2)))
+    var z2 = ext_mul[4](_e(base, Int(z) + p.e), ext_embed[4](base.unsafe_load[width=2](Int(g2p) + dj2 * 2)))
+    base.unsafe_store[width=16](Int(w_z) + gid * p.e, slot_weight[p](gid % N, z1, z2, rho1, rho2))
 
 
 def build_queries[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                             z: Int, shifts: Int, points: Int, tab: TableLayout, w_z: Int) raises:
+                             z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_z: Int) raises:
     """w_z (P, slot, e) for the P opening points derived from z."""
     comptime k = k_build_queries[p]
     ctx.enqueue_function[k](base, Int64(z), Int64(shifts), Int32(points), Int64(tab.base + tab.g1p), Int64(tab.base + tab.g2p),
-                            Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2), Int64(w_z),
+                            d.rho1, d.rho2, Int64(w_z),
                             grid_dim=ceildiv(points * p.N(), BLOCK), block_dim=BLOCK)
 
 

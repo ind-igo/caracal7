@@ -7,6 +7,7 @@ from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed
+from caracal7.verifier import encode_at
 from caracal7.params import REFERENCE
 from caracal7.hash import Blake3
 from caracal7.proof import Shape
@@ -70,6 +71,8 @@ def test_openings_and_fold() raises:
     var stored_w = _dl(ctx, prover, L.enc_w.stored, SYNTHETIC_COLUMNS * N)
     var stored_q = _dl(ctx, prover, L.enc_q.stored, shape.columns_q * N)
     var y = _dl(ctx, prover, L.fold_y, N * p.e)
+    var code_w = _dl(ctx, prover, L.enc_w.code, p.L() * SYNTHETIC_COLUMNS * 4)
+    var code_q = _dl(ctx, prover, L.enc_q.code, p.L() * shape.columns_q * 4)
     var pts = shift_points(f.bytes)
     var d = prover.domains
 
@@ -101,6 +104,18 @@ def test_openings_and_fold() raises:
             var v = stored_w[c * N + slot] if c < SYNTHETIC_COLUMNS else stored_q[(c - SYNTHETIC_COLUMNS) * N + slot]
             acc = f_add(acc, f_mul(_e(beta, c), E(v)))
         assert_true(acc == _e(y, slot), "fold mismatch")
+    # the alphabet rule at a few code positions: Enc(y)(g^s) = sum_c beta_c X[s, c] coordinate-wise in E (x) F4
+    for s in [0, 1, 4097, p.L() - 1]:
+        var enc = encode_at[p](y, ext_pow[2](d.g, s))
+        var nonzero = False
+        for tau in range(4):
+            var want = E(0)
+            for c in range(C):
+                var sym = code_w[(s * SYNTHETIC_COLUMNS + c) * 4 + tau] if c < SYNTHETIC_COLUMNS else code_q[(s * shape.columns_q + c - SYNTHETIC_COLUMNS) * 4 + tau]
+                want = f_add(want, f_mul(_e(beta, c), E(sym)))
+            assert_true(enc[tau] == want, "alphabet rule mismatch")
+            nonzero = nonzero or want != E(0)
+        assert_true(nonzero, "consistency check is vacuous")
 
 
 def main() raises:

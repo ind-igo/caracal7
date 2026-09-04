@@ -66,10 +66,9 @@ def test_layout_plans_the_arena() raises:
     print("arena for 53 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
 
-def test_prove_and_verify_reach_the_tail() raises:
+def test_prove_and_verify() raises:
     """The reference profile has no committed tail level, so the level-1 stages are the whole proof:
-    prove finishes, the verifier passes steps 1, 2 and 5 and stops at the tail; a tampered opening
-    fails the residual identity."""
+    it verifies end to end, and one flipped byte in each region fails the check that owns it."""
     var ctx = DeviceContext()
     var f = synthetic_families()
     var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
@@ -80,20 +79,24 @@ def test_prove_and_verify_reach_the_tail() raises:
     var fixed = shape.fixed_bytes[p, 32](0)
     assert_true(len(proof) > fixed, "proof shorter than its fixed part")
     print("proof bytes:", len(proof), " fixed:", fixed)
-    var stopped = String("")
-    try:
-        _ = verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes)
-    except e:
-        stopped = String(e)
-    assert_equal(stopped, "not implemented: verifier step 7 (tail)")
-    var bad = proof.copy()
-    bad[8 + 64 + 5] ^= 1                          # inside the openings
-    stopped = ""
-    try:
-        _ = verify[p, Blake3](bad^, shape, List[UInt8](), f.bytes)
-    except e:
-        stopped = String(e)
-    assert_equal(stopped, "residual identity fails at z")
+    assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
+    var openings = 8 + 64
+    var clear = openings + shape.points * shape.columns() * p.e
+    var multiproof = clear + shape.clear_length * p.e
+    # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
+    # itself only sees a dishonest y with a matching frontier, which no byte flip produces
+    for tamper in [(openings + 5, "residual identity fails at z"),
+                   (clear + 3, "multiproof has trailing bytes"),
+                   (multiproof + 4 + 7, "multiproof root mismatch"),
+                   (len(proof) - 1, "multiproof root mismatch")]:
+        var bad = proof.copy()
+        bad[tamper[0]] ^= 1
+        var stopped = String("")
+        try:
+            _ = verify[p, Blake3](bad^, shape, List[UInt8](), f.bytes)
+        except e:
+            stopped = String(e)
+        assert_equal(stopped, tamper[1])
 
 
 def main() raises:

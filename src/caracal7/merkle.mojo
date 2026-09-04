@@ -185,10 +185,8 @@ def _ptr(mut l: List[UInt8]) -> Pointer[UInt8, MutAnyOrigin]:
     return rebind[Pointer[UInt8, MutAnyOrigin]](l.unsafe_ptr())
 
 
-def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, positions: List[Int],
-                              mut proof: List[UInt8]) raises -> List[UInt8]:
-    """Host side. Recomputes the root from the multiproof (without its u32 header); raises on mismatch.
-    Returns the opened rows in ascending distinct position order."""
+def distinct_sorted(positions: List[Int]) -> List[Int]:
+    """The opened rows' order: ascending, each position once."""
     var known = List[Int]()
     for v in positions:
         var i = 0
@@ -196,6 +194,14 @@ def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, po
             i += 1
         if i == len(known) or known[i] != v:
             known.insert(i, v)
+    return known^
+
+
+def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, positions: List[Int],
+                              mut proof: List[UInt8]) raises -> List[UInt8]:
+    """Host side. Recomputes the root from the multiproof (without its u32 header); raises on mismatch.
+    Returns the opened rows in ascending distinct position order."""
+    var known = distinct_sorted(positions)
     var m = len(known)
     var rows = List[UInt8](capacity=m * row_bytes)
     for i in range(m * row_bytes):

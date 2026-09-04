@@ -189,7 +189,7 @@ struct Prover[p: Params, H: Hash]:
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
 
         # 11. openings at the P points
-        build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, L.w_z)
+        build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.openings, S.columns())
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.openings + S.columns_w * e, S.columns())
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
