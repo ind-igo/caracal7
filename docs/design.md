@@ -116,7 +116,25 @@ src/caracal7/
 tests/              one file per module, TestSuite runner, scalar references inline
 ```
 
-## 8. Open
+## 8. Kernel discipline
+
+Every kernel follows the ladder of Boehm's matmul article (siboehm.com/articles/22/CUDA-MMM), which took a naive kernel from 1% to 94% of cuBLAS in ten steps. The steps, in the order they pay:
+
+1. **Naive, correct, measured.** One thread per output. The scalar-reference test passes. Record GB/s and GMAC/s against the M1 Pro roofline (about 200 GB/s, fp32 peak in the low TFLOPs) before touching anything.
+2. **Coalescing.** Consecutive threads of a SIMD group read consecutive bytes. This is a layout rule, not a kernel trick: every buffer shape in section 3 puts the index that threads walk fastest last. Gave 6× in the article.
+3. **Threadgroup tiling.** Load a tile of inputs into threadgroup memory once and let every thread of the group reuse it. Apple threadgroup memory is 32 KB; tile sizes are comptime parameters of the kernel.
+4. **Register tiling.** Each thread computes a `TM × TN` tile of outputs, not one. This is where arithmetic intensity comes from and where the article got its largest single step (2.8×, then another 1.9× for 2D tiles). For our GEMM-shaped stages (the F4 DFT butterflies, the fold, the residual pass) this is the step that decides whether we are compute or bandwidth bound.
+5. **Vectorized loads.** `SIMD[UInt8, 16]` per thread: 16 F values, or one E element, per load. Store tiles transposed if that makes the inner loop vector-friendly.
+6. **Bank conflicts, double buffering, warp tiling.** Only for the kernel that is the budget, and only after step 4 is measured. The article spent four weekends on the last 14%.
+7. **Autotune.** Tile parameters are comptime; a small Mojo sweep over a handful of `(BM, BN, BK, TM, TN)` settings picks them per kernel, because the best values differ per GPU.
+
+Stop at the rung where the kernel is no longer the budget. Only `rs_encode`, and later `residual`, should reach step 6.
+
+**Arithmetic on bytes.** F values are 7 bits. A product is under 2^14, so a `UInt16` accumulator holds four products and an `Int32` holds thousands before a reduction. Reduce lazily: accumulate wide, reduce once per tile with `(x & 127) + (x >> 7)` twice, no division. F2 and F4 products are 4 and 16 base MACs on the same accumulators. This is the decision between fp32 and integer lanes in the open list: integer lanes with lazy reduction are the default until `rs_encode` shows fp32 wins.
+
+**Shapes are GEMMs.** A radix-`r` DFT stage on `batch` lines is a GEMM with `M = r`, `K = r`, `N = batch` and a twiddle matrix as the constant operand; the fold is a GEMV over columns; the residual pass is a GEMM of the family table against the LDE rows. Write each with the same tile skeleton so the tuning work transfers.
+
+## 9. Open
 
 - Apple GPU in Mojo: shared-memory size, `barrier`, and whether Blake3 on device reaches the CPU rate. Learned from `rs_encode` and `merkle`.
 - fp32 versus integer lanes for the GEMM stages. Section 10.2 assumes exact fp32 under a chunking rule; on Apple GPU integer SIMD may be the better path. Measure both in `rs_encode`.
