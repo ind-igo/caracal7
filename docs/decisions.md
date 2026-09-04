@@ -60,3 +60,18 @@ every load and store is contiguous and twiddles are broadcasts (13.9 -> 11.5 ms)
 (11.5 -> 4.7 ms; pass A alone 4.8 -> 1.0 ms). Now 74 us/column, 401 GMAC/s, above the GEMM's
 360 because the twiddle operand is a broadcast. Stage 9 with the scatter is 2.0 of the 4.7 ms.
 Integer division is the hidden cost on this GPU: prefer tables and shifts in every index computation.
+
+## Skeleton before kernels (2026-09-04)
+
+Indigo asked whether to scaffold the prover and fill it in, or keep going bottom-up. Decision: a
+thin host skeleton, no stubbed kernels. `prover.mojo` plans the arena for every buffer of design
+section 3 and enqueues every stage of spec section 10 in order; `proof.mojo` fixes the shape and
+byte layout; `verifier.mojo` lists the seven steps; the stage modules carry real signatures. Each
+missing stage raises `not implemented: <name>` where it would run, so `prove` stops at the first
+missing stage (`transcript.absorb` today) and never fakes an output. Kernels replace one raise each.
+
+The hash is a comptime parameter `H: Hash` (`hash.mojo`) on merkle, transcript, prover and
+verifier, at Indigo's request, so the tree and transcript hash can change without touching kernels.
+
+Arena for the reference profile with 53 + 48 columns: 76 MiB, dominated by the two codeword
+buffers and their RS intermediates (4 x 80640 x 4 bytes per column).

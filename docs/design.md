@@ -95,6 +95,7 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 
 ## 6. Transcript, host, verifier
 
+- `hash.mojo`: the `Hash` trait (leaf, node, absorb, squeeze; `DIGEST`, `BLOCK`). Merkle, transcript, prover, and verifier take `H: Hash` as a comptime parameter next to `Params`; Blake3 is the first implementation, and a second one (for recursion) changes nothing above the trait.
 - `transcript.mojo`: device-resident. A small buffer holds the running Blake3 state; one kernel absorbs a message (tree root, clear values, sumcheck messages) with the domain separator of 9.4, one kernel squeezes challenges into a device buffer: E elements as e bytes, positions as uniform integers below L. Every kernel that needs a challenge reads it from that buffer.
 - `verifier.mojo`: host program, separate from the prover. The seven steps of statement-layer section 6 for milestone 1 reduced to the Ligerito checks; builds `w_z` from the twelve tensor factors; checks consistency at opened positions with the E ⊗ F4 alphabet rule of 9.1; runs the sumcheck checks per level.
 - `proof.mojo`: the byte layout of statement-layer section 7. Exact encoding is fixed when the first proof is serialized.
@@ -109,13 +110,15 @@ src/caracal7/
   tables.mojo       generators, twiddle tables (host, setup)
   arena.mojo        the one device allocation (rule 6)
   encode.mojo       idft2, to_stored, pack, rs_encode
-  merkle.mojo       Blake3 tree
-  open.mojo         open, fold
-  tail.mojo         materialize, round, fold, encode
-  transcript.mojo
-  proof.mojo
-  prover.mojo
-  verifier.mojo
+  hash.mojo         Hash trait, Blake3
+  merkle.mojo       tree, query_gather (multiproof)
+  residual.mojo     lde, residual, quotient
+  open.mojo         build_queries, open, fold
+  tail.mojo         tail_encode, expected_symbols, materialize, round, fold
+  transcript.mojo   device-resident absorb / squeeze
+  proof.mojo        Shape, tail schedule, byte layout, writer / reader
+  prover.mojo       arena plan (ProverLayout) and the stage order (Prover.prove)
+  verifier.mojo     host program
 tests/              one file per module, TestSuite runner, scalar references inline
 ```
 
