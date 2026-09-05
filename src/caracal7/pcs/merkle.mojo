@@ -9,10 +9,10 @@ the frontier walked level by level, ascending, each sibling once. `check_multipr
 from std.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.params import Params
-from caracal7.hash import Hash
-from caracal7.backend import BACKEND
-from caracal7.bytes import Base, Buf, u32, put_u32
+from caracal7.core.params import Params
+from caracal7.core.hash import Hash
+from caracal7.core.backend import BACKEND
+from caracal7.core.bytes import Base, Buf, u32, put_u32
 from std.gpu import global_idx
 
 comptime MAX_QUERIES = 1024        # ponytail: frontier walk keeps the position list in registers

@@ -1,5 +1,5 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
-from caracal7.field import *
+from caracal7.core.field import *
 
 
 def test_f_add_sub_wrap() raises:

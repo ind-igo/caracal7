@@ -33,12 +33,12 @@ from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
-from caracal7.params import Params
-from caracal7.tables import TableLayout, RsTables, two_adic, rs_factors
-from caracal7.arena import Bump
-from caracal7.bytes import Base, Buf, u16
-from caracal7.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
+from caracal7.core.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
+from caracal7.core.params import Params
+from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
+from caracal7.core.arena import Bump
+from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)

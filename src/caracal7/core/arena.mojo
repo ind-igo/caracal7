@@ -6,7 +6,7 @@ pointer plus Int64 offsets; nothing is allocated after setup.
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from caracal7.bytes import Base
+from caracal7.core.bytes import Base
 
 comptime ALIGN = 256
 

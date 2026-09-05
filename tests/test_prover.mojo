@@ -5,12 +5,12 @@ from std.testing import assert_equal, assert_true, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.params import REFERENCE, Params
-from caracal7.hash import Blake3
+from caracal7.core.params import REFERENCE, Params
+from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace
 from caracal7.verifier import verify
-from caracal7.synthetic import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
+from caracal7.relations.synthetic import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
 
 comptime p = REFERENCE
 

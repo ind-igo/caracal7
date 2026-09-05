@@ -2,8 +2,8 @@
 
 from std.testing import assert_equal, TestSuite
 
-from caracal7.bytes import Base
-from caracal7.hash import Blake3
+from caracal7.core.bytes import Base
+from caracal7.core.hash import Blake3
 
 
 def _ptr(mut l: List[UInt8]) -> Base:

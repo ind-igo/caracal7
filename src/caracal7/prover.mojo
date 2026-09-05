@@ -9,25 +9,20 @@ from std.time import perf_counter_ns
 from std.math import ceildiv
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.params import Params
-from caracal7.field import ext_pow
-from caracal7.arena import Arena, Bump
-from caracal7.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
-from caracal7.encode import EncLayout, encode
-from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
-from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
+from caracal7.core.params import Params
+from caracal7.core.field import ext_pow
+from caracal7.core.arena import Arena, Bump
+from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
+from caracal7.pcs.encode import EncLayout, encode
+from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
+from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
-from caracal7.hash import Hash
-from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.ir import shift_points, ENTRY, POINT
-from caracal7.residual import lde, residual, quotient, quotient_elems, k_values_to_trace
-from caracal7.bytes import Buf
-from caracal7.backend import BACKEND
-from caracal7.open import build_queries, open, open_splits, fold
-from caracal7.accumulate import ACC, accumulate
-from caracal7.smallgrid import small_grid_accumulator, small_grid_values
-from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0
-from caracal7.tail import tail_materialize, tail_round, tail_fold
+from caracal7.core.hash import Hash
+from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold
+from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
+from caracal7.relations import ENTRY, POINT, ACC, shift_points, accumulate, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.core.bytes import Buf
+from caracal7.core.backend import BACKEND
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
 

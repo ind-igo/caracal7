@@ -18,12 +18,12 @@ Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
-from caracal7.params import Params
-from caracal7.tables import TableLayout
-from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
-from caracal7.ir import ENTRY, NONE, NO_BASIS, POINT
-from caracal7.bytes import Base, Buf, u16
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.core.params import Params
+from caracal7.core.tables import TableLayout
+from caracal7.core.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
+from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT
+from caracal7.core.bytes import Base, Buf, u16
 from std.gpu import global_idx
 
 

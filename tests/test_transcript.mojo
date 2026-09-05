@@ -3,10 +3,10 @@
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.params import REFERENCE
-from caracal7.hash import Blake3
-from caracal7.arena import Arena, Bump
-from caracal7.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
+from caracal7.core.params import REFERENCE
+from caracal7.core.hash import Blake3
+from caracal7.core.arena import Arena, Bump
+from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
 
 comptime p = REFERENCE
 comptime MSG = 3000

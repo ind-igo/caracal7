@@ -12,8 +12,8 @@ Leaf s of an RS domain with m cosets is the point gamma4^(s // L0) g^(s mod L0),
 
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import F2, F4, f_add, f_sub, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
-from caracal7.params import Params
+from caracal7.core.field import F2, F4, f_add, f_sub, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
+from caracal7.core.params import Params
 
 comptime F2_ORDER = 16128            # |F2*| = 127^2 - 1
 comptime F4_ORDER = 260144640        # |F4*| = 127^4 - 1

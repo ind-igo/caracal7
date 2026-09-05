@@ -15,12 +15,12 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one
-from caracal7.params import Params
-from caracal7.tables import RsTables, RsDomain
-from caracal7.encode import rs_encode_on, pack_index
-from caracal7.backend import BACKEND
-from caracal7.bytes import Base, Buf, u32, list_e
+from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.core.params import Params
+from caracal7.core.tables import RsTables, RsDomain
+from caracal7.pcs.encode import rs_encode_on, pack_index
+from caracal7.core.backend import BACKEND
+from caracal7.core.bytes import Base, Buf, u32, list_e
 
 comptime ROUND_THREADS = 1024      # partial sums of one sumcheck round
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4

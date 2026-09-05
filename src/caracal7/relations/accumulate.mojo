@@ -23,10 +23,10 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.field import E, f_add, ext_mul, ext_inv0, ext_one
-from caracal7.params import Params
-from caracal7.backend import BACKEND
-from caracal7.bytes import Base, Buf, u16
+from caracal7.core.field import E, f_add, ext_mul, ext_inv0, ext_one
+from caracal7.core.params import Params
+from caracal7.core.backend import BACKEND
+from caracal7.core.bytes import Base, Buf, u16
 
 comptime ACC = 40
 comptime ACC_W_MAX = 8

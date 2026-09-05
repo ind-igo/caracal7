@@ -17,13 +17,13 @@ read through the Bytes loader.
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
-from caracal7.ir import FIX_ONE, FIX_E
-from caracal7.params import Params
-from caracal7.tables import TableLayout, Domains
-from caracal7.encode import slot_target
-from caracal7.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
-from caracal7.bytes import Base, Buf, u16
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
+from caracal7.relations.ir import FIX_ONE, FIX_E
+from caracal7.core.params import Params
+from caracal7.core.tables import TableLayout, Domains
+from caracal7.pcs.encode import slot_target
+from caracal7.core.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
+from caracal7.core.bytes import Base, Buf, u16
 from std.gpu import global_idx
 
 

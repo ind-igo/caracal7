@@ -22,8 +22,8 @@ from std.gpu import thread_idx, block_idx
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
-from caracal7.field import F2, F4, f_add, f_reduce_signed, WIDE_BIAS
-from caracal7.bytes import Base
+from caracal7.core.field import F2, F4, f_add, f_reduce_signed, WIDE_BIAS
+from caracal7.core.bytes import Base
 
 
 @fieldwise_init

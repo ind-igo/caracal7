@@ -4,7 +4,7 @@ kernel module defines its own."""
 
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 
-from caracal7.field import E
+from caracal7.core.field import E
 
 comptime Base = MutPointer[UInt8, MutAnyOrigin]   # the arena base every kernel takes
 

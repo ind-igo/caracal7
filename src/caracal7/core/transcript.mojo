@@ -8,10 +8,10 @@ positions are u32 below `below`. The same `sample` runs in the device kernel and
 
 from max.gpu.host import DeviceContext
 
-from caracal7.params import Params
-from caracal7.arena import Bump
-from caracal7.hash import Hash
-from caracal7.bytes import Base, Buf
+from caracal7.core.params import Params
+from caracal7.core.arena import Bump
+from caracal7.core.hash import Hash
+from caracal7.core.bytes import Base, Buf
 
 # Domain separators, one per line of spec 9.4, in transcript order.
 comptime DS_PREFIX: UInt8 = 0       # protocol version, tower constants, grid, domains and rates, public inputs

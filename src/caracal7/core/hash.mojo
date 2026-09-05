@@ -6,7 +6,7 @@ The functions are plain Mojo with no allocation, so the same code runs inside a 
 per Merkle node, one thread for the transcript) and on the host for the verifier.
 """
 
-from caracal7.bytes import Base
+from caracal7.core.bytes import Base
 
 trait Hash:
     comptime DIGEST: Int          # output bytes, 32 for Blake3

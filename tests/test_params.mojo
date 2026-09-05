@@ -1,5 +1,5 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
-from caracal7.params import Params, REFERENCE
+from caracal7.core.params import Params, REFERENCE
 
 
 def test_reference_profile() raises:

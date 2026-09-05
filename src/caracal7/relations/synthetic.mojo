@@ -1,9 +1,9 @@
 """The synthetic instance the tests and benches run before a real frontend exists: eight families
 over ten columns, two permutation accumulators, and a trace that satisfies them."""
 
-from caracal7.field import f_add, f_mul
-from caracal7.params import Params
-from caracal7.ir import Families, NONE, NO_BASIS, FIX_ONE, FIX_E
+from caracal7.core.field import f_add, f_mul
+from caracal7.core.params import Params
+from caracal7.relations.ir import Families, NONE, NO_BASIS, FIX_ONE, FIX_E
 
 def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True) raises -> Families:
     """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation

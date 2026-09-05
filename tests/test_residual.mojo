@@ -6,15 +6,15 @@ on B and Q2, and the coordinate columns as values on H."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
-from caracal7.params import REFERENCE
-from caracal7.tables import Domains, TableLayout, build_tables
-from caracal7.arena import Arena, Bump
-from caracal7.encode import EncLayout, to_packed
-from caracal7.ir import ENTRY, NONE, entry, residual_at
-from caracal7.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
-from caracal7.residual import lde, residual, quotient, quotient_elems
-from caracal7.bytes import list_e
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
+from caracal7.core.params import REFERENCE
+from caracal7.core.tables import Domains, TableLayout, build_tables
+from caracal7.core.arena import Arena, Bump
+from caracal7.pcs.encode import EncLayout, to_packed
+from caracal7.relations.ir import ENTRY, NONE, entry, residual_at
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.relations.residual import lde, residual, quotient, quotient_elems
+from caracal7.core.bytes import list_e
 
 comptime p = REFERENCE
 comptime C = SYNTHETIC_COLUMNS

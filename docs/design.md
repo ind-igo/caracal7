@@ -108,26 +108,30 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 
 ```
 src/caracal7/
-  params.mojo       Params, derived constants
-  field.mojo        F, F2, F4, E
-  backend.mojo      Backend, tile_mac, the F2 and F4 GEMM skeletons and their operand loaders (section 9)
-  tables.mojo       generators, twiddle tables (host, setup)
-  arena.mojo        the one device allocation (rule 6)
-  encode.mojo       idft2, to_stored, pack, rs_encode
-  hash.mojo         Hash trait, Blake3
-  merkle.mojo       tree, query_gather (multiproof)
-  accumulate.mojo   the Z stage: factors, batched inversion, chain scan, Z2
-  smallgrid.mojo    R2 and Q3 in coefficient form; the verifier's cyclic interpolation
-  ir.mojo           the Caracal IR: family entries, opening points, kappa, the host residual
-  synthetic.mojo    the synthetic instance the tests and benches run
-  residual.mojo     lde, residual, quotient
-  open.mojo         build_queries, open, fold
-  tail.mojo         tail_encode, materialize, round, fold
-  transcript.mojo   device-resident absorb / squeeze
+  core/             the substrate every stage imports by module
+    params.mojo       Params, derived constants
+    field.mojo        F, F2, F4, E
+    bytes.mojo        Base, Buf[W], the host readers (rule 2)
+    backend.mojo      Backend, tile_mac, the F2 and F4 GEMM skeletons and their operand loaders (section 9)
+    arena.mojo        the one device allocation (rule 6)
+    hash.mojo         Hash trait, Blake3
+    tables.mojo       generators, twiddle tables (host, setup)
+    transcript.mojo   device-resident absorb / squeeze
+  pcs/              the Ligerito PCS; __init__ re-exports the surface the prover and the verifier call
+    encode.mojo       idft2, to_stored, pack, rs_encode
+    merkle.mojo       tree, query_gather (multiproof), check_multiproof
+    open.mojo         build_queries, open, fold
+    tail.mojo         tail_encode, materialize, round, fold, and the verifier's host mirrors
+  relations/        the Caracal IR and its arguments; __init__ re-exports the prover, verifier, and proof surface
+    ir.mojo           family entries, opening points, kappa, the host residual
+    accumulate.mojo   the Z stage: factors, batched inversion, chain scan, Z2
+    residual.mojo     lde, residual, quotient
+    smallgrid.mojo    R2 and Q3 in coefficient form; the verifier's cyclic interpolation
+    synthetic.mojo    the synthetic instance the tests and benches run
   proof.mojo        Shape, tail schedule, byte layout, writer / reader
   prover.mojo       arena plan (ProverLayout) and the stage order (Prover.prove)
   verifier.mojo     host program
-tests/              one file per module, TestSuite runner, scalar references inline
+tests/              one file per module, flat, TestSuite runner, scalar references inline
 ```
 
 ## 8. Kernel discipline

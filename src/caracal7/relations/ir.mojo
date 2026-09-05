@@ -20,9 +20,9 @@ ponytail: collapsing shared reads into one kappa (statement-layer 5) is the comp
 real family list exists; the kernel does not care.
 """
 
-from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
-from caracal7.accumulate import ACC, ACC_W_MAX
-from caracal7.bytes import get_u16, set_u16
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.relations.accumulate import ACC, ACC_W_MAX
+from caracal7.core.bytes import get_u16, set_u16
 
 comptime ENTRY = 48
 comptime NONE = 65535

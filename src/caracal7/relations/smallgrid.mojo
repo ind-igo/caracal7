@@ -22,13 +22,13 @@ ponytail: chain-end families are the permutation pair (W) only; lookup and memor
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, E, f_add, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_one
-from caracal7.params import Params
-from caracal7.tables import TableLayout
-from caracal7.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
+from caracal7.core.field import F2, E, f_add, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_one
+from caracal7.core.params import Params
+from caracal7.core.tables import TableLayout
+from caracal7.core.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
 
 comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
-from caracal7.bytes import Base, Buf
+from caracal7.core.bytes import Base, Buf
 from std.gpu import global_idx
 
 

@@ -5,13 +5,13 @@ Z(1, x2) = 1, and the grand product Z2(e2) chain_prod(e2) = 1 (c8 is a permutati
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import E, f_add, ext_mul, ext_inv, ext_one
-from caracal7.params import Params
-from caracal7.params import REFERENCE
-from caracal7.arena import Arena, Bump
-from caracal7.accumulate import ACC, accumulate
-from caracal7.bytes import get_u16, list_e
-from caracal7.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.core.field import E, f_add, ext_mul, ext_inv, ext_one
+from caracal7.core.params import Params
+from caracal7.core.params import REFERENCE
+from caracal7.core.arena import Arena, Bump
+from caracal7.relations.accumulate import ACC, accumulate
+from caracal7.core.bytes import get_u16, list_e
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 
 comptime p = REFERENCE
 comptime N = p.N()

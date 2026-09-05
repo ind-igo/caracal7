@@ -3,11 +3,11 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.params import REFERENCE
-from caracal7.bytes import Base
-from caracal7.hash import Blake3
-from caracal7.arena import Arena, Bump
-from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region, check_multiproof
+from caracal7.core.params import REFERENCE
+from caracal7.core.bytes import Base
+from caracal7.core.hash import Blake3
+from caracal7.core.arena import Arena, Bump
+from caracal7.pcs.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region, check_multiproof
 
 comptime p = REFERENCE
 comptime LEAVES = 630
