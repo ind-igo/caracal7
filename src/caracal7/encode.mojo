@@ -2,7 +2,7 @@
 
 Every kernel is rung 1 of the ladder: one thread per output, correct against the scalar
 references in tests/test_encode.mojo, measured in bench/bench_encode.mojo. Kernels take the arena
-base pointer plus Int64 byte offsets (rule 6) and are parameterized on Params (rule 3).
+base pointer plus width-typed regions of it (rule 2, bytes.mojo) and are parameterized on Params (rule 3).
 
 Buffers (bytes; shapes slowest ... fastest):
     trace   (column, x2, x1)          F
@@ -30,14 +30,14 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 
 from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
 from caracal7.params import Params
 from caracal7.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.arena import Bump
-from caracal7.device import gid
+from caracal7.bytes import Base, Buf, u16
 from caracal7.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
@@ -66,20 +66,10 @@ struct EncLayout(TrivialRegisterPassable):
         self.code = bump.alloc(p.L() * columns * 4)
 
 
-@always_inline
-def _ld[w: SIMDLength](base: Pointer[UInt8, MutAnyOrigin], off: Int) -> SIMD[DType.uint8, w]:
-    return base.unsafe_load[width=w](off)
-
-
-@always_inline
-def _st[w: SIMDLength](base: Pointer[UInt8, MutAnyOrigin], off: Int, v: SIMD[DType.uint8, w]):
-    base.unsafe_store[width=w](off, v)
-
-
 # ---- idft2: inverse 2D DFT over F2, one dense pass per axis ----
 # ponytail: dense O(h^2) per axis on the F2 skeleton; mixed-radix stages (spec 10.2) when h_l grows past a few hundred.
 
-def idft2[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], trace: Int, ctmp: Int, coeff: Int,
+def idft2[p: Params](ctx: DeviceContext, base: Base, trace: Int, ctmp: Int, coeff: Int,
                      columns: Int, tab: TableLayout) raises:
     """trace (column, x2, x1) F -> coeff (column, k2, k1, 2): inverse DFT per axis, two skeleton launches.
     Axis 1: C[k1, line] = sum_t1 Winv1[k1, t1] trace[line, t1]; axis 2 per column: C[k2, k1] = sum_t2 Winv2[k2, t2] ctmp[t2, k1]."""
@@ -116,12 +106,12 @@ def slot_target[p: Params](slot: Int) -> Tuple[Int, Int, Int, Int]:
     return (H1, x2 - H2, r, t)
 
 
-def k_to_stored[p: Params](base: Pointer[UInt8, MutAnyOrigin], coeff: Int64, stored: Int64, rho1: Int64, rho2: Int64, columns: Int32):
+def k_to_stored[p: Params](base: Base, coeff: Buf[2], stored: Buf[1], rho1: Buf[1], rho2: Buf[1], columns: Int32):
     """stored[c, slot] = coord of c_x(r) = sum_y coeff[c, x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2)."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(columns) * N:
         return
     var c = gid // N
@@ -135,14 +125,14 @@ def k_to_stored[p: Params](base: Pointer[UInt8, MutAnyOrigin], coeff: Int64, sto
     var r2 = r // p.m1
     var acc = F2(0)
     for y2 in range(p.m2):
-        var s2 = base[unsafe_offset=Int(rho2) + (y2 * r2) % p.m2]
+        var s2 = base[unsafe_offset=rho2.at((y2 * r2) % p.m2)]
         for y1 in range(p.m1):
-            var s1 = base[unsafe_offset=Int(rho1) + (y1 * r1) % p.m1]
+            var s1 = base[unsafe_offset=rho1.at((y1 * r1) % p.m1)]
             var k1 = x1 + (1 << p.a1) * y1
             var k2 = x2 + (1 << p.a2) * y2
-            var v = _ld[2](base, Int(coeff) + ((c * h2 + k2) * h1 + k1) * 2)
+            var v = coeff.load(base, (c * h2 + k2) * h1 + k1)
             acc = f_add(acc, f_mul(v, F2(f_mul(SIMD[DType.uint8, 1](s1), SIMD[DType.uint8, 1](s2))[0])))
-    base[unsafe_offset=Int(stored) + gid] = acc[coord]
+    base[unsafe_offset=stored.at(gid)] = acc[coord]
 
 
 # ---- pack: four slots on the packing digit -> one F4 symbol ----
@@ -173,26 +163,20 @@ def pack_index[p: Params](slot: Int) -> Tuple[Int, Int]:
     return (t + 2 * (x1p + H1 * ((x2 >> 2) + (1 << (p.a2 - 2)) * r)), x2 & 3)
 
 
-def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed: Int64, columns: Int32):
+def k_pack[p: Params](base: Base, stored: Buf[1], packed: Buf[4], columns: Int32):
     comptime N = p.N()
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(columns) * (N // 4):
         return
     var c = gid % Int(columns)
     var i = gid // Int(columns)
     var v = F4(0)
     comptime for j in range(4):
-        v[j] = base[unsafe_offset=Int(stored) + c * N + pack_slot[p](i, j)]
-    _st(base, Int(packed) + gid * 4, v)
+        v[j] = base[unsafe_offset=stored.at(c * N + pack_slot[p](i, j))]
+    packed.store(base, gid, v)
 
 
 # ---- rs_encode ----
-
-@always_inline
-def _u16(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> Int:
-    var v = _ld[2](base, off)
-    return Int(v[0]) + (Int(v[1]) << 8)
-
 
 @always_inline
 def _rs_thread(columns: Int32) -> Tuple[Int, Int, Bool]:
@@ -207,17 +191,17 @@ struct RsRows(Loader4):
     by gamma4^(k i) on coset k. Operand fields: b = src (i, column, 4), sb_z = the row stride, sb_hi = 4,
     sb_k = M (a count, not a stride), aux0 = crt, aux1 = twist or -1, aux2 = K."""
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
-        var i = _u16(base, Int(o.aux0) + z * 2) + Int(o.sb_k) * k
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+        var i = u16(base, Int(o.aux0) + z * 2) + Int(o.sb_k) * k
         if i >= Int(o.aux2):
             return F4(0)
-        var x = _ld[4](base, Int(o.b) + i * Int(o.sb_z) + n_hi * Int(o.sb_hi))
+        var x = base.unsafe_load[width=4](Int(o.b) + i * Int(o.sb_z) + n_hi * Int(o.sb_hi))
         if o.aux1 >= 0:
-            x = ext_mul[2](x, _ld[4](base, Int(o.aux1) + i * 4))
+            x = ext_mul[2](x, base.unsafe_load[width=4](Int(o.aux1) + i * 4))
         return x
 
 
-def rs_pass_a(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, etmp: Int, rs: RsTables,
+def rs_pass_a(ctx: DeviceContext, base: Base, src: Int, etmp: Int, rs: RsTables,
               twist: Int, columns: Int, K: Int, b: Int, M: Int) raises:
     """etmp[lin, t1, c] = sum_q wa[lin, t1, q] x_{crt(lin) + M q} twist: one F4 GEMM per line,
     M = 2^b, N = columns, K = Q, batch = the odd part."""
@@ -230,7 +214,7 @@ def rs_pass_a(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, 
     launch_gemm_f4[BACKEND, F4_TILE, RsRows, 1](ctx, base, o, 1 << b, columns, rs.Q, batch=M)
 
 
-def k_rs_stage[r: Int, stride: Int](base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, ruri: Int64,
+def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
                                     columns: Int32, b: Int32, M: Int32):
     """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
     The stride is comptime: a runtime division here costs a quarter of the encoder."""
@@ -250,21 +234,21 @@ def k_rs_stage[r: Int, stride: Int](base: Pointer[UInt8, MutAnyOrigin], etmp: In
     var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
     var xs = InlineArray[F4, r](fill=F4(0))
     comptime for k in range(r):
-        xs[k] = _ld[4](base, Int(etmp) + (((first_lin + k * st) << bb) * Int(columns) + col_off) * 4)
+        xs[k] = etmp.load(base, ((first_lin + k * st) << bb) * Int(columns) + col_off)
     comptime assert r <= F4_MAC_MAX
     comptime for t in range(r):
         var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
-            f4_mac_wide(wide, _ld[4](base, Int(wr) + (t * r + k) * 4), xs[k])
+            f4_mac_wide(wide, wr.load(base, t * r + k), xs[k])
         var acc = f_reduce_signed(wide)
         var lin = first_lin + t * st
         comptime if final:
-            var s = Mi * t1 + (_u16(base, Int(ruri) + lin * 2) << bb)    # < 2 L0
+            var s = Mi * t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
             if s >= (Mi << bb):
                 s -= (Mi << bb)
-            _st(base, Int(code) + (s * Int(columns) + c) * 4, acc)
+            code.store(base, s * Int(columns) + c, acc)
         else:
-            _st(base, Int(etmp) + ((lin << bb) * Int(columns) + col_off) * 4, acc)
+            etmp.store(base, (lin << bb) * Int(columns) + col_off, acc)
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -274,35 +258,35 @@ def grid(n: Int) -> Int:
     return ceildiv(n, BACKEND.block)
 
 
-def encode[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:
+def encode[p: Params](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
     to_packed[p](ctx, base, e, tab)
     rs_encode[p](ctx, base, e, tab)
 
 
-def to_packed[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:
+def to_packed[p: Params](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
     """trace -> coeff -> stored -> packed."""
     var cols = Int32(e.columns)
     var n_grid = e.columns * p.N()
     idft2[p](ctx, base, e.trace, e.ctmp, e.coeff, e.columns, tab)
     comptime k3 = k_to_stored[p]
-    ctx.enqueue_function[k3](base, Int64(e.coeff), Int64(e.stored), Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2), cols,
+    ctx.enqueue_function[k3](base, Buf[2](e.coeff), Buf[1](e.stored), Buf[1](tab.base + tab.rho1), Buf[1](tab.base + tab.rho2), cols,
                              grid_dim=grid(n_grid), block_dim=BACKEND.block)
     pack[p](ctx, base, e)
 
 
-def pack[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout) raises:
+def pack[p: Params](ctx: DeviceContext, base: Base, e: EncLayout) raises:
     """stored -> packed. Also the entry point of the quotient tree, which writes `stored` directly."""
     comptime k4 = k_pack[p]
-    ctx.enqueue_function[k4](base, Int64(e.stored), Int64(e.packed), Int32(e.columns),
+    ctx.enqueue_function[k4](base, Buf[1](e.stored), Buf[4](e.packed), Int32(e.columns),
                              grid_dim=grid(e.columns * p.N() // 4), block_dim=BACKEND.block)
 
 
-def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:
+def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
     """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only."""
     rs_encode_on[mask](ctx, base, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
 
 
-def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Base,
                                  src: Int, etmp: Int, code: Int, columns: Int, K: Int, L0: Int, m: Int, rs: RsTables) raises:
     """src (K, columns, 4) -> code (m L0, columns, 4) on the domain of `rs`: pass A, then the radix
     stages of M, per coset. etmp holds (L0, columns, 4)."""
@@ -316,10 +300,10 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAny
         raise Error("odd part of L0 must divide 315 and be > 1")
     var cols = Int32(columns)
     var gx = ceildiv(columns, CW)
-    var ruri = Int64(rs.base + rs.ruri)
+    var ruri = rs.base + rs.ruri
     for k in range(m):
         var twist = rs.base + rs.twist + k * K * 4 if m > 1 else -1
-        var code_k = Int64(code + k * L0 * columns * 4)
+        var code_k = code + k * L0 * columns * 4
         comptime if mask & 1:
             rs_pass_a(ctx, base, src, etmp, rs, twist, columns, K, b, M)
         comptime if mask & 2:
@@ -335,12 +319,12 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAny
                 _stage[3](ctx, base, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
 
 
-def _stage[r: Int](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], etmp: Int, wr: Int, code_k: Int64, ruri: Int64,
+def _stage[r: Int](ctx: DeviceContext, base: Base, etmp: Int, wr: Int, code_k: Int, ruri: Int,
                    cols: Int32, b: Int, M: Int, stride: Int, gx: Int) raises:
     """Dispatch the runtime stride (a product of the later radices) to a comptime one."""
     comptime for st in [1, 3, 7, 9, 21, 63]:
         if stride == st:
-            ctx.enqueue_function[k_rs_stage[r, st]](base, Int64(etmp), Int64(wr), code_k, ruri, cols, Int32(b), Int32(M),
+            ctx.enqueue_function[k_rs_stage[r, st]](base, Buf[4](etmp), Buf[4](wr), Buf[4](code_k), Buf[1](ruri), cols, Int32(b), Int32(M),
                                                     grid_dim=(gx, ceildiv((1 << b) * (M // r), RW)), block_dim=(CW, RW))
             return
     raise Error("unsupported radix stride")
