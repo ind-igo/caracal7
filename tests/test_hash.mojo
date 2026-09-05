@@ -2,11 +2,12 @@
 
 from std.testing import assert_equal, TestSuite
 
+from caracal7.bytes import Base
 from caracal7.hash import Blake3
 
 
-def _ptr(mut l: List[UInt8]) -> Pointer[UInt8, MutAnyOrigin]:
-    return rebind[Pointer[UInt8, MutAnyOrigin]](l.unsafe_ptr())
+def _ptr(mut l: List[UInt8]) -> Base:
+    return rebind[Base](l.unsafe_ptr())
 
 
 def _pattern(n: Int) -> List[UInt8]:

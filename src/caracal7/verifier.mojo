@@ -23,7 +23,7 @@ from caracal7.merkle import check_multiproof, distinct_sorted
 from caracal7.accumulate import ACC
 from caracal7.bytes import get_u16, list_e
 from caracal7.smallgrid import interp_cyclic
-from caracal7.tail import e_mul_f4, host_e, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
+from caracal7.tail import e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8], mut families: List[UInt8]) raises -> Bool:
@@ -158,21 +158,21 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             else:
                 _push_e(v, _tail_symbol(prev, idx, r_prev))
         var batch = t.elements(v_count + 1)
-        var claim = ext_mul[4](host_e(batch, 0), running_val)
+        var claim = ext_mul[4](list_e(batch, 0), running_val)
         for k in range(v_count):
-            claim = f_add(claim, ext_mul[4](host_e(batch, 1 + k), host_e(v, k)))
+            claim = f_add(claim, ext_mul[4](list_e(batch, 1 + k), list_e(v, k)))
         var w_tilde = _materialize[p](i == 0, running, y_len, batch, prev, count, d.level1 if i == 0 else doms[i - 1])
         var rounds = r.take(9 * p.e)
         var r_l = List[UInt8]()
         for dgt in range(3):
-            if f_add(host_e(rounds, 3 * dgt), host_e(rounds, 3 * dgt + 1)) != claim:
+            if f_add(list_e(rounds, 3 * dgt), list_e(rounds, 3 * dgt + 1)) != claim:
                 raise Error("sumcheck fails at a tail level")
             var msg = List[UInt8](capacity=3 * p.e)
             for b in range(3 * p.e):
                 msg.append(rounds[3 * dgt * p.e + b])
             t.absorb(DS_TAIL_ROUND, msg)
             var rd = t.elements(1)
-            claim = quadratic_at(rounds, 3 * dgt, host_e(rd, 0))
+            claim = quadratic_at(rounds, 3 * dgt, list_e(rd, 0))
             r_l.extend(rd^)
         running = fold8_host(w_tilde, lvl.rows, r_l)
         running_val = claim
@@ -200,7 +200,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
                 raise Error("consistency fails at an opened position")
     var lhs = E(0)
     for slot in range(y_len):
-        lhs = f_add(lhs, ext_mul[4](host_e(running, slot), host_e(y, slot)))
+        lhs = f_add(lhs, ext_mul[4](list_e(running, slot), list_e(y, slot)))
     if lhs != running_val:
         raise Error("evaluation claim fails")
     return True
@@ -274,16 +274,16 @@ def _tail_symbol(o: Opened, idx: Int, r_prev: List[UInt8]) -> E:
     var rr = host_r3(r_prev)
     var acc = E(0)
     for a in range(8):
-        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), host_e(o.rows_w, idx * 8 + a)))
+        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), list_e(o.rows_w, idx * 8 + a)))
     return acc
 
 
 def _materialize[p: Params](level1: Bool, running: List[UInt8], length: Int, batch: List[UInt8], o: Opened, count: Int, dom: RsDomain) -> List[UInt8]:
     """w~ = batch_0 running + sum_q batch_q g_q as a vector (tail.mojo's kernels on the host)."""
     var w = List[UInt8](length=length * p.e, fill=0)
-    var b0 = host_e(batch, 0)
+    var b0 = list_e(batch, 0)
     for n in range(length):
-        _add_e(w, n, ext_mul[4](b0, host_e(running, n)))
+        _add_e(w, n, ext_mul[4](b0, list_e(running, n)))
     if level1:
         comptime K = p.N() // 4
         var pw_all = List[UInt8](length=count * K * 4, fill=0)     # pt_q^i for every q and i
@@ -305,12 +305,12 @@ def _materialize[p: Params](level1: Bool, running: List[UInt8], length: Int, bat
                 var at = (q * K + i) * 4
                 var m = ext_mul[2](bj, F4(pw_all[at], pw_all[at + 1], pw_all[at + 2], pw_all[at + 3]))
                 for tau in range(4):
-                    acc = f_add(acc, f_mul(host_e(batch, 1 + 4 * q + tau), E(m[tau])))
+                    acc = f_add(acc, f_mul(list_e(batch, 1 + 4 * q + tau), E(m[tau])))
             _add_e(w, slot, acc)
     else:
         for q in range(count):
             var pt = dom.point(o.positions[q])
-            var bq = host_e(batch, 1 + q)
+            var bq = list_e(batch, 1 + q)
             var pw = F4(1, 0, 0, 0)
             for row in range(length):
                 _add_e(w, row, e_mul_f4(bq, pw))
@@ -324,7 +324,7 @@ def _push_e(mut l: List[UInt8], v: E):
 
 
 def _add_e(mut l: List[UInt8], i: Int, v: E):
-    var s = f_add(host_e(l, i), v)
+    var s = f_add(list_e(l, i), v)
     for t in range(16):
         l[i * 16 + t] = s[t]
 

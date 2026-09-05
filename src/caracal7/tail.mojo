@@ -225,10 +225,6 @@ def tail_fold(ctx: DeviceContext, base: Base, src: Int, rows: Int, r: Int, dst: 
 
 # ---- host side of the same formulas (verifier, tests) ----
 
-def host_e(l: List[UInt8], i: Int) -> E:
-    """Compat name for bytes.list_e: verifier.mojo still imports it under this name."""
-    return list_e(l, i)
-
 
 def host_r3(r: List[UInt8]) -> InlineArray[E, 3]:
     var out = InlineArray[E, 3](fill=E(0))

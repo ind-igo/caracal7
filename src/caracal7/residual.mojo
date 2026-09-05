@@ -41,7 +41,8 @@ from caracal7.params import Params
 from caracal7.tables import TableLayout
 from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
 from caracal7.accumulate import ACC, ACC_W_MAX
-from caracal7.device import gid, load_u16
+from caracal7.bytes import Base, Buf, u16, get_u16, set_u16
+from std.gpu import global_idx
 
 comptime ENTRY = 48
 comptime NONE = 65535
@@ -68,8 +69,8 @@ def shift_points(fam: List[UInt8]) -> List[UInt8]:
     for pt in [(0, 0), (2, 0), (FIX_ONE, 0), (FIX_E, 0), (FIX_ONE, 2), (FIX_ONE, FIX_ONE), (FIX_E, FIX_E)]:
         var n = len(pts)
         pts.extend(List[UInt8](length=POINT, fill=0))
-        _u16(pts, n, pt[0])
-        _u16(pts, n + 2, pt[1])
+        set_u16(pts, n, pt[0])
+        set_u16(pts, n + 2, pt[1])
     for k in range(len(fam) // ENTRY):
         var en = entry(fam, k)
         for side in range(2):
@@ -80,8 +81,8 @@ def shift_points(fam: List[UInt8]) -> List[UInt8]:
             if point_index(pts, d1, d2) < 0:
                 var n = len(pts)
                 pts.extend(List[UInt8](length=POINT, fill=0))
-                _u16(pts, n, d1)
-                _u16(pts, n + 2, d2)
+                set_u16(pts, n, d1)
+                set_u16(pts, n + 2, d2)
     return pts^
 
 
@@ -97,7 +98,7 @@ def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
 
 def point_index(pts: List[UInt8], dj1: Int, dj2: Int) -> Int:
     for i in range(len(pts) // POINT):
-        if _get16(pts, i * POINT) == dj1 and _get16(pts, i * POINT + 2) == dj2:
+        if get_u16(pts, i * POINT) == dj1 and get_u16(pts, i * POINT + 2) == dj2:
             return i
     return -1
 
@@ -130,13 +131,13 @@ struct Families:
             for j in range(len(num)):
                 self.add(family, 126, z_col + t, col_b=num[j], mult=1, basis=t, basis2=j)
         var a = List[UInt8](length=ACC, fill=0)
-        _u16(a, 0, z_col)
-        _u16(a, 2, len(num))
-        _u16(a, 4, len(den))
+        set_u16(a, 0, z_col)
+        set_u16(a, 2, len(num))
+        set_u16(a, 4, len(den))
         for j in range(len(num)):
-            _u16(a, 6 + 2 * j, num[j])
+            set_u16(a, 6 + 2 * j, num[j])
         for j in range(len(den)):
-            _u16(a, 22 + 2 * j, den[j])
+            set_u16(a, 22 + 2 * j, den[j])
         self.accs.extend(a^)
 
     def add(mut self, family: Int, coef: Int, col_a: Int, k1_a: Int = 0, k2_a: Int = 0,
@@ -150,29 +151,20 @@ struct Families:
         for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b]:
             if v < 0 or v > 65535:
                 raise Error("family entry field out of range")
-        _u16(e, 16, col_a)
-        _u16(e, 18, 2 * k1_a)
-        _u16(e, 20, 2 * k2_a)
-        _u16(e, 22, NONE if col_b < 0 else col_b)
-        _u16(e, 24, 2 * k1_b)
-        _u16(e, 26, 2 * k2_b)
+        set_u16(e, 16, col_a)
+        set_u16(e, 18, 2 * k1_a)
+        set_u16(e, 20, 2 * k2_a)
+        set_u16(e, 22, NONE if col_b < 0 else col_b)
+        set_u16(e, 24, 2 * k1_b)
+        set_u16(e, 26, 2 * k2_b)
         e[28] = UInt8(mult)
         e[29] = UInt8(coef % 127)
-        _u16(e, 30, family)
+        set_u16(e, 30, family)
         e[32] = UInt8(chal)
         e[33] = UInt8(NO_BASIS if basis < 0 else basis)
         e[34] = UInt8(NO_BASIS if basis2 < 0 else basis2)
         self.bytes.extend(e^)
         self.count += 1
-
-
-def _u16(mut l: List[UInt8], at: Int, v: Int):
-    l[at] = UInt8(v & 255)
-    l[at + 1] = UInt8(v >> 8)
-
-
-def _get16(l: List[UInt8], at: Int) -> Int:
-    return Int(l[at]) | Int(l[at + 1]) << 8
 
 
 @fieldwise_init
@@ -193,9 +185,9 @@ struct Entry(TrivialRegisterPassable):
 
 def entry(fam: List[UInt8], k: Int) -> Entry:
     var o = k * ENTRY
-    return Entry(col_a=_get16(fam, o + 16), dj1_a=_get16(fam, o + 18), dj2_a=_get16(fam, o + 20),
-                 col_b=_get16(fam, o + 22), dj1_b=_get16(fam, o + 24), dj2_b=_get16(fam, o + 26),
-                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=_get16(fam, o + 30),
+    return Entry(col_a=get_u16(fam, o + 16), dj1_a=get_u16(fam, o + 18), dj2_a=get_u16(fam, o + 20),
+                 col_b=get_u16(fam, o + 22), dj1_b=get_u16(fam, o + 24), dj2_b=get_u16(fam, o + 26),
+                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=get_u16(fam, o + 30),
                  chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
 
 
@@ -298,18 +290,18 @@ def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
 
 # ---- kernels ----
 
-def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int32, alpha: Int64, chals: Int64):
+def k_fold_alpha(base: Base, families: Buf[1], count: Int32, alpha: Buf[16], chals: Buf[16]):
     """kappa = coef * alpha^family * chal * b_t, one thread per entry (see `kappa_of`)."""
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(count):
         return
-    var ent = Int(families) + gid * ENTRY
-    var a = base.unsafe_load[width=16](Int(alpha))
-    var fam = load_u16(base, ent + 30)
+    var ent = families.at(gid * ENTRY)
+    var a = alpha.load(base, 0)
+    var fam = u16(base, ent + 30)
     var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 29]))
     var chal = Int(base[unsafe_offset=ent + 32])
     if chal != 0:
-        kappa = ext_mul[4](kappa, base.unsafe_load[width=16](Int(chals) + (chal - 1) * 16))
+        kappa = ext_mul[4](kappa, chals.load(base, chal - 1))
     for i in range(2):
         var basis = Int(base[unsafe_offset=ent + 33 + i])
         if basis != NO_BASIS:
@@ -320,18 +312,18 @@ def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int
 
 
 @always_inline
-def _read[p: Params](base: Pointer[UInt8, MutAnyOrigin], lde_buf: Int, at: Int, j1: Int, j2: Int) -> F2:
+def _read[p: Params](base: Base, lde: Buf[2], at: Int, j1: Int, j2: Int) -> F2:
     """c(shift point) for the read descriptor (col, dj1, dj2) at `at`; shifts are below the domain size."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    var col = load_u16(base, at)
-    var a = j1 + load_u16(base, at + 2)
+    var col = u16(base, at)
+    var a = j1 + u16(base, at + 2)
     if a >= G1:
         a -= G1
-    var b = j2 + load_u16(base, at + 4)
+    var b = j2 + u16(base, at + 4)
     if b >= G2:
         b -= G2
-    return base.unsafe_load[width=2](lde_buf + ((col * G2 + b) * G1 + a) * 2)
+    return lde.load(base, (col * G2 + b) * G1 + a)
 
 
 struct Family[p: Params](Loader):
@@ -339,11 +331,11 @@ struct Family[p: Params](Loader):
     aux0 = lde, aux1 = gate1, aux2 = gate2."""
 
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var ent = Int(o.b) + k * ENTRY
-        var v = _read[Self.p](base, Int(o.aux0), ent + 16, n_lo, n_hi)
-        if load_u16(base, ent + 22) != NONE:
-            v = ext_mul[1](v, _read[Self.p](base, Int(o.aux0), ent + 22, n_lo, n_hi))
+        var v = _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 16, n_lo, n_hi)
+        if u16(base, ent + 22) != NONE:
+            v = ext_mul[1](v, _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 22, n_lo, n_hi))
         var mult = base[unsafe_offset=ent + 28]
         if mult == 1:
             v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + n_lo * 2))
@@ -352,23 +344,23 @@ struct Family[p: Params](Loader):
         return v
 
 
-def k_values_to_trace[p: Params](base: Pointer[UInt8, MutAnyOrigin], vals: Int64, trace: Int64, groups: Int32):
+def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups: Int32):
     """trace[q * e + tau, x] = coordinate tau of V_q(x) for x in H, q < groups, vals (groups, x, e):
     E-valued columns (A, B, Q2; the accumulators) are ordinary F-valued coordinate columns from here
     on (see docs/decisions.md)."""
     comptime N = p.N()
     comptime e = p.e
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(groups) * e * N:
         return
     var c = gid // N
     var x = gid % N
-    base[unsafe_offset=Int(trace) + gid] = base[unsafe_offset=Int(vals) + ((c // e) * N + x) * e + c % e]
+    base[unsafe_offset=trace.at(gid)] = base[unsafe_offset=vals.at(((c // e) * N + x) * e + c % e)]
 
 
 # ---- host orchestration ----
 
-def lde[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def lde[p: Params](ctx: DeviceContext, base: Base,
                    coeff: Int, columns: Int, tab: TableLayout, ltmp: Int, dst: Int) raises:
     """coeff (column, k2, k1, 2) -> dst (column, j2, j1, 2): forward DFT per axis onto G (spec 10.2).
     The twist by g^i is inside the tables g_l^(j k), so there is no separate pass."""
@@ -386,13 +378,13 @@ def lde[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o2, G2, G1, h2, batch=columns)
 
 
-def residual[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def residual[p: Params](ctx: DeviceContext, base: Base,
                         lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, chals: Int, dst: Int) raises:
     """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5 as
     one GEMM, A = the kappa table (8 F2 lanes x entries), B gathered from the LDE."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    ctx.enqueue_function[k_fold_alpha](base, Int64(families), Int32(count), Int64(alpha), Int64(chals),
+    ctx.enqueue_function[k_fold_alpha](base, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
     var o = strided(a=families, sa_m=2, sa_k=ENTRY, b=families, sb_k=0, sb_hi=0, sb_lo=0,
                     c=dst, sc_m=2, sc_hi=G1 * p.e, sc_lo=p.e)
@@ -404,7 +396,7 @@ def residual[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, base, o, p.e // 2, G1 * G2, count)
 
 
-def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def quotient[p: Params](ctx: DeviceContext, base: Base,
                         residual_buf: Int, tab: TableLayout, scratch: Int, trace_q: Int) raises:
     """residual -> A, B, Q2 coefficients -> their values on H -> 3 e coordinate columns as the
     trace of the quotient tree, which the level-1 encoder then treats like any witness column.
@@ -453,4 +445,4 @@ def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
         c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
-    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)
+    ctx.enqueue_function[k8](base, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)

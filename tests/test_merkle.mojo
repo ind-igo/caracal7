@@ -4,6 +4,7 @@ from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
 from caracal7.params import REFERENCE
+from caracal7.bytes import Base
 from caracal7.hash import Blake3
 from caracal7.arena import Arena, Bump
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region, check_multiproof
@@ -14,8 +15,8 @@ comptime ROW = 12
 comptime QUERIES = 9
 
 
-def _ptr(mut l: List[UInt8]) -> Pointer[UInt8, MutAnyOrigin]:
-    return rebind[Pointer[UInt8, MutAnyOrigin]](l.unsafe_ptr())
+def _ptr(mut l: List[UInt8]) -> Base:
+    return rebind[Base](l.unsafe_ptr())
 
 
 def _host_root(mut code: List[UInt8]) -> List[UInt8]:

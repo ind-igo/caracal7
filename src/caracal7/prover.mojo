@@ -20,6 +20,7 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT, k_values_to_trace
+from caracal7.bytes import Buf
 from caracal7.backend import BACKEND
 from caracal7.open import build_queries, open, open_splits, fold
 from caracal7.accumulate import ACC, accumulate
@@ -265,7 +266,7 @@ struct Prover[p: Params, H: Hash]:
             accumulate[Self.p](ctx, base, L.enc_w.trace, L.accs + k * ACC, L.stage1 + 2 * e, L.num, L.den, L.zscratch,
                                L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e, L.n_end + k * Self.p.h2() * e, L.d_end + k * Self.p.h2() * e)
         if S.columns_z > 0:
-            ctx.enqueue_function[k_values_to_trace[Self.p]](base, Int64(L.zval), Int64(L.enc_z.trace), Int32(S.accumulators()),
+            ctx.enqueue_function[k_values_to_trace[Self.p]](base, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
                                                             grid_dim=ceildiv(S.columns_z * N, BACKEND.block), block_dim=BACKEND.block)
             self._mark(ctx, profile, "accumulate", t0)
             encode[Self.p](ctx, base, L.enc_z, L.tables)

@@ -13,6 +13,7 @@ from caracal7.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
 from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, shift_points, point_coord
+from caracal7.bytes import list_e
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -29,13 +30,6 @@ def _dl(ctx: DeviceContext, prover: Prover[p, Blake3], off: Int, bytes: Int) rai
     for i in range(bytes):
         l.append(h[i])
     return l^
-
-
-def _e(l: List[UInt8], i: Int) -> E:
-    var v = E(0)
-    for t in range(p.e):
-        v[t] = l[i * p.e + t]
-    return v
 
 
 def _horner(coef: List[UInt8], off: Int, stride: Int, ext: Int, z1: E, z2: E, rows: Int) -> E:
@@ -82,21 +76,21 @@ def test_openings_and_fold() raises:
     for pt in range(P):
         var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
         var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
-        var z1 = point_coord(_e(z, 0), dj1, d.g1, p.h1())
-        var z2 = point_coord(_e(z, 1), dj2, d.g2, p.h2())
+        var z1 = point_coord(list_e(z, 0), dj1, d.g1, p.h1())
+        var z2 = point_coord(list_e(z, 1), dj2, d.g2, p.h2())
         for c in range(SYNTHETIC_COLUMNS):
             var want = _horner(coeff, c * N * 2, 2, 2, z1, z2, h2)
-            assert_true(want == _e(openings, pt * C + c), "witness opening mismatch")
+            assert_true(want == list_e(openings, pt * C + c), "witness opening mismatch")
     # quotient coordinate columns at z: sum_tau e_tau alpha_tau = Q(z) from the coefficient tables
     var q1coef = 2 * h1 * G2 * p.e
     var srcs: List[Int] = [q1coef, q1coef + h2 * h1 * p.e, q1coef + G2 * h1 * p.e]
     for q in range(3):
-        var want = _horner(scratch, srcs[q], p.e, p.e, _e(z, 0), _e(z, 1), h2)
+        var want = _horner(scratch, srcs[q], p.e, p.e, list_e(z, 0), list_e(z, 1), h2)
         var got = E(0)
         for tau in range(p.e):
             var basis = E(0)
             basis[tau] = 1
-            got = f_add(got, ext_mul[4](basis, _e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
+            got = f_add(got, ext_mul[4](basis, list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
         assert_true(want == got, "quotient opening mismatch")
     # fold at a few slots
     var slots: List[Int] = [0, 1, 77, N // 2, N - 1]
@@ -104,8 +98,8 @@ def test_openings_and_fold() raises:
         var acc = E(0)
         for c in range(C):
             var v = stored_w[c * N + slot] if c < SYNTHETIC_COLUMNS else (stored_z[(c - SYNTHETIC_COLUMNS) * N + slot] if c < SYNTHETIC_COLUMNS + shape.columns_z else stored_q[(c - SYNTHETIC_COLUMNS - shape.columns_z) * N + slot])
-            acc = f_add(acc, f_mul(_e(beta, c), E(v)))
-        assert_true(acc == _e(y, slot), "fold mismatch")
+            acc = f_add(acc, f_mul(list_e(beta, c), E(v)))
+        assert_true(acc == list_e(y, slot), "fold mismatch")
     # the alphabet rule at a few code positions: Enc(y)(g^s) = sum_c beta_c X[s, c] coordinate-wise in E (x) F4
     for s in [0, 1, 4097, p.L() - 1]:
         var enc = encode_at[p](y, d.level1.point(s))
@@ -114,7 +108,7 @@ def test_openings_and_fold() raises:
             var want = E(0)
             for c in range(C):
                 var sym = code_w[(s * SYNTHETIC_COLUMNS + c) * 4 + tau] if c < SYNTHETIC_COLUMNS else (code_z[(s * shape.columns_z + c - SYNTHETIC_COLUMNS) * 4 + tau] if c < SYNTHETIC_COLUMNS + shape.columns_z else code_q[(s * shape.columns_q + c - SYNTHETIC_COLUMNS - shape.columns_z) * 4 + tau])
-                want = f_add(want, f_mul(_e(beta, c), E(sym)))
+                want = f_add(want, f_mul(list_e(beta, c), E(sym)))
             assert_true(enc[tau] == want, "alphabet rule mismatch")
             nonzero = nonzero or want != E(0)
         assert_true(nonzero, "consistency check is vacuous")

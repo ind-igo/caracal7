@@ -11,7 +11,8 @@ from caracal7.params import REFERENCE
 from caracal7.tables import RsDomain, RsTables, build_rs_tables
 from caracal7.arena import Arena, Bump
 from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold
-from caracal7.tail import host_e, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
+from caracal7.bytes import list_e
+from caracal7.tail import host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -41,7 +42,7 @@ def _u32s(vals: List[Int]) -> List[UInt8]:
 def _inner(a: List[UInt8], b: List[UInt8], n: Int) -> E:
     var acc = E(0)
     for i in range(n):
-        acc = f_add(acc, ext_mul[4](host_e(a, i), host_e(b, i)))
+        acc = f_add(acc, ext_mul[4](list_e(a, i), list_e(b, i)))
     return acc
 
 
@@ -141,32 +142,32 @@ def test_tail_kernels() raises:
         var pt = F4(pts[4 * q], pts[4 * q + 1], pts[4 * q + 2], pts[4 * q + 3])
         assert_true(pt == dom1.point(pos_list[q]), "point mismatch")
     # the batched claim: <y, w~> = batch_0 <y, running> + sum_q batch_q g_q(y), g_q the level-1 functionals at pt_q
-    var claim = ext_mul[4](host_e(batch, 0), _inner(y, running, N))
+    var claim = ext_mul[4](list_e(batch, 0), _inner(y, running, N))
     for q in range(Q):
         var enc = encode_at[p](y, F4(pts[4 * q], pts[4 * q + 1], pts[4 * q + 2], pts[4 * q + 3]))
         for tau in range(4):
-            claim = f_add(claim, ext_mul[4](host_e(batch, 1 + 4 * q + tau), enc[tau]))
+            claim = f_add(claim, ext_mul[4](list_e(batch, 1 + 4 * q + tau), enc[tau]))
     assert_true(_inner(y, w, N) == claim, "materialized query does not carry the batched claim")
     # sumcheck: s_d(0) + s_d(1) = previous, ending at <fold(y), fold(w~)>
     var prev = claim
     for d in range(3):
-        assert_true(f_add(host_e(rounds, 3 * d), host_e(rounds, 3 * d + 1)) == prev, "round " + String(d) + " sum mismatch")
-        prev = quadratic_at(rounds, 3 * d, host_e(r, d))
+        assert_true(f_add(list_e(rounds, 3 * d), list_e(rounds, 3 * d + 1)) == prev, "round " + String(d) + " sum mismatch")
+        prev = quadratic_at(rounds, 3 * d, list_e(r, d))
     assert_true(ynext == fold8_host(y, ROWS, r), "fold mismatch")
     assert_true(wnext == fold8_host(w, ROWS, r), "query fold mismatch")
     assert_true(_inner(ynext, wnext, ROWS) == prev, "folded claim mismatch")
     assert_true(prev != E(0), "vacuous")
     # tail level
-    var claim2 = ext_mul[4](host_e(batch2, 0), _inner(ynext, wnext, ROWS))
+    var claim2 = ext_mul[4](list_e(batch2, 0), _inner(ynext, wnext, ROWS))
     for q in range(Q):
         var pt = F4(pts2[4 * q], pts2[4 * q + 1], pts2[4 * q + 2], pts2[4 * q + 3])
         assert_true(pt == dom2.point(pos2_list[q]), "coset point mismatch")
         # the encoder is linear: the r_bar-combined row of Enc(y) at s is Enc(fold(y))(pt), the verifier's expected symbol
         var row = E(0)
         for a in range(8):
-            row = f_add(row, ext_mul[4](rbar_at(host_r3(r), a, 3), host_e(code, pos2_list[q] * 8 + a)))
+            row = f_add(row, ext_mul[4](rbar_at(host_r3(r), a, 3), list_e(code, pos2_list[q] * 8 + a)))
         assert_true(row == tail_encode_at(ynext, ROWS, pt), "expected symbol from the committed row mismatch")
-        claim2 = f_add(claim2, ext_mul[4](host_e(batch2, 1 + q), tail_encode_at(ynext, ROWS, pt)))
+        claim2 = f_add(claim2, ext_mul[4](list_e(batch2, 1 + q), tail_encode_at(ynext, ROWS, pt)))
     assert_true(_inner(ynext, w2, ROWS) == claim2, "tail query does not carry the batched claim")
 
 

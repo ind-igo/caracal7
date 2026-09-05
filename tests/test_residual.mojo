@@ -13,6 +13,7 @@ from caracal7.arena import Arena, Bump
 from caracal7.encode import EncLayout, to_packed
 from caracal7.residual import ENTRY, NONE, SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, entry, residual_at
 from caracal7.residual import lde, residual, quotient, quotient_elems
+from caracal7.bytes import list_e
 
 comptime p = REFERENCE
 comptime C = SYNTHETIC_COLUMNS
@@ -95,10 +96,7 @@ struct Run:
         return F2(l[off], l[off + 1])
 
     def e(self, l: List[UInt8], off: Int) -> E:
-        var v = E(0)
-        for i in range(p.e):
-            v[i] = l[off + i]
-        return v
+        return list_e(l, off // p.e)
 
     def col_at(self, c: Int, z1: E, z2: E) -> E:
         """The column c at z from the monomial coefficients, Horner on both axes."""
