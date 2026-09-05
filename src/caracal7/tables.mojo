@@ -144,9 +144,12 @@ def rs_factors(M: Int) -> Tuple[Int, Int, Int]:
 struct RsTables(TrivialRegisterPassable):
     """Twiddles of one RS domain L = m * 2^b * M for messages of length K (encode.rs_encode):
     ga (2^b, 4) gA^n; wr (r, r, 4) w_r^(t k) per radix; crt / ruri (M, 2) the Good-Thomas index maps
-    lin -> i2 and lin -> t2 as u16; twist (m, K, 4) gamma4^(k i), the coset twist (absent at m = 1)."""
+    lin -> i2 and lin -> t2 as u16; twist (m, K, 4) gamma4^(k i), the coset twist (absent at m = 1);
+    wa (M, 2^b, Q, 4) the pass-A operand gA^(t1 ((crt(lin) + M q) mod 2^b)), Q = ceil(K / M), zero past K."""
     var base: Int
     var ga: Int
+    var wa: Int
+    var Q: Int
     var w5: Int
     var w7: Int
     var w9: Int
@@ -167,6 +170,8 @@ struct RsTables(TrivialRegisterPassable):
         self.crt = off; off += M * 2
         self.ruri = off; off += M * 2
         self.twist = off; off += (m * K * 4 if m > 1 else 0)
+        self.Q = (K + M - 1) // M
+        self.wa = off; off += M * (1 << b) * self.Q * 4
         self.bytes = off
 
 
@@ -214,6 +219,13 @@ def _fill_rs(h: HostBuffer[DType.uint8], at: Int, rs: RsTables, dom: RsDomain, K
         h[at + rs.crt + lin * 2 + 1] = UInt8(i2 >> 8)
         h[at + rs.ruri + lin * 2] = UInt8(t2 & 255)
         h[at + rs.ruri + lin * 2 + 1] = UInt8(t2 >> 8)
+        for t1 in range(1 << b):
+            for q in range(rs.Q):
+                var i = i2 + M * q
+                var w = F4(0)
+                if i < K:
+                    w = ext_pow[2](gA, (t1 * (i & ((1 << b) - 1))) & ((1 << b) - 1))
+                _put(h, at + rs.wa + ((lin << b) + t1) * rs.Q * 4 + q * 4, w)
     if dom.m > 1:
         for k in range(dom.m):
             var rep = dom.rep(k)

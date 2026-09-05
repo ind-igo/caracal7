@@ -22,7 +22,7 @@ from std.gpu import thread_idx, block_idx
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
-from caracal7.field import F2, f_add, f_reduce_signed, WIDE_BIAS
+from caracal7.field import F2, F4, f_add, f_reduce_signed, WIDE_BIAS
 
 
 @fieldwise_init
@@ -53,6 +53,8 @@ comptime SIMD_LANES = Backend(threadgroup_bytes=32768, mma_k=1, max_terms=128, v
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
 comptime BACKEND = SIMD_LANES   # ponytail: the only implementation; select by device family here when an MMA path lands
 comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = the 8 F2 lanes of E: residual, open, fold
+comptime F4_TILE = Tile(BM=32, BN=32, BK=8, TM=2, TN=2)   # gemm_f4: 4 x 4 register tiles spill (102 byte-GMAC/s), 2 x 4 gives 212, 2 x 2 gives 340
+comptime F4_TERMS = 32   # F4 products per lane between reductions: a (1, i) lane moves by at most 8 * 126^2 per product
 
 
 @always_inline
@@ -227,3 +229,144 @@ def strided(a: Int, sa_m: Int, sa_k: Int, b: Int, sb_k: Int, sb_hi: Int, sb_lo: 
                     b=Int64(b), sb_k=Int64(sb_k), sb_hi=Int64(sb_hi), sb_lo=Int64(sb_lo), sb_z=Int64(sb_z), sb_zd=Int64(sb_zd),
                     c=Int64(c), sc_m=Int64(sc_m), sc_hi=Int64(sc_hi), sc_lo=Int64(sc_lo), sc_z=Int64(sc_z),
                     aux0=0, aux1=0, aux2=0)
+
+
+trait Loader4:
+    @staticmethod
+    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+        """B[k, n] as F4 (4 bytes), n = n_hi * D + n_lo."""
+        ...
+
+
+struct Strided4(Loader4):
+    @staticmethod
+    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+        return base.unsafe_load[width=4](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
+
+
+def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
+    base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int32, N: Int32, K: Int32
+):
+    """C[m, n] = (C[m, n] if acc) + sum_k A[m, k] B[k, n] over F4 = F2[j], j^2 = 2 + i, coordinates
+    (1, i, j, ij): the F2 skeleton with four byte planes and twenty `tile_mac` per k into four
+    accumulator tiles; the j^2 = 2 + i term is folded per step with doubled A planes (more MACs, fewer
+    live registers: six accumulator tiles spilled and ran 7x slower)."""
+    comptime BM = T.BM
+    comptime BN = T.BN
+    comptime BK = T.BK
+    comptime TM = T.TM
+    comptime TN = T.TN
+    comptime THREADS = T.threads()
+    comptime assert BM % TM == 0 and BN % TN == 0
+    comptime assert F4_TERMS % BK == 0, "the lazy reduction cadence needs BK | F4_TERMS"
+    comptime assert F4_TERMS * 8 * 126 * 126 + 126 < Int(WIDE_BIAS), "F4 lanes overflow WIDE_BIAS before a reduction"
+    comptime assert (BM * BK) % THREADS == 0 and (BK * BN) % THREADS == 0
+    comptime assert 4 * (BK * BM + BK * BN) <= B.threadgroup_bytes
+
+    var tid = Int(thread_idx.x)
+    var trow = tid // (BN // TN)
+    var tcol = tid % (BN // TN)
+    var brow = Int(block_idx.y) * BM
+    var bcol = Int(block_idx.x) * BN
+    var z = Int(block_idx.z)
+    var zb = z % Int(o.sb_zd) if o.sb_zd > 0 else z
+    var Mi = Int(M)
+    var Ni = Int(N)
+    var Ki = Int(K)
+
+    var As0 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())
+    var As1 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())
+    var As2 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())
+    var As3 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())
+    var Bs0 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var Bs1 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var Bs2 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var Bs3 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var c0 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c1 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c2 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c3 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+
+    for kt in range(ceildiv(Ki, BK)):
+        comptime for i in range(0, BM * BK, THREADS):
+            var idx = i + tid
+            var r = idx // BK
+            var kk = idx % BK
+            var v = F4(0)
+            if brow + r < Mi and kt * BK + kk < Ki:
+                v = base.unsafe_load[width=4](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + z * Int(o.sa_z))
+            As0.ptr.unsafe_store(kk * BM + r, v[0])
+            As1.ptr.unsafe_store(kk * BM + r, v[1])
+            As2.ptr.unsafe_store(kk * BM + r, v[2])
+            As3.ptr.unsafe_store(kk * BM + r, v[3])
+        comptime for i in range(0, BK * BN, THREADS):
+            var idx = i + tid
+            var kk = idx // BN
+            var n = bcol + idx % BN
+            var v = F4(0)
+            if n < Ni and kt * BK + kk < Ki:
+                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+            Bs0.ptr.unsafe_store(kk * BN + idx % BN, v[0])
+            Bs1.ptr.unsafe_store(kk * BN + idx % BN, v[1])
+            Bs2.ptr.unsafe_store(kk * BN + idx % BN, v[2])
+            Bs3.ptr.unsafe_store(kk * BN + idx % BN, v[3])
+        barrier()
+        comptime for kk in range(BK):
+            var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+            var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+            var a2 = As2.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+            var a3 = As3.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+            var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+            var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+            var b2 = Bs2.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+            var b3 = Bs3.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+            # (a_lo + a_hi j)(b_lo + b_hi j) = a_lo b_lo + (2 + i) a_hi b_hi + (a_lo b_hi + a_hi b_lo) j
+            tile_mac[B](a0, b0, c0)
+            tile_mac[B, neg=True](a1, b1, c0)
+            tile_mac[B](a2 + a2, b2, c0)             # 2 (a2 b2 - a3 b3) - (a2 b3 + a3 b2)
+            tile_mac[B, neg=True](a3 + a3, b3, c0)
+            tile_mac[B, neg=True](a2, b3, c0)
+            tile_mac[B, neg=True](a3, b2, c0)
+            tile_mac[B](a0, b1, c1)
+            tile_mac[B](a1, b0, c1)
+            tile_mac[B](a2 + a2, b3, c1)             # 2 (a2 b3 + a3 b2) + (a2 b2 - a3 b3)
+            tile_mac[B](a3 + a3, b2, c1)
+            tile_mac[B](a2, b2, c1)
+            tile_mac[B, neg=True](a3, b3, c1)
+            tile_mac[B](a0, b2, c2)
+            tile_mac[B, neg=True](a1, b3, c2)
+            tile_mac[B](a2, b0, c2)
+            tile_mac[B, neg=True](a3, b1, c2)
+            tile_mac[B](a0, b3, c3)
+            tile_mac[B](a1, b2, c3)
+            tile_mac[B](a2, b1, c3)
+            tile_mac[B](a3, b0, c3)
+        barrier()
+        if ((kt + 1) * BK) % F4_TERMS == 0:
+            tile_reduce(c0)
+            tile_reduce(c1)
+            tile_reduce(c2)
+            tile_reduce(c3)
+
+    tile_reduce(c0)
+    tile_reduce(c1)
+    tile_reduce(c2)
+    tile_reduce(c3)
+    comptime for i in range(TM):
+        var m = brow + trow * TM + i
+        comptime for j in range(TN):
+            var n = bcol + tcol * TN + j
+            if m < Mi and n < Ni:
+                var v = F4(UInt8(c0[i][j]), UInt8(c1[i][j]), UInt8(c2[i][j]), UInt8(c3[i][j]))
+                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + z * Int(o.sc_z)
+                comptime if acc:
+                    v = f_add(v, base.unsafe_load[width=4](at))
+                base.unsafe_store[width=4](at, v)
+
+
+def launch_gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
+    ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
+) raises:
+    comptime kernel = gemm_f4[B, T, L, D, acc]
+    ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
+                                 grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())

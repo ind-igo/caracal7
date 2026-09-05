@@ -3,9 +3,9 @@
 from std.testing import assert_equal, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, f_add, ext_mul
+from caracal7.field import F2, F4, f_add, ext_mul
 from caracal7.arena import Arena, Bump
-from caracal7.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
+from caracal7.backend import BACKEND, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
 
 
 def _run[D: Int, T: Tile](M: Int, N: Int, K: Int, batch: Int) raises:
@@ -51,6 +51,42 @@ def test_edges_and_batch() raises:
 
 def test_lane_view() raises:
     _run[8, Tile(BM=8, BN=128, BK=16, TM=8, TN=4)](8, 13 * 8, 13, 1)   # the residual pass shape
+
+
+def test_f4() raises:
+    """The F4 skeleton against a scalar F4 matmul: ragged edges, K across two F4_TERMS reductions, a batch."""
+    var M = 70
+    var N = 50
+    var K = 75
+    var batch = 2
+    var ctx = DeviceContext()
+    var bump = Bump()
+    var a = bump.alloc(batch * M * K * 4)
+    var b = bump.alloc(batch * K * N * 4)
+    var c = bump.alloc(batch * M * N * 4)
+    var arena = Arena(ctx, bump.used)
+    var h = ctx.enqueue_create_host_buffer[DType.uint8](bump.used)
+    ctx.synchronize()
+    for i in range(bump.used):
+        h[i] = UInt8((i * 29 + 3) % 127)
+    arena.upload(ctx, 0, h)
+    var o = strided(a, K * 4, 4, sa_z=M * K * 4, b=b, sb_k=N * 4, sb_hi=4, sb_lo=0, sb_z=K * N * 4,
+                    c=c, sc_m=N * 4, sc_hi=4, sc_lo=0, sc_z=M * N * 4)
+    launch_gemm_f4[BACKEND, BACKEND.tile, Strided4, 1](ctx, arena.base(), o, M, N, K, batch)
+    arena.download(ctx, 0, h)
+    ctx.synchronize()
+    var bad = 0
+    for z in range(batch):
+        for m in range(M):
+            for n in range(N):
+                var acc = F4(0)
+                for k in range(K):
+                    var x = h.unsafe_ptr().load[width=4](a + ((z * M + m) * K + k) * 4)
+                    var y = h.unsafe_ptr().load[width=4](b + ((z * K + k) * N + n) * 4)
+                    acc = f_add(acc, ext_mul[2](x, y))
+                if acc != h.unsafe_ptr().load[width=4](c + ((z * M + m) * N + n) * 4):
+                    bad += 1
+    assert_equal(bad, 0)
 
 
 def main() raises:

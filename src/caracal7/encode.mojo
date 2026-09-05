@@ -24,6 +24,7 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
     input index  i  <-> (i mod 2^b, i mod M), i mod M <-> (i mod 5, i mod 7, i mod 9)
     output index s  =  (M t1 + 2^b t2) mod L0,  t2 = sum_r (M / r) t_r mod M
     pass A       Y[t1, lin] = sum_{i = i2 + M q < K} x_i gA^(t1 (i mod 2^b)),   i2 = crt(lin)
+                 an F4 GEMM per lin on the skeleton: A = the wa table (2^b, Q), B = the message rows (Q, columns)
     stage r      r-point DFT along digit d_r of lin, in place, twiddles w_r^(t k)
     the last stage also scatters to the leaf-major `code`, coset k at s + k L0.
 """
@@ -36,6 +37,7 @@ from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_
 from caracal7.params import Params
 from caracal7.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.arena import Bump
+from caracal7.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
 
 comptime BLOCK = 256
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
@@ -80,41 +82,20 @@ def _st[w: SIMDLength](base: Pointer[UInt8, MutAnyOrigin], off: Int, v: SIMD[DTy
 
 
 # ---- idft2: inverse 2D DFT over F2, one dense pass per axis ----
-# ponytail: dense O(h^2) per axis; mixed-radix stages (spec 10.2) when h_l grows past a few hundred.
+# ponytail: dense O(h^2) per axis on the F2 skeleton; mixed-radix stages (spec 10.2) when h_l grows past a few hundred.
 
-def k_idft_axis1[p: Params](base: Pointer[UInt8, MutAnyOrigin], trace: Int64, ctmp: Int64, winv1: Int64, columns: Int32):
-    """ctmp[c, x2, k1] = sum_t1 Winv1[k1, t1] * trace[c, x2, t1]   (F2 x F)."""
+def idft2[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], trace: Int, ctmp: Int, coeff: Int,
+                     columns: Int, tab: TableLayout) raises:
+    """trace (column, x2, x1) F -> coeff (column, k2, k1, 2): inverse DFT per axis, two skeleton launches.
+    Axis 1: C[k1, line] = sum_t1 Winv1[k1, t1] trace[line, t1]; axis 2 per column: C[k2, k1] = sum_t2 Winv2[k2, t2] ctmp[t2, k1]."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
-    var gid = _gid()
-    if gid >= Int(columns) * h2 * h1:
-        return
-    var k1 = gid % h1
-    var line = gid // h1                    # (c, x2)
-    var acc = F2(0)
-    for t1 in range(h1):
-        var w = _ld[2](base, Int(winv1) + (k1 * h1 + t1) * 2)
-        var v = base[Int(trace) + line * h1 + t1]
-        acc = f_add(acc, f_mul(w, F2(v)))
-    _st(base, Int(ctmp) + (line * h1 + k1) * 2, acc)
-
-
-def k_idft_axis2[p: Params](base: Pointer[UInt8, MutAnyOrigin], ctmp: Int64, coeff: Int64, winv2: Int64, columns: Int32):
-    """coeff[c, k2, k1] = sum_t2 Winv2[k2, t2] * ctmp[c, t2, k1]   (F2 x F2)."""
-    comptime h1 = p.h1()
-    comptime h2 = p.h2()
-    var gid = _gid()
-    if gid >= Int(columns) * h2 * h1:
-        return
-    var k1 = gid % h1
-    var k2 = (gid // h1) % h2
-    var c = gid // (h1 * h2)
-    var acc = F2(0)
-    for t2 in range(h2):
-        var w = _ld[2](base, Int(winv2) + (k2 * h2 + t2) * 2)
-        var v = _ld[2](base, Int(ctmp) + ((c * h2 + t2) * h1 + k1) * 2)
-        acc = f_add(acc, ext_mul[1](w, v))
-    _st(base, Int(coeff) + ((c * h2 + k2) * h1 + k1) * 2, acc)
+    var o1 = strided(a=tab.base + tab.winv1, sa_m=h1 * 2, sa_k=2, b=trace, sb_k=1, sb_hi=h1, sb_lo=0,
+                     c=ctmp, sc_m=2, sc_hi=h1 * 2, sc_lo=0)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes, 1](ctx, base, o1, h1, columns * h2, h1)
+    var o2 = strided(a=tab.base + tab.winv2, sa_m=h2 * 2, sa_k=2, b=ctmp, sb_k=h1 * 2, sb_hi=2, sb_lo=0,
+                     c=coeff, sc_m=h1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * h1 * 2, sc_z=h2 * h1 * 2)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o2, h2, h1, h2, batch=columns)
 
 
 # ---- to_stored: mixed basis on the odd digit, Frobenius-real slots (spec 9.1) ----
@@ -226,36 +207,32 @@ def _rs_thread(columns: Int32) -> Tuple[Int, Int, Bool]:
     return (c, row, c < Int(columns))
 
 
-def k_rs_pass_a(base: Pointer[UInt8, MutAnyOrigin], src: Int64, etmp: Int64, ga: Int64, crt: Int64,
-                twist: Int64, columns: Int32, K: Int32, b: Int32, M: Int32):
-    """etmp[lin, t1, c] = sum over message symbols i = crt(lin) + M q of x_i twist_i gA^(t1 * (i mod 2^b));
-    twist < 0 means none. b and M are runtime so one kernel serves every tail domain."""
-    var c: Int
-    var rest: Int                              # lin * 2^b + t1
-    var ok: Bool
-    c, rest, ok = _rs_thread(columns)
-    var bb = Int(b)
-    var Mi = Int(M)
-    if not ok or rest >= (Mi << bb):
-        return
-    var gid = rest * Int(columns) + c
-    var t1 = rest & ((1 << bb) - 1)
-    var lin = rest >> bb
-    var i = _u16(base, Int(crt) + lin * 2)
-    var acc = SIMD[DType.int32, 4](0)
-    var terms = 0
-    while i < Int(K):
-        var x = _ld[4](base, Int(src) + (i * Int(columns) + c) * 4)
-        if twist >= 0:
-            x = ext_mul[2](x, _ld[4](base, Int(twist) + i * 4))
-        var w = _ld[4](base, Int(ga) + ((t1 * (i & ((1 << bb) - 1))) & ((1 << bb) - 1)) * 4)
-        f4_mac_wide(acc, x, w)
-        terms += 1
-        if terms == F4_MAC_MAX:
-            acc = f_reduce_signed(acc).cast[DType.int32]()
-            terms = 0
-        i += Mi
-    _st(base, Int(etmp) + gid * 4, f_reduce_signed(acc))
+struct RsRows(Loader4):
+    """Pass A's B operand: row q of line z is message symbol i = crt(z) + M q (zero past K), twisted
+    by gamma4^(k i) on coset k. Operand fields: b = src (i, column, 4), sb_z = the row stride, sb_hi = 4,
+    sb_k = M (a count, not a stride), aux0 = crt, aux1 = twist or -1, aux2 = K."""
+    @staticmethod
+    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+        var i = _u16(base, Int(o.aux0) + z * 2) + Int(o.sb_k) * k
+        if i >= Int(o.aux2):
+            return F4(0)
+        var x = _ld[4](base, Int(o.b) + i * Int(o.sb_z) + n_hi * Int(o.sb_hi))
+        if o.aux1 >= 0:
+            x = ext_mul[2](x, _ld[4](base, Int(o.aux1) + i * 4))
+        return x
+
+
+def rs_pass_a(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, etmp: Int, rs: RsTables,
+              twist: Int, columns: Int, K: Int, b: Int, M: Int) raises:
+    """etmp[lin, t1, c] = sum_q wa[lin, t1, q] x_{crt(lin) + M q} twist: one F4 GEMM per line,
+    M = 2^b, N = columns, K = Q, batch = the odd part."""
+    var o = strided(a=rs.base + rs.wa, sa_m=rs.Q * 4, sa_k=4, sa_z=(1 << b) * rs.Q * 4,
+                    b=src, sb_k=M, sb_hi=4, sb_lo=0, sb_z=columns * 4,
+                    c=etmp, sc_m=columns * 4, sc_hi=4, sc_lo=0, sc_z=(1 << b) * columns * 4)
+    o.aux0 = Int64(rs.base + rs.crt)
+    o.aux1 = Int64(twist)
+    o.aux2 = Int64(K)
+    launch_gemm_f4[BACKEND, F4_TILE, RsRows, 1](ctx, base, o, 1 << b, columns, rs.Q, batch=M)
 
 
 def k_rs_stage[r: Int, stride: Int](base: Pointer[UInt8, MutAnyOrigin], etmp: Int64, wr: Int64, code: Int64, ruri: Int64,
@@ -311,12 +288,7 @@ def to_packed[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     """trace -> coeff -> stored -> packed."""
     var cols = Int32(e.columns)
     var n_grid = e.columns * p.N()
-    comptime k1 = k_idft_axis1[p]
-    ctx.enqueue_function[k1](base, Int64(e.trace), Int64(e.ctmp), Int64(tab.base + tab.winv1), cols,
-                             grid_dim=grid(n_grid), block_dim=BLOCK)
-    comptime k2 = k_idft_axis2[p]
-    ctx.enqueue_function[k2](base, Int64(e.ctmp), Int64(e.coeff), Int64(tab.base + tab.winv2), cols,
-                             grid_dim=grid(n_grid), block_dim=BLOCK)
+    idft2[p](ctx, base, e.trace, e.ctmp, e.coeff, e.columns, tab)
     comptime k3 = k_to_stored[p]
     ctx.enqueue_function[k3](base, Int64(e.coeff), Int64(e.stored), Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2), cols,
                              grid_dim=grid(n_grid), block_dim=BLOCK)
@@ -351,12 +323,10 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAny
     var gx = ceildiv(columns, CW)
     var ruri = Int64(rs.base + rs.ruri)
     for k in range(m):
-        var twist = Int64(rs.base + rs.twist + k * K * 4) if m > 1 else Int64(-1)
+        var twist = rs.base + rs.twist + k * K * 4 if m > 1 else -1
         var code_k = Int64(code + k * L0 * columns * 4)
         comptime if mask & 1:
-            ctx.enqueue_function[k_rs_pass_a](base, Int64(src), Int64(etmp), Int64(rs.base + rs.ga), Int64(rs.base + rs.crt), twist,
-                                              cols, Int32(K), Int32(b), Int32(M),
-                                              grid_dim=(gx, ceildiv(L0, RW)), block_dim=(CW, RW))
+            rs_pass_a(ctx, base, src, etmp, rs, twist, columns, K, b, M)
         comptime if mask & 2:
             if F5 > 1:
                 _stage[5](ctx, base, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9, gx)
