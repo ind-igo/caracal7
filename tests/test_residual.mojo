@@ -11,7 +11,8 @@ from caracal7.params import REFERENCE
 from caracal7.tables import Domains, TableLayout, build_tables
 from caracal7.arena import Arena, Bump
 from caracal7.encode import EncLayout, to_packed
-from caracal7.residual import ENTRY, NONE, SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, entry, residual_at
+from caracal7.ir import ENTRY, NONE, entry, residual_at
+from caracal7.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 from caracal7.residual import lde, residual, quotient, quotient_elems
 from caracal7.bytes import list_e
 

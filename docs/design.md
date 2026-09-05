@@ -118,6 +118,8 @@ src/caracal7/
   merkle.mojo       tree, query_gather (multiproof)
   accumulate.mojo   the Z stage: factors, batched inversion, chain scan, Z2
   smallgrid.mojo    R2 and Q3 in coefficient form; the verifier's cyclic interpolation
+  ir.mojo           the Caracal IR: family entries, opening points, kappa, the host residual
+  synthetic.mojo    the synthetic instance the tests and benches run
   residual.mojo     lde, residual, quotient
   open.mojo         build_queries, open, fold
   tail.mojo         tail_encode, materialize, round, fold

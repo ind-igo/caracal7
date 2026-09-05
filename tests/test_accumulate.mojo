@@ -11,7 +11,7 @@ from caracal7.params import REFERENCE
 from caracal7.arena import Arena, Bump
 from caracal7.accumulate import ACC, accumulate
 from caracal7.bytes import get_u16, list_e
-from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 
 comptime p = REFERENCE
 comptime N = p.N()

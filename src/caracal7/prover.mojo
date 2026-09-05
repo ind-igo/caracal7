@@ -19,7 +19,8 @@ from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_O
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT, k_values_to_trace
+from caracal7.ir import shift_points, ENTRY, POINT
+from caracal7.residual import lde, residual, quotient, quotient_elems, k_values_to_trace
 from caracal7.bytes import Buf
 from caracal7.backend import BACKEND
 from caracal7.open import build_queries, open, open_splits, fold

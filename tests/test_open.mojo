@@ -12,7 +12,8 @@ from caracal7.params import REFERENCE
 from caracal7.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
-from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, shift_points, point_coord
+from caracal7.ir import shift_points, point_coord
+from caracal7.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 from caracal7.bytes import list_e
 
 comptime p = REFERENCE

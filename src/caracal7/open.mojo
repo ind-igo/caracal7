@@ -18,7 +18,7 @@ from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
 from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
-from caracal7.residual import FIX_ONE, FIX_E
+from caracal7.ir import FIX_ONE, FIX_E
 from caracal7.params import Params
 from caracal7.tables import TableLayout, Domains
 from caracal7.encode import slot_target

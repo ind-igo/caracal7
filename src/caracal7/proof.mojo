@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
 from caracal7.arena import Arena
-from caracal7.residual import ENTRY, shift_points
+from caracal7.ir import ENTRY, shift_points
 from caracal7.accumulate import ACC
 from caracal7.hash import Hash
 from caracal7.bytes import Base, append_u32

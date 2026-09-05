@@ -8,7 +8,7 @@ from caracal7.params import Params, REFERENCE
 from caracal7.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
-from caracal7.residual import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
+from caracal7.synthetic import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
 
 comptime WIDE = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
                        tail_digits=3, tail_clear_max=2500, lambda_bits=103)

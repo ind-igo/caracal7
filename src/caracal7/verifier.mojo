@@ -16,7 +16,7 @@ from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.tables import Domains, RsDomain
-from caracal7.residual import ENTRY, NONE, entry, shift_points, point_index, point_coord, residual_at
+from caracal7.ir import ENTRY, NONE, entry, shift_points, point_index, point_coord, residual_at
 from caracal7.encode import pack_slot, pack_index
 from caracal7.open import slot_weight
 from caracal7.merkle import check_multiproof, distinct_sorted

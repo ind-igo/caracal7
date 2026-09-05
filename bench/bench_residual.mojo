@@ -8,7 +8,9 @@ from caracal7.params import REFERENCE
 from caracal7.tables import Domains, TableLayout, build_tables
 from caracal7.arena import Arena, Bump
 from caracal7.encode import EncLayout, to_packed
-from caracal7.residual import ENTRY, Families, synthetic_families, lde, residual, quotient, quotient_elems
+from caracal7.ir import ENTRY, Families
+from caracal7.synthetic import synthetic_families
+from caracal7.residual import lde, residual, quotient, quotient_elems
 
 comptime p = REFERENCE
 comptime COLS = 64
