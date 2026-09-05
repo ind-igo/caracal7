@@ -160,7 +160,6 @@ struct ProverLayout:
         self.r = bump.alloc(3 * p.e)
         self.tail = List[TailLayout]()
         for i in range(len(shape.tail)):
-            var prev_q = p.queries() if i == 0 else shape.tail[i - 1].queries
             self.tail.append(TailLayout.__init__[p, H](bump, shape.tail[i]))
         self.bytes = bump.used
 

@@ -107,6 +107,11 @@ struct Shape(Writable):
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
+            for j in range(16):                        # record columns are witness columns (the factor kernel reads the W trace)
+                var at = k * ACC + 6 + 2 * j
+                var w = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8 if j < 8 else Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
+                if (j % 8) < w and (Int(accs[at]) | Int(accs[at + 1]) << 8) >= columns_w:
+                    raise Error("accumulator record columns must be witness columns")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 

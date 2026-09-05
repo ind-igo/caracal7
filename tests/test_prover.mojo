@@ -61,8 +61,9 @@ def test_layout_plans_the_arena() raises:
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
     # every offset is inside the arena and 256-aligned
-    for off in [L.tree_w, L.tree_q, L.families, L.shifts, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
-                L.prefix, L.stage1, L.z, L.beta_gamma, L.batch, L.r]:
+    for off in [L.tree_w, L.tree_z, L.tree_q, L.families, L.accs, L.shifts, L.num, L.den, L.zscratch, L.zval, L.chain_prod, L.z2, L.n_end, L.d_end,
+                L.sg, L.q3, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.open_partial, L.fold_y, L.running0, L.dom1, L.pts, L.partial,
+                L.positions, L.proof_stage, L.prefix, L.stage1, L.alpha, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
