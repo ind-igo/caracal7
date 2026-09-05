@@ -12,7 +12,8 @@ from max.gpu.host import DeviceContext
 from caracal7.params import Params
 from caracal7.hash import Hash
 from caracal7.backend import BACKEND
-from caracal7.device import gid
+from caracal7.bytes import Base, Buf, u32, put_u32
+from std.gpu import global_idx
 
 comptime MAX_QUERIES = 1024        # ponytail: frontier walk keeps the position list in registers
 
@@ -38,18 +39,18 @@ def root_offset[H: Hash](tree: Int, leaves: Int) -> Int:
     return tree + (tree_nodes(leaves) - 1) * H.DIGEST
 
 
-def k_leaves[H: Hash](base: Pointer[UInt8, MutAnyOrigin], code: Int64, row_bytes: Int32, leaves: Int32, tree: Int64):
-    var i = gid()
+def k_leaves[H: Hash](base: Base, code: Buf[1], row_bytes: Int32, leaves: Int32, tree: Buf[H.DIGEST]):
+    var i = Int(global_idx.x)
     if i < Int(leaves):
-        H.leaf(base.unsafe_offset(Int(code) + i * Int(row_bytes)), Int(row_bytes),
-               base.unsafe_offset(Int(tree) + i * H.DIGEST))
+        H.leaf(base.unsafe_offset(code.at(i * Int(row_bytes))), Int(row_bytes),
+               base.unsafe_offset(tree.at(i)))
 
 
-def k_level[H: Hash](base: Pointer[UInt8, MutAnyOrigin], src: Int64, n: Int32, dst: Int64):
-    var j = gid()
+def k_level[H: Hash](base: Base, src: Buf[H.DIGEST], n: Int32, dst: Buf[H.DIGEST]):
+    var j = Int(global_idx.x)
     if j < (Int(n) + 1) // 2:
-        var left = base.unsafe_offset(Int(src) + 2 * j * H.DIGEST)
-        var dst_ptr = base.unsafe_offset(Int(dst) + j * H.DIGEST)
+        var left = base.unsafe_offset(src.at(2 * j))
+        var dst_ptr = base.unsafe_offset(dst.at(j))
         if 2 * j + 1 < Int(n):
             H.node(left, left.unsafe_offset(H.DIGEST), dst_ptr)
         else:
@@ -57,33 +58,31 @@ def k_level[H: Hash](base: Pointer[UInt8, MutAnyOrigin], src: Int64, n: Int32, d
                 dst_ptr[unsafe_offset=b] = left[unsafe_offset=b]
 
 
-def merkle[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def merkle[p: Params, H: Hash](ctx: DeviceContext, base: Base,
                                code: Int, row_bytes: Int, leaves: Int, tree: Int) raises:
     """Hash `leaves` rows of `row_bytes` at `code` into `tree`."""
-    ctx.enqueue_function[k_leaves[H]](base, Int64(code), Int32(row_bytes), Int32(leaves), Int64(tree),
+    ctx.enqueue_function[k_leaves[H]](base, Buf[1](code), Int32(row_bytes), Int32(leaves), Buf[H.DIGEST](tree),
                                       grid_dim=(leaves + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
     var level = tree
     var n = leaves
     while n > 1:
         var next = level + n * H.DIGEST
         var m = (n + 1) // 2
-        ctx.enqueue_function[k_level[H]](base, Int64(level), Int32(n), Int64(next),
+        ctx.enqueue_function[k_level[H]](base, Buf[H.DIGEST](level), Int32(n), Buf[H.DIGEST](next),
                                          grid_dim=(m + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
         level = next
         n = m
 
 
-def k_frontier[H: Hash](base: Pointer[UInt8, MutAnyOrigin], tree: Int64, leaves: Int32, positions: Int64,
-                        count: Int32, row_bytes: Int32, dst: Int64, order: Int64):
+def k_frontier[H: Hash](base: Base, tree: Buf[H.DIGEST], leaves: Int32, positions: Buf[4],
+                        count: Int32, row_bytes: Int32, dst: Buf[1], order: Buf[4]):
     """One thread. Sorts the positions, writes the distinct list to `order` (u32 m, then m u32),
     the sibling frontier after the rows, and the total byte count at dst[0:4]."""
     var known = InlineArray[Int32, MAX_QUERIES](fill=0)
     var next = InlineArray[Int32, MAX_QUERIES](fill=0)
     var m = 0
     for q in range(Int(count)):
-        var v = Int32(0)
-        comptime for b in range(4):
-            v |= Int32(base[unsafe_offset=Int(positions) + 4 * q + b]) << Int32(8 * b)
+        var v = Int32(u32(base, positions.at(q)))
         var i = m
         while i > 0 and known[i - 1] > v:
             known[i] = known[i - 1]
@@ -96,13 +95,12 @@ def k_frontier[H: Hash](base: Pointer[UInt8, MutAnyOrigin], tree: Int64, leaves:
             known[w] = known[i]
             w += 1
     m = w
-    var ord_ptr = base.unsafe_offset(Int(order))
-    _put_u32(ord_ptr, 0, m)
+    put_u32(base, order.at(0), m)
     for i in range(m):
-        _put_u32(ord_ptr, 4 + 4 * i, Int(known[i]))
+        put_u32(base, order.at(1 + i), Int(known[i]))
 
-    var out = Int(dst) + 4 + m * Int(row_bytes)
-    var level = Int(tree)
+    var out = dst.at(4 + m * Int(row_bytes))
+    var level = tree.at(0)
     var n = Int(leaves)
     while n > 1:
         var nm = 0
@@ -126,27 +124,18 @@ def k_frontier[H: Hash](base: Pointer[UInt8, MutAnyOrigin], tree: Int64, leaves:
         m = nm
         level += n * H.DIGEST
         n = (n + 1) // 2
-    _put_u32(base, Int(dst), out - Int(dst))
+    put_u32(base, dst.at(0), out - dst.at(0))
 
 
-def _put_u32(ptr: Pointer[UInt8, MutAnyOrigin], off: Int, v: Int):
-    comptime for b in range(4):
-        ptr[unsafe_offset=off + b] = UInt8((v >> (8 * b)) & 255)
-
-
-def k_rows(base: Pointer[UInt8, MutAnyOrigin], code: Int64, row_bytes: Int32, order: Int64, dst: Int64):
+def k_rows(base: Base, code: Buf[1], row_bytes: Int32, order: Buf[4], dst: Buf[1]):
     """Thread per (row, byte): copy the distinct opened rows in ascending order."""
     var r = Int(block_idx.x)
-    var m = 0
-    comptime for b in range(4):
-        m |= Int(base[unsafe_offset=Int(order) + b]) << (8 * b)
+    var m = u32(base, order.at(0))
     if r >= m:
         return
-    var pos = 0
-    comptime for b in range(4):
-        pos |= Int(base[unsafe_offset=Int(order) + 4 + 4 * r + b]) << (8 * b)
-    var src = Int(code) + pos * Int(row_bytes)
-    var out = Int(dst) + 4 + r * Int(row_bytes)
+    var pos = u32(base, order.at(1 + r))
+    var src = code.at(pos * Int(row_bytes))
+    var out = dst.at(4 + r * Int(row_bytes))
     var b = Int(thread_idx.x)
     while b < Int(row_bytes):
         base[unsafe_offset=out + b] = base[unsafe_offset=src + b]
@@ -162,7 +151,7 @@ def multiproof_region[H: Hash](row_bytes: Int, leaves: Int, count: Int) -> Int:
     return multiproof_bound[H](row_bytes, leaves, count) + 4 + 4 * count
 
 
-def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Base,
                                      code: Int, row_bytes: Int, leaves: Int, tree: Int,
                                      positions: Int, count: Int, dst: Int) raises -> Int:
     """Multiproof of the rows at `positions` into `dst`; returns the byte bound to read back
@@ -171,15 +160,15 @@ def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, Mu
         raise Error("too many queries for the frontier kernel")
     var bound = multiproof_bound[H](row_bytes, leaves, count)
     var order = dst + bound
-    ctx.enqueue_function[k_frontier[H]](base, Int64(tree), Int32(leaves), Int64(positions), Int32(count),
-                                        Int32(row_bytes), Int64(dst), Int64(order), grid_dim=1, block_dim=1)
-    ctx.enqueue_function[k_rows](base, Int64(code), Int32(row_bytes), Int64(order), Int64(dst),
+    ctx.enqueue_function[k_frontier[H]](base, Buf[H.DIGEST](tree), Int32(leaves), Buf[4](positions), Int32(count),
+                                        Int32(row_bytes), Buf[1](dst), Buf[4](order), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_rows](base, Buf[1](code), Int32(row_bytes), Buf[4](order), Buf[1](dst),
                                  grid_dim=count, block_dim=BACKEND.block)
     return bound
 
 
-def _ptr(mut l: List[UInt8]) -> Pointer[UInt8, MutAnyOrigin]:
-    return rebind[Pointer[UInt8, MutAnyOrigin]](l.unsafe_ptr())
+def _ptr(mut l: List[UInt8]) -> Base:
+    return rebind[Base](l.unsafe_ptr())
 
 
 def distinct_sorted(positions: List[Int]) -> List[Int]:

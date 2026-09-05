@@ -23,6 +23,7 @@ from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
 from caracal7.field import F2, F4, f_add, f_reduce_signed, WIDE_BIAS
+from caracal7.bytes import Base
 
 
 @fieldwise_init
@@ -113,28 +114,28 @@ struct Operands(TrivialRegisterPassable, DevicePassable):
 
 trait Loader:
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         """B[k, n] with n = n_hi * D + n_lo."""
         ...
 
 
 struct Strided(Loader):
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
 
 
 struct Bytes(Loader):
     """F values, one byte each, as F2 with a zero imaginary part."""
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var v = F2(0)
         v[0] = base[unsafe_offset=Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z)]
         return v
 
 
 def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
-    base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int32, N: Int32, K: Int32
+    base: Base, o: Operands, M: Int32, N: Int32, K: Int32
 ):
     """C[m, n] = (C[m, n] if acc) + sum_k A[m, k] B[k, n] over F2, batch z = block_idx.z."""
     comptime BM = T.BM
@@ -216,7 +217,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
 
 
 def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
-    ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
+    ctx: DeviceContext, base: Base, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
     comptime kernel = gemm_f2[B, T, L, D, acc]
     ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
@@ -234,19 +235,19 @@ def strided(a: Int, sa_m: Int, sa_k: Int, b: Int, sb_k: Int, sb_hi: Int, sb_lo: 
 
 trait Loader4:
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
         """B[k, n] as F4 (4 bytes), n = n_hi * D + n_lo."""
         ...
 
 
 struct Strided4(Loader4):
     @staticmethod
-    def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
+    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
         return base.unsafe_load[width=4](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
 
 
 def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
-    base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int32, N: Int32, K: Int32
+    base: Base, o: Operands, M: Int32, N: Int32, K: Int32
 ):
     """C[m, n] = (C[m, n] if acc) + sum_k A[m, k] B[k, n] over F4 = F2[j], j^2 = 2 + i, coordinates
     (1, i, j, ij): the F2 skeleton with four byte planes and twenty `tile_mac` per k into four
@@ -366,7 +367,7 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
 
 
 def launch_gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
-    ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
+    ctx: DeviceContext, base: Base, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
     comptime kernel = gemm_f4[B, T, L, D, acc]
     ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
