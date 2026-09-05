@@ -9,7 +9,7 @@ Order, every integer little-endian, every field element e bytes:
     openings    alpha_{c,p}: P x (columns_w + columns_q) x e
     per level l = 2 .. ell-1:
                 Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; two at
-                level 1, W and Q); expected symbols v_{l-1}; three sumcheck messages (9 e)
+                level 1, W and Q); three sumcheck messages (9 e)
     last        clear vector y_ell (|y_ell| x e); multiproof(s) of level ell-1
 
 Multiproofs are length-prefixed because the sibling frontier depends on the sampled positions.
@@ -110,9 +110,7 @@ struct Shape(Writable):
         var n = 4 + 4 + public_bytes + digest + digest
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
-            var prev_queries = p.queries() if i == 0 else self.tail[i - 1].queries
-            var v_count = 4 * p.n_cw() * prev_queries if i == 0 else prev_queries
-            n += digest + (2 if i == 0 else 1) * 4 + v_count * p.e + 9 * p.e
+            n += digest + (2 if i == 0 else 1) * 4 + 9 * p.e
         n += self.clear_length * p.e + (2 if len(self.tail) == 0 else 1) * 4
         return n
 

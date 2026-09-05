@@ -18,10 +18,9 @@ comptime DS_TREE_W: UInt8 = 1       # -> beta_1, delta, gamma (stage 1)
 comptime DS_TREE_Z: UInt8 = 2       # with Z2 -> alpha
 comptime DS_TREE_Q: UInt8 = 3       # with Q3 -> z
 comptime DS_OPENINGS: UInt8 = 4     # alpha_{c,p} -> beta (E^columns), gamma (E^P)
-comptime DS_TAIL_ROOT: UInt8 = 5    # Mat(y_l) root -> S_{l-1}
-comptime DS_TAIL_V: UInt8 = 6       # expected symbols v -> batching scalars
-comptime DS_TAIL_ROUND: UInt8 = 7   # sumcheck message s_i -> r_i
-comptime DS_CLEAR: UInt8 = 8        # y_ell in the clear -> S_{ell-1}
+comptime DS_TAIL_ROOT: UInt8 = 5    # Mat(y_l) root -> S_{l-1}; the batching scalars follow the multiproof(s)
+comptime DS_TAIL_ROUND: UInt8 = 6   # sumcheck message s_i -> r_i
+comptime DS_CLEAR: UInt8 = 7        # y_ell in the clear -> S_{ell-1}
 
 comptime STATE_BYTES = 128          # [0, DIGEST) state, [64, 72) counter, [72, 72 + DIGEST) scratch
 comptime _COUNTER = 64

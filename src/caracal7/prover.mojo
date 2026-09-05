@@ -13,13 +13,13 @@ from caracal7.arena import Arena, Bump
 from caracal7.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
 from caracal7.encode import EncLayout, encode
 from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
-from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND, DS_CLEAR
+from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT
 from caracal7.open import build_queries, open, open_splits, fold
-from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, expected_level1, expected_tail
+from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0
 from caracal7.tail import tail_materialize, tail_round, tail_fold
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
@@ -31,20 +31,18 @@ struct TailLayout(TrivialRegisterPassable):
     var etmp: Int       # (L0, 32, 4)        encoder scratch
     var code: Int       # (s, 8, e)          leaf-major codeword rows
     var tree: Int       # (node, 32)
-    var v: Int          # expected symbols for the previous level
     var w_tilde: Int    # (slot, e)          batched query on y_l
     var rounds: Int     # (3, 3, e)          sumcheck messages
     var rs: RsTables    # this level's RS domain tables
     var dom: Int        # DOM_BYTES          this level's domain (tail.domain_bytes)
 
-    def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel, v_count: Int):
+    def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel):
         var L0 = lvl.L // lvl.cosets
         self.y = bump.alloc(lvl.rows * p.e)
         self.running = bump.alloc(lvl.rows * p.e)
         self.etmp = bump.alloc(L0 * 32 * 4)
         self.code = bump.alloc(lvl.L * 8 * p.e)
         self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST)
-        self.v = bump.alloc(v_count * p.e)
         self.w_tilde = bump.alloc(lvl.length * p.e)
         self.rounds = bump.alloc(9 * p.e)
         self.rs = RsTables(bump.alloc(0), L0, lvl.cosets, lvl.rows)
@@ -130,8 +128,7 @@ struct ProverLayout:
         self.tail = List[TailLayout]()
         for i in range(len(shape.tail)):
             var prev_q = p.queries() if i == 0 else shape.tail[i - 1].queries
-            var v_count = 4 * p.n_cw() * prev_q if i == 0 else prev_q
-            self.tail.append(TailLayout.__init__[p, H](bump, shape.tail[i], v_count))
+            self.tail.append(TailLayout.__init__[p, H](bump, shape.tail[i]))
         self.bytes = bump.used
 
 
@@ -277,15 +274,9 @@ struct Prover[p: Params, H: Hash]:
             var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
             var prev_L0 = Self.p.L0 if i == 0 else S.tail[i - 1].L // S.tail[i - 1].cosets
             points(ctx, base, L.positions, count, prev_dom, prev_L0, L.pts)
-            if i == 0:
-                expected_level1(ctx, base, L.positions, count, L.enc_w.code, S.columns_w, L.enc_q.code, S.columns_q, L.beta_gamma, tl.v)
-            else:
-                expected_tail(ctx, base, L.positions, count, L.tail[i - 1].code, L.r, tl.v)
-            self._mark(ctx, profile, "expected symbols " + String(i), t0)
-            absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
-            self.proof.stage(self.arena, tl.v, self._v_count(i) * e)
+            # the expected symbols v are the verifier's to compute from the opened rows (spec 9.3); nothing is sent
             squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
-            self._mark(ctx, profile, "transcript v " + String(i), t0)
+            self._mark(ctx, profile, "transcript batch " + String(i), t0)
             tail_materialize[Self.p](ctx, base, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
             self._mark(ctx, profile, "materialize " + String(i), t0)
             for d in range(3):

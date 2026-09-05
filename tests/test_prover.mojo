@@ -87,7 +87,7 @@ def test_prove_and_verify() raises:
     # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
     # itself only sees a dishonest y with a matching frontier, which no byte flip produces
     for tamper in [(openings + 5, "residual identity fails at z"),
-                   (clear + 3, "multiproof has trailing bytes"),
+                   (clear + 3, "multiproof"),          # truncated or trailing bytes, by where S lands
                    (multiproof + 4 + 7, "multiproof root mismatch"),
                    (len(proof) - 1, "multiproof root mismatch")]:
         var bad = proof.copy()
@@ -97,7 +97,7 @@ def test_prove_and_verify() raises:
             _ = verify[p, Blake3](bad^, shape, List[UInt8](), f.bytes)
         except e:
             stopped = String(e)
-        assert_equal(stopped, tamper[1])
+        assert_true(stopped.startswith(tamper[1]), stopped)
 
 
 def test_prove_and_verify_with_tail() raises:
@@ -117,12 +117,11 @@ def test_prove_and_verify_with_tail() raises:
     var t2 = perf_counter_ns()
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
-    # a flipped byte in the first level's sumcheck messages: after its root, the two level-1 multiproofs and v
+    # a flipped byte in the first level's sumcheck messages: after its root and the two level-1 multiproofs
     var pos = 8 + 64 + shape.points * shape.columns() * big.e + 32
     for _ in range(2):
         var n = Int(proof[pos]) | Int(proof[pos + 1]) << 8 | Int(proof[pos + 2]) << 16 | Int(proof[pos + 3]) << 24
         pos += 4 + n
-    pos += 4 * big.queries() * big.e
     var bad = proof.copy()
     bad[pos + 3] ^= 1
     var stopped = String("")

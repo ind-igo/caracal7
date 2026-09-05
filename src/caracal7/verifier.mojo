@@ -4,7 +4,7 @@ checks; every step is a host function over proof bytes and a host `H: Hash`. Ste
 grid, public columns, boundaries) arrive with the Z tree and the frontend.
 
 Step 7 is the tail of spec 9.3 on the host, directly: per committed level the root, the previous
-level's multiproofs against their roots, the expected symbols against the opened rows (the E (x) F4
+level's multiproofs against their roots, the expected symbols computed from the opened rows (the E (x) F4
 alphabet rule of 9.1 at level 1, the r_bar-combined row later), the batched query materialized as a
 vector, three sumcheck checks, and the fold of the query; then the clear vector, its consistency
 at the last opened positions, and <y_ell, w~_ell>. ponytail: O(|y_l|) host work per level; the
@@ -13,7 +13,7 @@ tensor form of 9.3 when a verifier budget exists."""
 from caracal7.params import Params
 from caracal7.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
-from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_V, DS_TAIL_ROUND
+from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.tables import Domains, RsDomain
 from caracal7.residual import ENTRY, NONE, entry, shift_points, point_index, residual_at
@@ -100,16 +100,15 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var prev = _open_previous[p, H](r, t, shape, i, root_w, root_q, roots)
         var count = p.queries() if i == 0 else shape.tail[i - 1].queries
         var v_count = 4 * count if i == 0 else count
-        var v = r.take(v_count * p.e)
-        t.absorb(DS_TAIL_V, v)
+        # the expected symbols v (9.3) from the opened rows; a function of the transcript, so not sent nor absorbed
+        var v = List[UInt8](capacity=v_count * p.e)
         for q in range(count):
             var idx = _index_of(prev.opened, prev.positions[q])
             if i == 0:
                 for tau in range(4):
-                    if host_e(v, 4 * q + tau) != _level1_symbol[p](prev, shape, beta_gamma, idx, tau):
-                        raise Error("expected symbols do not match the opened rows")
-            elif host_e(v, q) != _tail_symbol(prev, idx, r_prev):
-                raise Error("expected symbols do not match the opened rows")
+                    _push_e(v, _level1_symbol[p](prev, shape, beta_gamma, idx, tau))
+            else:
+                _push_e(v, _tail_symbol(prev, idx, r_prev))
         var batch = t.elements(v_count + 1)
         var claim = ext_mul[4](host_e(batch, 0), running_val)
         for k in range(v_count):
@@ -253,6 +252,11 @@ def _materialize[p: Params](level1: Bool, running: List[UInt8], length: Int, bat
                 _add_e(w, row, e_mul_f4(bq, pw))
                 pw = ext_mul[2](pw, pt)
     return w^
+
+
+def _push_e(mut l: List[UInt8], v: E):
+    for t in range(16):
+        l.append(v[t])
 
 
 def _add_e(mut l: List[UInt8], i: Int, v: E):

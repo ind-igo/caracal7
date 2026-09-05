@@ -114,37 +114,6 @@ def k_running0[p: Params](base: Pointer[UInt8, MutAnyOrigin], w_z: Int64, gamma:
     base.unsafe_store[width=16](Int(dst) + slot * 16, acc)
 
 
-def k_expected_level1(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32, code_w: Int64, columns_w: Int32,
-                      code_q: Int64, columns_q: Int32, beta: Int64, v: Int64):
-    """v[4 q + tau] = coord_tau(Enc(y)(pt_q)) = sum_c beta_c X[s_q, c][tau]: the encoder is linear, so the
-    symbol of the folded message is the beta-combination of the committed rows (the verifier's check)."""
-    var gid = _gid()
-    if gid >= 4 * Int(count):
-        return
-    var q = gid // 4
-    var tau = gid % 4
-    var s = _u32(base, Int(positions) + 4 * q)
-    var acc = E(0)
-    for c in range(Int(columns_w)):
-        acc = f_add(acc, f_mul(_e(base, Int(beta) + c * 16), E(base[unsafe_offset=Int(code_w) + (s * Int(columns_w) + c) * 4 + tau])))
-    for c in range(Int(columns_q)):
-        acc = f_add(acc, f_mul(_e(base, Int(beta) + (Int(columns_w) + c) * 16), E(base[unsafe_offset=Int(code_q) + (s * Int(columns_q) + c) * 4 + tau])))
-    base.unsafe_store[width=16](Int(v) + gid * 16, acc)
-
-
-def k_expected_tail(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32, code: Int64, r: Int64, v: Int64):
-    """v[q] = Enc(fold(y))(pt_q) = sum_a rbar[a] X[s_q, a] over the 8 committed E symbols of the row."""
-    var q = _gid()
-    if q >= Int(count):
-        return
-    var s = _u32(base, Int(positions) + 4 * q)
-    var rr = _r3(base, Int(r))
-    var acc = E(0)
-    for a in range(8):
-        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), _e(base, Int(code) + (s * 8 + a) * 16)))
-    base.unsafe_store[width=16](Int(v) + q * 16, acc)
-
-
 def k_materialize_level1[p: Params](base: Pointer[UInt8, MutAnyOrigin], running: Int64, batch: Int64, pts: Int64,
                                     count: Int32, w_tilde: Int64):
     """w~[slot] = batch_0 running[slot] + sum_{q, tau} batch_{1 + 4 q + tau} coord_tau(b_j pt_q^i), (i, j) = pack_index(slot)."""
@@ -256,20 +225,6 @@ def points(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: In
 def running0[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], w_z: Int, gamma: Int, P: Int, dst: Int) raises:
     ctx.enqueue_function[k_running0[p]](base, Int64(w_z), Int64(gamma), Int32(P), Int64(dst),
                                         grid_dim=_grid(p.N()), block_dim=BLOCK)
-
-
-def expected_level1(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: Int, count: Int,
-                    code_w: Int, columns_w: Int, code_q: Int, columns_q: Int, beta: Int, v: Int) raises:
-    """v (4 per opened level-1 position) from the committed rows of both trees and beta."""
-    ctx.enqueue_function[k_expected_level1](base, Int64(positions), Int32(count), Int64(code_w), Int32(columns_w),
-                                            Int64(code_q), Int32(columns_q), Int64(beta), Int64(v),
-                                            grid_dim=_grid(4 * count), block_dim=BLOCK)
-
-
-def expected_tail(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: Int, count: Int, code: Int, r: Int, v: Int) raises:
-    """v (1 per opened tail position) from the committed rows and the r of that level."""
-    ctx.enqueue_function[k_expected_tail](base, Int64(positions), Int32(count), Int64(code), Int64(r), Int64(v),
-                                          grid_dim=_grid(count), block_dim=BLOCK)
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], level1: Bool,

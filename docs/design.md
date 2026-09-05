@@ -47,7 +47,6 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 | `tree` | (level, node, 32) | Blake3 digests, leaves first |
 | `lde` | (column, G2, G1, coord) | evaluations on the residual grid G; 2 coordinates for witness columns, e for accumulators |
 | `residual` | (G2, G1, e) | batched residual, E-valued |
-| `v_l` | (query, n_cw, 4, e) at level 2; (query, e) later | expected symbols sent per level (9.3) |
 | `w_tilde` | (slot, e) | the batched query of the current level, reused per level |
 | `round_msgs` | (level, 3, 3, e) | sumcheck messages |
 | `transcript` | Blake3 state plus a challenge buffer | device resident (section 6) |
@@ -72,7 +71,6 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `open` | stored, w_z → alpha | lane GEMM on the skeleton | contraction `<w_z, stored(c)>` in E for every column of every tree; `w_z` is built on device per (point, slot) from the pieces of 9.1 (`slot_weight`, shared with the verifier) |
 | `fold` | stored, beta → fold_y | one per slot | GEMV over all columns of all three trees |
 | `query_gather` | code, tree, S → proof bytes | one per query, then one per frontier node | opened leaf rows and a Merkle multiproof: the unique sibling frontier of S is computed first, each sibling emitted once |
-| `expected_symbols` | y_next, G rows at S → v_l | one per (query, coordinate) | the values the previous level must match at the opened positions (9.3) |
 | `tail_materialize` | tensor terms → w_tilde | one per slot | sum of the active claim batch: up to `12 P + 4 n_cw |S_1|` tensor terms at level 2, `|S_{l-1}|` plus the running claim later |
 | `tail_round` | w~, y → s_i | one per row | Hadamard and reduce over all but one digit, three evaluations |
 | `tail_fold` | y, r̄ → y_next | one per row | GEMV with the 8-column matrix |
@@ -83,7 +81,7 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 
 Milestone 1 ends with the W and Q trees, the residual and quotient on synthetic families, openings at P points, the tail, and the verifier, as the spec's build order says. Milestone 2 adds the Z tree: `factor`, `batch_invert`, `chain_scan`, the small grid and Q3. Milestone 3 adds `radix_sort`.
 
-Stage order the host enqueues for the tail, per level: commit `Mat(y_l)` (`tail_encode`, `merkle`, transcript absorb) → squeeze `S_{l-1}` → `query_gather` on the previous level → `expected_symbols` → absorb `v` → squeeze batching scalars → `tail_materialize` → three times (`tail_round`, absorb, squeeze `r_i`) → `tail_fold`. The last level sends `y_ell` in the clear.
+Stage order the host enqueues for the tail, per level: commit `Mat(y_l)` (`tail_encode`, `merkle`, transcript absorb) → squeeze `S_{l-1}` → `query_gather` on the previous level → squeeze batching scalars → `tail_materialize` → three times (`tail_round`, absorb, squeeze `r_i`) → `tail_fold`. The last level sends `y_ell` in the clear.
 
 The first kernel written is `rs_encode`, because it decides prover time and tells us what Apple GPU support in Mojo can do.
 
@@ -115,7 +113,7 @@ src/caracal7/
   merkle.mojo       tree, query_gather (multiproof)
   residual.mojo     lde, residual, quotient
   open.mojo         build_queries, open, fold
-  tail.mojo         tail_encode, expected_symbols, materialize, round, fold
+  tail.mojo         tail_encode, materialize, round, fold
   transcript.mojo   device-resident absorb / squeeze
   proof.mojo        Shape, tail schedule, byte layout, writer / reader
   prover.mojo       arena plan (ProverLayout) and the stage order (Prover.prove)

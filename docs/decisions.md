@@ -182,3 +182,8 @@ Before the residual stage, the `Backend` / `tile_mac` rule of design section 9 w
 - The radix stages stay per-thread butterflies (9 ms of the 27 ms encoder at 288 x 128): as GEMMs they would be `M = K = r` with `r <= 9`, below any tile.
 - 288 x 128 warm prove: 305 ms to 258 ms. Budget now: `build_queries` 54 (one thread per (point, slot) with `slot_weight`), `encode Q` 40, `open` 23, `quotient` 17, `encode W` 16.
 - A `Tile(64, 64, 8, TM=2, TN=4)` launch of `gemm_f4` returns in 0.02 ms without running (512 threads per block); not investigated, the same family as the Metal pipeline failure of 2026-09-04.
+
+## The expected symbols are not sent (2026-09-05)
+
+- **`v` is out of the proof and the transcript.** The verifier computes every expected symbol from the opened rows (the row identity at level 2, the `r_bar`-combined row later) and used the sent copy only to compare. `v` is a function of the root, the sampled positions, and the earlier challenges, all in the transcript before the batching scalars, so absorbing it bound nothing. The verifier now feeds its own values into the batched claim; a wrong row fails the sumcheck check instead of a compare. Prover: the two expected-symbol kernels and the `v` buffer are deleted (the prover never read `v`); `DS_TAIL_ROUND` and `DS_CLEAR` renumber to 6 and 7. Proof bytes: 123,632 to 121,648 at the reference (no tail; the positions moved with the separators), 200,376 to 190,424 at 288 x 128. Spec 9.3, 9.4, 9.5 updated.
+- The `n_cw > 1` split stays deferred: no milestone-1 or milestone-2 target exceeds `L * rate` per column; only the 16-channel throughput proxy does. The format is parameterized by `n_cw` already, so nothing on the wire waits on it.
