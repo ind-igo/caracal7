@@ -16,27 +16,21 @@ read through the Bytes loader.
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx, block_dim
 
-from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed
+from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
 from caracal7.residual import FIX_ONE, FIX_E
 from caracal7.params import Params
 from caracal7.tables import TableLayout, Domains
 from caracal7.encode import slot_target
+from caracal7.device import gid, load_e
 from caracal7.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
 
-comptime BLOCK = 256
-
-
-@always_inline
-def _e(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
-    return base.unsafe_load[width=16](off)
 
 
 @always_inline
 def _lagrange(zeta: E, m: Int, rr: E) -> E:
     """L(r) = (r / m) (zeta^m - 1) / (zeta - r); the delta if zeta = r."""
-    var one = ext_embed[4](SIMD[DType.uint8, 1](1))
+    var one = ext_one[4]()
     var d = f_sub(zeta, rr)
     if d == E(0):
         return one
@@ -77,7 +71,7 @@ def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) ->
         w = mon                                              # fixed slot: c_x(r) lies in F
     else:
         # Par(x, r) = z1^xbar1 r1^s1(x1) z2^xbar2 r2^s2(x2), with xbar = (2^a - x) mod 2^a, s(x) = (2^(7-a) x - 1) mod m
-        var par = ext_embed[4](SIMD[DType.uint8, 1](1))
+        var par = ext_one[4]()
         if x1 != 0:
             var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
             par = ext_mul[4](ext_pow[4](z1, (1 << p.a1) - x1), _rho(rho1, (r1 * s1) % p.m1))
@@ -102,7 +96,7 @@ def _rho(rho: UInt8, k: Int) -> E:
 def _coord(base: Pointer[UInt8, MutAnyOrigin], z: E, dj: Int, gp: Int, h: Int) -> E:
     """`point_coord` on the device: z g^dj from the power table, or the fixed 1 / e_l."""
     if dj == FIX_ONE:
-        return ext_embed[4](SIMD[DType.uint8, 1](1))
+        return ext_one[4]()
     var j = 2 * (h - 1) if dj == FIX_E else dj
     var g = ext_embed[4](base.unsafe_load[width=2](gp + j * 2))
     return g if dj == FIX_E else ext_mul[4](z, g)
@@ -111,15 +105,15 @@ def _coord(base: Pointer[UInt8, MutAnyOrigin], z: E, dj: Int, gp: Int, h: Int) -
 def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shifts: Int64, points: Int32,
                                 g1p: Int64, g2p: Int64, rho1: UInt8, rho2: UInt8, w_z: Int64):
     comptime N = p.N()
-    var gid = Int(block_idx.x * block_dim.x + thread_idx.x)
+    var gid = gid()
     if gid >= Int(points) * N:
         return
     var pt = gid // N
     var sh = Int(shifts) + pt * 4
     var dj1 = Int(base[unsafe_offset=sh]) | Int(base[unsafe_offset=sh + 1]) << 8
     var dj2 = Int(base[unsafe_offset=sh + 2]) | Int(base[unsafe_offset=sh + 3]) << 8
-    var z1 = _coord(base, _e(base, Int(z)), dj1, Int(g1p), p.h1())
-    var z2 = _coord(base, _e(base, Int(z) + p.e), dj2, Int(g2p), p.h2())
+    var z1 = _coord(base, load_e(base, Int(z)), dj1, Int(g1p), p.h1())
+    var z2 = _coord(base, load_e(base, Int(z) + p.e), dj2, Int(g2p), p.h2())
     base.unsafe_store[width=16](Int(w_z) + gid * p.e, slot_weight[p](gid % N, z1, z2, rho1, rho2))
 
 
@@ -129,7 +123,7 @@ def build_queries[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrig
     comptime k = k_build_queries[p]
     ctx.enqueue_function[k](base, Int64(z), Int64(shifts), Int32(points), Int64(tab.base + tab.g1p), Int64(tab.base + tab.g2p),
                             d.rho1, d.rho2, Int64(w_z),
-                            grid_dim=ceildiv(points * p.N(), BLOCK), block_dim=BLOCK)
+                            grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
 
 comptime OPEN_SPLITS = 64   # K chunks of one opening GEMM; the grid is P x splits blocks instead of P
@@ -145,7 +139,7 @@ def open_splits[p: Params]() -> Int:
 
 def k_sum_splits(base: Pointer[UInt8, MutAnyOrigin], src: Int64, splits: Int32, elems: Int32, dst: Int64, dst_stride: Int32, total: Int32):
     """dst[o * dst_stride + i] = sum_s src[(o * splits + s) * elems + i] over F, for o * elems + i < total."""
-    var gid = Int(block_idx.x * block_dim.x + thread_idx.x)
+    var gid = gid()
     if gid >= Int(total):
         return
     var o = gid // Int(elems)
@@ -169,7 +163,7 @@ def open[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
         c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e), e // 2, columns, K, batch=points * splits)
     var total = points * columns * e
     ctx.enqueue_function[k_sum_splits](base, Int64(partial), Int32(splits), Int32(columns * e), Int64(dst), Int32(row_columns * e), Int32(total),
-                                       grid_dim=ceildiv(total, BLOCK), block_dim=BLOCK)
+                                       grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)
 
 
 def fold[p: Params, acc: Bool](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],

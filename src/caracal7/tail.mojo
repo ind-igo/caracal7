@@ -12,27 +12,17 @@ are the verifier's side of the same formulas.
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 
 from caracal7.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.params import Params
 from caracal7.tables import RsTables, RsDomain
 from caracal7.encode import rs_encode_on, pack_index
+from caracal7.backend import BACKEND
+from caracal7.device import gid, load_e
 
-comptime BLOCK = 256
 comptime ROUND_THREADS = 1024      # partial sums of one sumcheck round
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4
-
-
-@always_inline
-def _gid() -> Int:
-    return Int(block_idx.x * block_dim.x + thread_idx.x)
-
-
-@always_inline
-def _e(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
-    return base.unsafe_load[width=16](off)
 
 
 @always_inline
@@ -77,7 +67,7 @@ def rbar_at(r: InlineArray[E, 3], a: Int, digits: Int) -> E:
 def _r3(base: Pointer[UInt8, MutAnyOrigin], r: Int) -> InlineArray[E, 3]:
     var out = InlineArray[E, 3](fill=E(0))
     for i in range(3):
-        out[i] = _e(base, r + i * 16)
+        out[i] = load_e(base, r + i * 16)
     return out^
 
 
@@ -94,7 +84,7 @@ def domain_bytes(dom: RsDomain) -> List[UInt8]:
 
 def k_points(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32, dom: Int64, L0: Int32, pts: Int64):
     """pts[q] = the point of leaf positions[q]: gamma4^(s // L0) g^(s mod L0)."""
-    var q = _gid()
+    var q = gid()
     if q >= Int(count):
         return
     var s = _u32(base, Int(positions) + 4 * q)
@@ -105,12 +95,12 @@ def k_points(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32,
 def k_running0[p: Params](base: Pointer[UInt8, MutAnyOrigin], w_z: Int64, gamma: Int64, P: Int32, dst: Int64):
     """The level-2 running query: sum_p gamma_p w_{z_p}."""
     comptime N = p.N()
-    var slot = _gid()
+    var slot = gid()
     if slot >= N:
         return
     var acc = E(0)
     for pt in range(Int(P)):
-        acc = f_add(acc, ext_mul[4](_e(base, Int(gamma) + pt * 16), _e(base, Int(w_z) + (pt * N + slot) * 16)))
+        acc = f_add(acc, ext_mul[4](load_e(base, Int(gamma) + pt * 16), load_e(base, Int(w_z) + (pt * N + slot) * 16)))
     base.unsafe_store[width=16](Int(dst) + slot * 16, acc)
 
 
@@ -118,10 +108,10 @@ def k_materialize_level1[p: Params](base: Pointer[UInt8, MutAnyOrigin], running:
                                     count: Int32, w_tilde: Int64):
     """w~[slot] = batch_0 running[slot] + sum_{q, tau} batch_{1 + 4 q + tau} coord_tau(b_j pt_q^i), (i, j) = pack_index(slot)."""
     comptime N = p.N()
-    var slot = _gid()
+    var slot = gid()
     if slot >= N:
         return
-    var w = ext_mul[4](_e(base, Int(batch)), _e(base, Int(running) + slot * 16))
+    var w = ext_mul[4](load_e(base, Int(batch)), load_e(base, Int(running) + slot * 16))
     var i: Int
     var j: Int
     i, j = pack_index[p](slot)
@@ -131,19 +121,19 @@ def k_materialize_level1[p: Params](base: Pointer[UInt8, MutAnyOrigin], running:
     for q in range(Int(count)):
         var m = ext_mul[2](bj, ext_pow[2](_f4(base, Int(pts) + 4 * q), i))
         comptime for tau in range(4):
-            w = f_add(w, f_mul(_e(base, Int(batch) + (1 + 4 * q + tau) * 16), E(m[tau])))
+            w = f_add(w, f_mul(load_e(base, Int(batch) + (1 + 4 * q + tau) * 16), E(m[tau])))
     base.unsafe_store[width=16](Int(w_tilde) + slot * 16, w)
 
 
 def k_materialize_tail(base: Pointer[UInt8, MutAnyOrigin], running: Int64, batch: Int64, pts: Int64,
                        count: Int32, rows: Int32, w_tilde: Int64):
     """w~[row] = batch_0 running[row] + sum_q batch_{1 + q} pt_q^row."""
-    var row = _gid()
+    var row = gid()
     if row >= Int(rows):
         return
-    var w = ext_mul[4](_e(base, Int(batch)), _e(base, Int(running) + row * 16))
+    var w = ext_mul[4](load_e(base, Int(batch)), load_e(base, Int(running) + row * 16))
     for q in range(Int(count)):
-        w = f_add(w, e_mul_f4(_e(base, Int(batch) + (1 + q) * 16), ext_pow[2](_f4(base, Int(pts) + 4 * q), row)))
+        w = f_add(w, e_mul_f4(load_e(base, Int(batch) + (1 + q) * 16), ext_pow[2](_f4(base, Int(pts) + 4 * q), row)))
     base.unsafe_store[width=16](Int(w_tilde) + row * 16, w)
 
 
@@ -151,7 +141,7 @@ def k_round_partial(base: Pointer[UInt8, MutAnyOrigin], w_tilde: Int64, y: Int64
     """Round d of the partial sumcheck over the three low digits: digits below d are bound to r_0 ..
     r_{d-1}, digit d is the variable b, everything above is summed. Thread t sums its share of the
     groups (row, digits above d) into partial[t] = (s(0), s(1), s(2))."""
-    var t = _gid()
+    var t = gid()
     if t >= ROUND_THREADS:
         return
     var dd = Int(d)
@@ -171,10 +161,10 @@ def k_round_partial(base: Pointer[UInt8, MutAnyOrigin], w_tilde: Int64, y: Int64
         var w0 = E(0)
         var w1 = E(0)
         for a in range(m):
-            y0 = f_add(y0, ext_mul[4](rb[a], _e(base, Int(y) + (n0 + a) * 16)))
-            y1 = f_add(y1, ext_mul[4](rb[a], _e(base, Int(y) + (n0 + m + a) * 16)))
-            w0 = f_add(w0, ext_mul[4](rb[a], _e(base, Int(w_tilde) + (n0 + a) * 16)))
-            w1 = f_add(w1, ext_mul[4](rb[a], _e(base, Int(w_tilde) + (n0 + m + a) * 16)))
+            y0 = f_add(y0, ext_mul[4](rb[a], load_e(base, Int(y) + (n0 + a) * 16)))
+            y1 = f_add(y1, ext_mul[4](rb[a], load_e(base, Int(y) + (n0 + m + a) * 16)))
+            w0 = f_add(w0, ext_mul[4](rb[a], load_e(base, Int(w_tilde) + (n0 + a) * 16)))
+            w1 = f_add(w1, ext_mul[4](rb[a], load_e(base, Int(w_tilde) + (n0 + m + a) * 16)))
         acc0 = f_add(acc0, ext_mul[4](y0, w0))
         acc1 = f_add(acc1, ext_mul[4](y1, w1))
         acc2 = f_add(acc2, ext_mul[4](f_sub(f_add(y1, y1), y0), f_sub(f_add(w1, w1), w0)))
@@ -188,19 +178,19 @@ def k_round_sum(base: Pointer[UInt8, MutAnyOrigin], partial: Int64, dst: Int64):
     comptime for b in range(3):
         var acc = E(0)
         for t in range(ROUND_THREADS):
-            acc = f_add(acc, _e(base, Int(partial) + (3 * t + b) * 16))
+            acc = f_add(acc, load_e(base, Int(partial) + (3 * t + b) * 16))
         base.unsafe_store[width=16](Int(dst) + b * 16, acc)
 
 
 def k_fold8(base: Pointer[UInt8, MutAnyOrigin], src: Int64, rows: Int32, r: Int64, dst: Int64):
     """dst[row] = sum_{a < 8} rbar[a] src[8 row + a], rbar = (x) (1 - r_i, r_i)."""
-    var row = _gid()
+    var row = gid()
     if row >= Int(rows):
         return
     var rr = _r3(base, Int(r))
     var acc = E(0)
     for a in range(8):
-        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), _e(base, Int(src) + (8 * row + a) * 16)))
+        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), load_e(base, Int(src) + (8 * row + a) * 16)))
     base.unsafe_store[width=16](Int(dst) + row * 16, acc)
 
 
@@ -208,7 +198,7 @@ def k_fold8(base: Pointer[UInt8, MutAnyOrigin], src: Int64, rows: Int32, r: Int6
 
 @always_inline
 def _grid(n: Int) -> Int:
-    return ceildiv(n, BLOCK)
+    return ceildiv(n, BACKEND.block)
 
 
 def tail_encode(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
@@ -219,35 +209,35 @@ def tail_encode(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
 
 def points(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: Int, count: Int, dom: Int, L0: Int, pts: Int) raises:
     ctx.enqueue_function[k_points](base, Int64(positions), Int32(count), Int64(dom), Int32(L0), Int64(pts),
-                                   grid_dim=_grid(count), block_dim=BLOCK)
+                                   grid_dim=_grid(count), block_dim=BACKEND.block)
 
 
 def running0[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], w_z: Int, gamma: Int, P: Int, dst: Int) raises:
     ctx.enqueue_function[k_running0[p]](base, Int64(w_z), Int64(gamma), Int32(P), Int64(dst),
-                                        grid_dim=_grid(p.N()), block_dim=BLOCK)
+                                        grid_dim=_grid(p.N()), block_dim=BACKEND.block)
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], level1: Bool,
                                 running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int) raises:
     if level1:
         ctx.enqueue_function[k_materialize_level1[p]](base, Int64(running), Int64(batch), Int64(pts), Int32(count), Int64(w_tilde),
-                                                      grid_dim=_grid(p.N()), block_dim=BLOCK)
+                                                      grid_dim=_grid(p.N()), block_dim=BACKEND.block)
     else:
         ctx.enqueue_function[k_materialize_tail](base, Int64(running), Int64(batch), Int64(pts), Int32(count), Int32(length), Int64(w_tilde),
-                                                 grid_dim=_grid(length), block_dim=BLOCK)
+                                                 grid_dim=_grid(length), block_dim=BACKEND.block)
 
 
 def tail_round(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
                w_tilde: Int, y: Int, length: Int, digit: Int, r: Int, partial: Int, dst: Int) raises:
     """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`."""
     ctx.enqueue_function[k_round_partial](base, Int64(w_tilde), Int64(y), Int32(length), Int32(digit), Int64(r), Int64(partial),
-                                          grid_dim=_grid(ROUND_THREADS), block_dim=BLOCK)
+                                          grid_dim=_grid(ROUND_THREADS), block_dim=BACKEND.block)
     ctx.enqueue_function[k_round_sum](base, Int64(partial), Int64(dst), grid_dim=1, block_dim=1)
 
 
 def tail_fold(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, rows: Int, r: Int, dst: Int) raises:
     """dst = Mat(src) r_bar, for the message and for the query."""
-    ctx.enqueue_function[k_fold8](base, Int64(src), Int32(rows), Int64(r), Int64(dst), grid_dim=_grid(rows), block_dim=BLOCK)
+    ctx.enqueue_function[k_fold8](base, Int64(src), Int32(rows), Int64(r), Int64(dst), grid_dim=_grid(rows), block_dim=BACKEND.block)
 
 
 # ---- host side of the same formulas (verifier, tests) ----

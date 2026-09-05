@@ -200,3 +200,9 @@ def ext_embed[k: Int, w: SIMDLength](a: SIMD[DType.uint8, w]) -> SIMD[DType.uint
     comptime for t in range(w):
         r[t] = a[t]
     return r
+
+
+@always_inline
+def ext_one[k: Int]() -> SIMD[DType.uint8, 1 << k]:
+    """The multiplicative identity of level k."""
+    return ext_embed[k](SIMD[DType.uint8, 1](1))

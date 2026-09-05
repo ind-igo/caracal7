@@ -11,8 +11,9 @@ from max.gpu.host import DeviceContext
 
 from caracal7.params import Params
 from caracal7.hash import Hash
+from caracal7.backend import BACKEND
+from caracal7.device import gid
 
-comptime BLOCK = 256
 comptime MAX_QUERIES = 1024        # ponytail: frontier walk keeps the position list in registers
 
 
@@ -37,19 +38,15 @@ def root_offset[H: Hash](tree: Int, leaves: Int) -> Int:
     return tree + (tree_nodes(leaves) - 1) * H.DIGEST
 
 
-def _gid() -> Int:
-    return Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
-
-
 def k_leaves[H: Hash](base: Pointer[UInt8, MutAnyOrigin], code: Int64, row_bytes: Int32, leaves: Int32, tree: Int64):
-    var i = _gid()
+    var i = gid()
     if i < Int(leaves):
         H.leaf(base.unsafe_offset(Int(code) + i * Int(row_bytes)), Int(row_bytes),
                base.unsafe_offset(Int(tree) + i * H.DIGEST))
 
 
 def k_level[H: Hash](base: Pointer[UInt8, MutAnyOrigin], src: Int64, n: Int32, dst: Int64):
-    var j = _gid()
+    var j = gid()
     if j < (Int(n) + 1) // 2:
         var left = base.unsafe_offset(Int(src) + 2 * j * H.DIGEST)
         var dst_ptr = base.unsafe_offset(Int(dst) + j * H.DIGEST)
@@ -64,14 +61,14 @@ def merkle[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOr
                                code: Int, row_bytes: Int, leaves: Int, tree: Int) raises:
     """Hash `leaves` rows of `row_bytes` at `code` into `tree`."""
     ctx.enqueue_function[k_leaves[H]](base, Int64(code), Int32(row_bytes), Int32(leaves), Int64(tree),
-                                      grid_dim=(leaves + BLOCK - 1) // BLOCK, block_dim=BLOCK)
+                                      grid_dim=(leaves + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
     var level = tree
     var n = leaves
     while n > 1:
         var next = level + n * H.DIGEST
         var m = (n + 1) // 2
         ctx.enqueue_function[k_level[H]](base, Int64(level), Int32(n), Int64(next),
-                                         grid_dim=(m + BLOCK - 1) // BLOCK, block_dim=BLOCK)
+                                         grid_dim=(m + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
         level = next
         n = m
 
@@ -177,7 +174,7 @@ def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, Mu
     ctx.enqueue_function[k_frontier[H]](base, Int64(tree), Int32(leaves), Int64(positions), Int32(count),
                                         Int32(row_bytes), Int64(dst), Int64(order), grid_dim=1, block_dim=1)
     ctx.enqueue_function[k_rows](base, Int64(code), Int32(row_bytes), Int64(order), Int64(dst),
-                                 grid_dim=count, block_dim=BLOCK)
+                                 grid_dim=count, block_dim=BACKEND.block)
     return bound
 
 

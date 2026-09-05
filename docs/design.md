@@ -46,7 +46,7 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 | `code` | (s, column, 4) | codeword rows, leaf-major: leaf `s` is contiguous, `4 * columns` bytes (`n_cw = 1`; the split multiplies the row) |
 | `tree` | (level, node, 32) | Blake3 digests, leaves first |
 | `num`, `den`, `zval` | (row, e) | the Z stage per accumulator: N, D, then Z; `zval` is split into e coordinate columns as the Z tree's trace (accumulate.mojo) |
-| `z2` | (accumulator, x2, e) | Z2 in the clear |
+| `z2` | (accumulator, x2, e) + e | Z2 in the clear; one trailing 1 so the shifted line Z2(omega2 X2) is the same buffer one element on |
 | `q3` | (2 h2, e) | Q3 on G2 in the clear (smallgrid.mojo) |
 | `lde` | (column, G2, G1, 2) | evaluations on the residual grid G: witness columns, then the accumulator coordinate columns (F-valued, so 2 coordinates each) |
 | `residual` | (G2, G1, e) | batched residual, E-valued |
@@ -80,7 +80,7 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `tail_encode` | y → tail_code | the RS encoder on 32 F4 columns | the 8 E-valued columns are 32 F4 columns to `rs_encode_on`, no inverse; its scatter pass writes the `(s, 8, e)` leaf-major layout |
 | `lde` | coeff → lde | GEMM skeleton, one launch per axis | forward DFT onto `G` with the twist inside the `g_l^(j k)` tables (dense; mixed radix when `h_l` grows) |
 | `accumulate` | trace, gamma → zval, z2 | one thread per chain; one thread for Z2 | factors N, D per row, batched inversion and the running product along each chain, Z2 across chains (spec 10 steps 4-6) |
-| `small grid` | z2, chain ends, alpha → q3 | one thread per coefficient or point, five tiny launches per accumulator | R2 in coefficient form (inverse DFT of the five line vectors, products, the gate), Q3 = R2 / (X2^h2 - 1) as a two-term sum per coefficient, evaluated on G2 (spec 7.4) |
+| `small grid` | z2, chain ends, alpha → q3 | lane GEMMs on the skeleton for the five inverse DFTs and the G2 evaluation (`DFT_TILE`, 256 threads); one thread per coefficient for the products and the division | R2 in coefficient form, Q3 = R2 / (X2^h2 - 1) as a two-term sum per coefficient, evaluated on G2 through the full (2 h2, 2 h2) `wfwd2` table (spec 7.4) |
 | `residual` | lde, tables → residual | the GEMM skeleton, `C[8 lanes, point]` | the fused pass of statement-layer 5 as one GEMM of the kappa table against family rows gathered from the LDE; milestone 1 runs it on synthetic families |
 | `quotient` | residual → trace of A, B, Q2 | GEMM skeleton launches | `Q1` on the coset from `R` over `G1`, inverse DFTs to the `A`, `B`, `Q2` coefficients, forward DFTs to their values on `H`; the coordinate columns then take the witness encoder path |
 

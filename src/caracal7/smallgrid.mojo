@@ -4,9 +4,12 @@ n = N(e1, X2), d = D(e1, X2) (all polynomials of degree < h2 from their values o
 
     R2 = sum_k alpha^k (X2 - e2) (b d - a c n),   deg < 3 h2;   Q3 = R2 / (X2^h2 - 1),   deg < 2 h2.
 
-Everything is in coefficient form and O(h2^2): inverse DFT of the five line vectors (winv2),
-coefficient products, the division as q_k = r_{k + h2} + r_{k + 2 h2} (exact for an honest R2),
-then Q3 evaluated on G2 through wfwd2 and g2^h2 = -1. One thread per output element per launch.
+Everything is in coefficient form and O(h2^2). The five inverse DFTs (winv2) and the evaluation of
+Q3 on G2 (wfwd2, the full 2 h2-point table) are lane GEMMs on the skeleton: the E vector is the
+8-lane A operand, the F2 table is B. The coefficient products and the division
+q_k = r_{k + h2} + r_{k + 2 h2} (exact for an honest R2) are one thread per output coefficient.
+The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(omega2^h2) = 1 after
+the last chain.
 
 Buffers (bytes; slowest ... fastest): lines (5, h2, e) coefficients a, b, c, n, d; pac (2 h2, e);
 p1 (2 h2, e); p2 (3 h2, e); q3c (2 h2, e) the Q3 coefficients summed over accumulators; q3 (2 h2, e)
@@ -17,54 +20,34 @@ ponytail: chain-end families are the permutation pair (W) only; lookup and memor
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx, block_idx, block_dim
 from max.gpu.host import DeviceContext
 
-from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv
+from caracal7.field import F2, E, f_add, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_one
 from caracal7.params import Params
 from caracal7.tables import TableLayout
+from caracal7.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
 
-comptime BLOCK = 128
-
-
-@always_inline
-def _gid() -> Int:
-    return Int(block_idx.x * block_dim.x + thread_idx.x)
+comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
+from caracal7.device import gid, load_e
 
 
-@always_inline
-def _e(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
-    return base.unsafe_load[width=16](off)
-
-
-@always_inline
-def _f2(base: Pointer[UInt8, MutAnyOrigin], off: Int) -> E:
-    return ext_embed[4](base.unsafe_load[width=2](off))
-
-
-def k_idft_h2[p: Params](base: Pointer[UInt8, MutAnyOrigin], src: Int64, stride: Int32, shift: Int32, winv2: Int64, dst: Int64):
-    """dst[k] = sum_t v[(t + shift) mod h2] winv2[k, t]; v[t] at src + t stride."""
-    comptime h2 = p.h2()
-    var k = _gid()
-    if k >= h2:
-        return
-    var acc = E(0)
-    for t in range(h2):
-        var tt = (t + Int(shift)) % h2
-        acc = f_add(acc, ext_mul[4](_e(base, Int(src) + tt * Int(stride)), _f2(base, Int(winv2) + (k * h2 + t) * 2)))
-    base.unsafe_store[width=16](Int(dst) + k * 16, acc)
+def lane_dft[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
+    """dst[j] = sum_i v[i] table[j, i] in E, j < n, i < k: v[i] at src + i stride, table (n, k, 2) F2, dst (n, e)."""
+    launch_gemm_f2[BACKEND, DFT_TILE, Strided, 1](ctx, base, strided(
+        a=src, sa_m=2, sa_k=stride, b=table, sb_k=2, sb_hi=k * 2, sb_lo=0,
+        c=dst, sc_m=2, sc_hi=p.e, sc_lo=0), p.e // 2, n, k)
 
 
 def k_polymul(base: Pointer[UInt8, MutAnyOrigin], a: Int64, na: Int32, b: Int64, nb: Int32, dst: Int64):
     """dst[k] = sum_i a[i] b[k - i], k < na + nb - 1."""
-    var k = _gid()
+    var k = gid()
     if k >= Int(na) + Int(nb) - 1:
         return
     var acc = E(0)
     var lo = max(0, k - Int(nb) + 1)
     var hi = min(k, Int(na) - 1)
     for i in range(lo, hi + 1):
-        acc = f_add(acc, ext_mul[4](_e(base, Int(a) + i * 16), _e(base, Int(b) + (k - i) * 16)))
+        acc = f_add(acc, ext_mul[4](load_e(base, Int(a) + i * 16), load_e(base, Int(b) + (k - i) * 16)))
     base.unsafe_store[width=16](Int(dst) + k * 16, acc)
 
 
@@ -74,9 +57,9 @@ def _s[p: Params](base: Pointer[UInt8, MutAnyOrigin], p1: Int, p2: Int, m: Int) 
     comptime h2 = p.h2()
     var v = E(0)
     if m < 2 * h2 - 1:
-        v = _e(base, p1 + m * 16)
+        v = load_e(base, p1 + m * 16)
     if m < 3 * h2 - 2:
-        v = f_sub(v, _e(base, p2 + m * 16))
+        v = f_sub(v, load_e(base, p2 + m * 16))
     return v
 
 
@@ -91,30 +74,15 @@ def k_q3[p: Params](base: Pointer[UInt8, MutAnyOrigin], p1: Int64, p2: Int64, e2
     """q_k = alpha^power (r_{k + h2} + r_{k + 2 h2}), r = (X2 - e2)(p1 - p2); k < 2 h2. Adds into dst
     when `accumulate` is nonzero."""
     comptime h2 = p.h2()
-    var k = _gid()
+    var k = gid()
     if k >= 2 * h2:
         return
     var e2 = ext_embed[4](F2(e2a, e2b))
-    var q = ext_mul[4](ext_pow[4](_e(base, Int(alpha)), Int(power)),
+    var q = ext_mul[4](ext_pow[4](load_e(base, Int(alpha)), Int(power)),
                        f_add(_r[p](base, Int(p1), Int(p2), e2, k + h2), _r[p](base, Int(p1), Int(p2), e2, k + 2 * h2)))
     if accumulate != 0:
-        q = f_add(q, _e(base, Int(dst) + k * 16))
+        q = f_add(q, load_e(base, Int(dst) + k * 16))
     base.unsafe_store[width=16](Int(dst) + k * 16, q)
-
-
-def k_eval_g2[p: Params](base: Pointer[UInt8, MutAnyOrigin], q3c: Int64, wfwd2: Int64, dst: Int64):
-    """dst[j] = Q3(g2^j) = sum_{k < h2} (q_k + (-1)^j q_{k + h2}) g2^(j k), j < 2 h2 (g2^h2 = -1)."""
-    comptime h2 = p.h2()
-    var j = _gid()
-    if j >= 2 * h2:
-        return
-    var acc = E(0)
-    for k in range(h2):
-        var lo = _e(base, Int(q3c) + k * 16)
-        var hi = _e(base, Int(q3c) + (k + h2) * 16)
-        var c = f_sub(lo, hi) if j % 2 == 1 else f_add(lo, hi)
-        acc = f_add(acc, ext_mul[4](c, _f2(base, Int(wfwd2) + (j * h2 + k) * 2)))
-    base.unsafe_store[width=16](Int(dst) + j * 16, acc)
 
 
 def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], tab: TableLayout,
@@ -123,29 +91,27 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Pointer[UInt8, M
                                       q3c: Int, first: Bool) raises:
     """Add accumulator `power`'s term of R2 / (X2^h2 - 1) into q3c (coefficients)."""
     comptime h2 = p.h2()
+    comptime B = BACKEND.block
     var w = tab.base + tab.winv2
-    var g = ceildiv(h2, BLOCK)
-    var specs = [(z2, 16, 0), (z2, 16, 1), (z_end, z_end_stride, 0), (n_end, 16, 0), (d_end, 16, 0)]   # a, b, c, n, d
+    var specs = [(z2, 16), (z2 + 16, 16), (z_end, z_end_stride), (n_end, 16), (d_end, 16)]   # a, b, c, n, d
     for i in range(5):
         var line = specs[i]
-        ctx.enqueue_function[k_idft_h2[p]](base, Int64(line[0]), Int32(line[1]), Int32(line[2]), Int64(w), Int64(lines + i * h2 * 16),
-                                           grid_dim=g, block_dim=BLOCK)
+        lane_dft[p](ctx, base, line[0], line[1], w, h2, h2, lines + i * h2 * 16)
     var a = lines
     var b = lines + h2 * 16
     var c = lines + 2 * h2 * 16
     var n = lines + 3 * h2 * 16
     var d = lines + 4 * h2 * 16
-    ctx.enqueue_function[k_polymul](base, Int64(b), Int32(h2), Int64(d), Int32(h2), Int64(p1), grid_dim=ceildiv(2 * h2, BLOCK), block_dim=BLOCK)
-    ctx.enqueue_function[k_polymul](base, Int64(a), Int32(h2), Int64(c), Int32(h2), Int64(pac), grid_dim=ceildiv(2 * h2, BLOCK), block_dim=BLOCK)
-    ctx.enqueue_function[k_polymul](base, Int64(pac), Int32(2 * h2 - 1), Int64(n), Int32(h2), Int64(p2), grid_dim=ceildiv(3 * h2, BLOCK), block_dim=BLOCK)
+    ctx.enqueue_function[k_polymul](base, Int64(b), Int32(h2), Int64(d), Int32(h2), Int64(p1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](base, Int64(a), Int32(h2), Int64(c), Int32(h2), Int64(pac), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](base, Int64(pac), Int32(2 * h2 - 1), Int64(n), Int32(h2), Int64(p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
     ctx.enqueue_function[k_q3[p]](base, Int64(p1), Int64(p2), e2[0], e2[1], Int64(alpha), Int32(power), Int64(q3c), Int32(0 if first else 1),
-                                  grid_dim=ceildiv(2 * h2, BLOCK), block_dim=BLOCK)
+                                  grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
 def small_grid_values[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], tab: TableLayout, q3c: Int, q3: Int) raises:
-    """Q3 on G2 from its coefficients."""
-    ctx.enqueue_function[k_eval_g2[p]](base, Int64(q3c), Int64(tab.base + tab.wfwd2), Int64(q3),
-                                       grid_dim=ceildiv(2 * p.h2(), BLOCK), block_dim=BLOCK)
+    """Q3 on G2 from its coefficients: the 2 h2-point DFT."""
+    lane_dft[p](ctx, base, q3c, 16, tab.base + tab.wfwd2, 2 * p.h2(), 2 * p.h2(), q3)
 
 
 # ---- host side ----
@@ -154,7 +120,7 @@ def interp_cyclic(vals: List[UInt8], off: Int, n: Int, w: F2, z: E) raises -> E:
     """P(z) for the polynomial of degree < n with values vals[off + i] on the cyclic group <w> of order
     n, by the barycentric formula: (z^n - 1) / n * sum_i v_i w^i / (z - w^i). Raises when z is in the group."""
     var acc = E(0)
-    var wi = ext_embed[4](F2(1, 0))
+    var wi = ext_one[4]()
     var we = ext_embed[4](w)
     for i in range(n):
         var v = E(0)
@@ -162,8 +128,6 @@ def interp_cyclic(vals: List[UInt8], off: Int, n: Int, w: F2, z: E) raises -> E:
             v[t] = vals[(off + i) * 16 + t]
         acc = f_add(acc, ext_mul[4](ext_mul[4](v, wi), ext_inv[4](f_sub(z, wi))))
         wi = ext_mul[4](wi, we)
-    var one = E(0)
-    one[0] = 1
     var n_inv = E(0)
     n_inv[0] = f_pow(SIMD[DType.uint8, 1](n % 127), 125)[0]
-    return ext_mul[4](ext_mul[4](f_sub(ext_pow[4](z, n), one), n_inv), acc)
+    return ext_mul[4](ext_mul[4](f_sub(ext_pow[4](z, n), ext_one[4]()), n_inv), acc)

@@ -46,10 +46,11 @@ struct Backend(TrivialRegisterPassable):
     var max_terms: Int           # products one int32 lane accumulates before f_reduce_signed
     var vec_bytes: Int           # bytes per vector load
     var tile: Tile               # default tile
+    var block: Int               # threads per block of the one-thread-per-element kernels
 
 
 comptime SIMD_LANES = Backend(threadgroup_bytes=32768, mma_k=1, max_terms=128, vec_bytes=4,
-                              tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4))
+                              tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4), block=256)
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
 comptime BACKEND = SIMD_LANES   # ponytail: the only implementation; select by device family here when an MMA path lands
 comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = the 8 F2 lanes of E: residual, open, fold

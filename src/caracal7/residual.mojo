@@ -35,20 +35,19 @@ Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx, block_dim
 
-from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed
+from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
 from caracal7.params import Params
 from caracal7.tables import TableLayout
 from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
 from caracal7.accumulate import ACC, ACC_W_MAX
+from caracal7.device import gid, load_u16
 
 comptime ENTRY = 48
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
 comptime FIX_E = 65535      # a point coordinate fixed at e_l
-comptime BLOCK = 256
 
 
 def quotient_elems[p: Params]() -> Int:
@@ -90,7 +89,7 @@ def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
     """One coordinate of an opening point: z g^dj, or the fixed 1 / e_l (host side; the kernel reads the
     power table)."""
     if dj == FIX_ONE:
-        return ext_embed[4](SIMD[DType.uint8, 1](1))
+        return ext_one[4]()
     if dj == FIX_E:
         return ext_embed[4](ext_pow[1](g, 2 * (h - 1)))
     return ext_mul[4](z, ext_embed[4](ext_pow[1](g, dj)))
@@ -299,19 +298,14 @@ def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
 
 # ---- kernels ----
 
-@always_inline
-def _gid() -> Int:
-    return Int(block_idx.x * block_dim.x + thread_idx.x)
-
-
 def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int32, alpha: Int64, chals: Int64):
     """kappa = coef * alpha^family * chal * b_t, one thread per entry (see `kappa_of`)."""
-    var gid = _gid()
+    var gid = gid()
     if gid >= Int(count):
         return
     var ent = Int(families) + gid * ENTRY
     var a = base.unsafe_load[width=16](Int(alpha))
-    var fam = _d16(base, ent + 30)
+    var fam = load_u16(base, ent + 30)
     var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 29]))
     var chal = Int(base[unsafe_offset=ent + 32])
     if chal != 0:
@@ -326,20 +320,15 @@ def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int
 
 
 @always_inline
-def _d16(base: Pointer[UInt8, MutAnyOrigin], at: Int) -> Int:
-    return Int(base[unsafe_offset=at]) | Int(base[unsafe_offset=at + 1]) << 8
-
-
-@always_inline
 def _read[p: Params](base: Pointer[UInt8, MutAnyOrigin], lde_buf: Int, at: Int, j1: Int, j2: Int) -> F2:
     """c(shift point) for the read descriptor (col, dj1, dj2) at `at`; shifts are below the domain size."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    var col = _d16(base, at)
-    var a = j1 + _d16(base, at + 2)
+    var col = load_u16(base, at)
+    var a = j1 + load_u16(base, at + 2)
     if a >= G1:
         a -= G1
-    var b = j2 + _d16(base, at + 4)
+    var b = j2 + load_u16(base, at + 4)
     if b >= G2:
         b -= G2
     return base.unsafe_load[width=2](lde_buf + ((col * G2 + b) * G1 + a) * 2)
@@ -353,7 +342,7 @@ struct Family[p: Params](Loader):
     def load(base: Pointer[UInt8, MutAnyOrigin], o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var ent = Int(o.b) + k * ENTRY
         var v = _read[Self.p](base, Int(o.aux0), ent + 16, n_lo, n_hi)
-        if _d16(base, ent + 22) != NONE:
+        if load_u16(base, ent + 22) != NONE:
             v = ext_mul[1](v, _read[Self.p](base, Int(o.aux0), ent + 22, n_lo, n_hi))
         var mult = base[unsafe_offset=ent + 28]
         if mult == 1:
@@ -369,7 +358,7 @@ def k_values_to_trace[p: Params](base: Pointer[UInt8, MutAnyOrigin], vals: Int64
     on (see docs/decisions.md)."""
     comptime N = p.N()
     comptime e = p.e
-    var gid = _gid()
+    var gid = gid()
     if gid >= Int(groups) * e * N:
         return
     var c = gid // N
@@ -392,7 +381,7 @@ def lde[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
                      c=ltmp, sc_m=G1 * 2, sc_hi=2, sc_lo=0)
     launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o1, columns * h2, G1, h1)
     # axis 2: per column, C[j2, j1] = sum_k2 g2^(j2 k2) ltmp[k2, j1]
-    var o2 = strided(a=tab.base + tab.wfwd2, sa_m=h2 * 2, sa_k=2, b=ltmp, sb_k=G1 * 2, sb_hi=2, sb_lo=0,
+    var o2 = strided(a=tab.base + tab.wfwd2, sa_m=2 * h2 * 2, sa_k=2, b=ltmp, sb_k=G1 * 2, sb_hi=2, sb_lo=0,
                      c=dst, sc_m=G1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * G1 * 2, sc_z=G2 * G1 * 2)
     launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o2, G2, G1, h2, batch=columns)
 
@@ -460,8 +449,8 @@ def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
         a=tab.base + tab.wfwd1, sa_m=2 * h1 * 2, sa_k=2, b=q1coef, sb_k=e, sb_hi=h1 * e, sb_lo=2,
         c=v1, sc_m=h2 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h1, h2 * 8, h1, batch=3)
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
-        a=tab.base + tab.wfwd2, sa_m=2 * h2 * 2, sa_k=2, b=v1, sb_k=e, sb_hi=h2 * e, sb_lo=2,
+        a=tab.base + tab.wfwd2, sa_m=4 * h2 * 2, sa_k=2, b=v1, sb_k=e, sb_hi=h2 * e, sb_lo=2,
         c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
-    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BLOCK), block_dim=BLOCK)
+    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)

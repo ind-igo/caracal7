@@ -5,10 +5,11 @@ Z(1, x2) = 1, and the grand product Z2(e2) chain_prod(e2) = 1 (c8 is a permutati
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import E, ext_mul
+from caracal7.field import E, f_add, ext_mul, ext_inv, ext_one
+from caracal7.params import Params
 from caracal7.params import REFERENCE
 from caracal7.arena import Arena, Bump
-from caracal7.accumulate import ACC, accumulate, host_accumulate, host_factor
+from caracal7.accumulate import ACC, acc_get16, accumulate
 from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 
 comptime p = REFERENCE
@@ -33,6 +34,40 @@ def _down(ctx: DeviceContext, arena: Arena, off: Int, n: Int) raises -> List[UIn
     for i in range(n):
         l.append(h[i])
     return l^
+
+
+
+# ---- host reference (design rule 5) ----
+
+def host_factor(accs: List[UInt8], k: Int, trace: List[UInt8], N: Int, row: Int, gamma: E, den: Bool) -> E:
+    """N(row) or D(row) of accumulator k from a host trace (column, row)."""
+    var v = gamma
+    var w = acc_get16(accs, k, 4 if den else 2)
+    for j in range(w):
+        v[j] = f_add(v[j], trace[acc_get16(accs, k, (22 if den else 6) + 2 * j) * N + row])
+    return v
+
+
+def host_accumulate[p: Params](accs: List[UInt8], k: Int, trace: List[UInt8], gamma: E) raises -> Tuple[List[UInt8], List[UInt8]]:
+    """(Z as (row, e) bytes, Z2 as (x2, e) bytes) by the definitions, for the tests."""
+    comptime h1 = p.h1()
+    comptime h2 = p.h2()
+    comptime N = p.N()
+    var z = List[UInt8](length=N * 16, fill=0)
+    var z2 = List[UInt8](length=h2 * 16, fill=0)
+    var acc2 = ext_one[4]()
+    for x2 in range(h2):
+        for t in range(16):
+            z2[x2 * 16 + t] = acc2[t]
+        var acc = ext_one[4]()
+        for x1 in range(h1):
+            var row = x2 * h1 + x1
+            for t in range(16):
+                z[row * 16 + t] = acc[t]
+            acc = ext_mul[4](acc, ext_mul[4](host_factor(accs, k, trace, N, row, gamma, False),
+                                             ext_inv[4](host_factor(accs, k, trace, N, row, gamma, True))))
+        acc2 = ext_mul[4](acc2, acc)
+    return (z^, z2^)
 
 
 def _e(l: List[UInt8], i: Int) -> E:
@@ -64,7 +99,7 @@ def _check(accs: List[UInt8], k: Int) raises:
     var o_scratch = bump.alloc(N * 16)
     var o_z = bump.alloc(N * 16)
     var o_prod = bump.alloc(h2 * 16)
-    var o_z2 = bump.alloc(h2 * 16)
+    var o_z2 = bump.alloc((h2 + 1) * 16)   # k_z2 stores a trailing 1
     var o_nend = bump.alloc(h2 * 16)
     var o_dend = bump.alloc(h2 * 16)
     var arena = Arena(ctx, bump.used)
@@ -79,7 +114,7 @@ def _check(accs: List[UInt8], k: Int) raises:
     arena.upload(ctx, o_gamma, _host(ctx, gl))
     accumulate[p](ctx, arena.base(), o_trace, o_acc, o_gamma, o_num, o_den, o_scratch, o_z, o_prod, o_z2, o_nend, o_dend)
     var z = _down(ctx, arena, o_z, N * 16)
-    var z2 = _down(ctx, arena, o_z2, h2 * 16)
+    var z2 = _down(ctx, arena, o_z2, (h2 + 1) * 16)
     var prod = _down(ctx, arena, o_prod, h2 * 16)
 
     var want_z: List[UInt8]
@@ -88,7 +123,8 @@ def _check(accs: List[UInt8], k: Int) raises:
     want_z = got[0].copy()
     want_z2 = got[1].copy()
     assert_true(z == want_z, "Z differs from the host definition")
-    assert_true(z2 == want_z2, "Z2 differs from the host definition")
+    assert_true(z2[: h2 * 16] == want_z2, "Z2 differs from the host definition")
+    assert_true(_e(z2, h2) == ext_one[4](), "trailing Z2 element is not 1")
     var one = E(0)
     one[0] = 1
     for x2 in range(h2):

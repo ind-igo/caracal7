@@ -247,7 +247,7 @@ struct TableLayout(TrivialRegisterPassable):
     var g1p: Int        # (2 h1, 2)     g1^j
     var g2p: Int        # (2 h2, 2)
     var wfwd1: Int      # (2 h1, h1, 2) g1^(j k): coefficient k -> point j
-    var wfwd2: Int      # (2 h2, h2, 2)
+    var wfwd2: Int      # (2 h2, 2 h2, 2)
     var q1m: Int        # (h1, 2 h1, 2) Q1 on the coset from R on G1: 63 at j = 2t + 1, 64 * (1/h1) sum_k g1^((2t + 1 - 2s) k) at j = 2s
     var q2m: Int        # (h1, h1, 2)   63 * winv1: Q2 = S1 / (-2) on H1, coefficients from values
     var qinv1: Int      # (h1, h1, 2)   coset values t -> coefficient k: g1^-k h1^-1 omega1^(-t k)
@@ -269,7 +269,7 @@ struct TableLayout(TrivialRegisterPassable):
         self.g1p = off; off += 2 * p.h1() * 2
         self.g2p = off; off += 2 * p.h2() * 2
         self.wfwd1 = off; off += 2 * p.h1() * p.h1() * 2
-        self.wfwd2 = off; off += 2 * p.h2() * p.h2() * 2
+        self.wfwd2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
         self.q1m = off; off += p.h1() * 2 * p.h1() * 2
         self.q2m = off; off += p.h1() * p.h1() * 2
         self.qinv1 = off; off += p.h1() * p.h1() * 2
@@ -329,8 +329,8 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
             _put(h, t.wfwd1 + (j * h1 + k) * 2, ext_pow[1](d.g1, (j * k) % (2 * h1)))
     for j in range(2 * h2):
         _put(h, t.g2p + j * 2, ext_pow[1](d.g2, j))
-        for k in range(h2):
-            _put(h, t.wfwd2 + (j * h2 + k) * 2, ext_pow[1](d.g2, (j * k) % (2 * h2)))
+        for k in range(2 * h2):
+            _put(h, t.wfwd2 + (j * 2 * h2 + k) * 2, ext_pow[1](d.g2, (j * k) % (2 * h2)))
         for k in range(2 * h2):
             _put(h, t.ginv2 + (j * 2 * h2 + k) * 2, f_mul(ext_pow[1](g2_inv, (j * k) % (2 * h2)), inv_2h2))
     var e1 = ext_pow[1](d.omega1, h1 - 1)

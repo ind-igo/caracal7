@@ -37,9 +37,9 @@ from caracal7.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_
 from caracal7.params import Params
 from caracal7.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.arena import Bump
+from caracal7.device import gid
 from caracal7.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
 
-comptime BLOCK = 256
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
 
@@ -64,11 +64,6 @@ struct EncLayout(TrivialRegisterPassable):
         self.packed = bump.alloc(columns * p.N())
         self.etmp = bump.alloc(columns * p.L0 * 4)
         self.code = bump.alloc(p.L() * columns * 4)
-
-
-@always_inline
-def _gid() -> Int:
-    return Int(block_idx.x * block_dim.x + thread_idx.x)
 
 
 @always_inline
@@ -126,7 +121,7 @@ def k_to_stored[p: Params](base: Pointer[UInt8, MutAnyOrigin], coeff: Int64, sto
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
-    var gid = _gid()
+    var gid = gid()
     if gid >= Int(columns) * N:
         return
     var c = gid // N
@@ -180,7 +175,7 @@ def pack_index[p: Params](slot: Int) -> Tuple[Int, Int]:
 
 def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed: Int64, columns: Int32):
     comptime N = p.N()
-    var gid = _gid()
+    var gid = gid()
     if gid >= Int(columns) * (N // 4):
         return
     var c = gid % Int(columns)
@@ -276,7 +271,7 @@ def k_rs_stage[r: Int, stride: Int](base: Pointer[UInt8, MutAnyOrigin], etmp: In
 
 @always_inline
 def grid(n: Int) -> Int:
-    return ceildiv(n, BLOCK)
+    return ceildiv(n, BACKEND.block)
 
 
 def encode[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:
@@ -291,7 +286,7 @@ def to_packed[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
     idft2[p](ctx, base, e.trace, e.ctmp, e.coeff, e.columns, tab)
     comptime k3 = k_to_stored[p]
     ctx.enqueue_function[k3](base, Int64(e.coeff), Int64(e.stored), Int64(tab.base + tab.rho1), Int64(tab.base + tab.rho2), cols,
-                             grid_dim=grid(n_grid), block_dim=BLOCK)
+                             grid_dim=grid(n_grid), block_dim=BACKEND.block)
     pack[p](ctx, base, e)
 
 
@@ -299,7 +294,7 @@ def pack[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: E
     """stored -> packed. Also the entry point of the quotient tree, which writes `stored` directly."""
     comptime k4 = k_pack[p]
     ctx.enqueue_function[k4](base, Int64(e.stored), Int64(e.packed), Int32(e.columns),
-                             grid_dim=grid(e.columns * p.N() // 4), block_dim=BLOCK)
+                             grid_dim=grid(e.columns * p.N() // 4), block_dim=BACKEND.block)
 
 
 def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], e: EncLayout, tab: TableLayout) raises:

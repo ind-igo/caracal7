@@ -7,7 +7,7 @@ openings at P points, the tail, and the clear vector. No Z tree (milestone 2), n
 
 from std.time import perf_counter_ns
 from std.math import ceildiv
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
 from caracal7.field import ext_pow
@@ -19,7 +19,8 @@ from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_O
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT, k_values_to_trace, BLOCK
+from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT, k_values_to_trace
+from caracal7.backend import BACKEND
 from caracal7.open import build_queries, open, open_splits, fold
 from caracal7.accumulate import ACC, accumulate
 from caracal7.smallgrid import small_grid_accumulator, small_grid_values
@@ -72,7 +73,7 @@ struct ProverLayout:
     var zscratch: Int
     var zval: Int                   # (accumulator, row, e) Z values, the Z tree's trace before the coordinate split
     var chain_prod: Int             # (x2, e)
-    var z2: Int                     # (accumulator, x2, e)  Z2 in the clear
+    var z2: Int                     # (accumulator, x2, e) + e  Z2 in the clear; one trailing 1 (accumulate.k_z2)
     var n_end: Int                  # (accumulator, x2, e)  N(e1, x2), D(e1, x2)
     var d_end: Int
     var sg: Int                     # small-grid scratch: lines (5, h2, e), pac (2 h2, e), p1 (2 h2, e), p2 (3 h2, e), q3c (2 h2, e)
@@ -123,7 +124,7 @@ struct ProverLayout:
         self.zscratch = bump.alloc(N * p.e)
         self.zval = bump.alloc(shape.accumulators() * N * p.e)
         self.chain_prod = bump.alloc(p.h2() * p.e)
-        self.z2 = bump.alloc(shape.accumulators() * p.h2() * p.e)
+        self.z2 = bump.alloc((shape.accumulators() * p.h2() + 1) * p.e)
         self.n_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
         self.d_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
         self.sg = bump.alloc(14 * p.h2() * p.e)
@@ -173,6 +174,7 @@ struct Prover[p: Params, H: Hash]:
     var profile_names: List[String]     # filled by prove(profile=True): stage label and ms, in order
     var profile_ms: List[Int]
     var proof: ProofWriter          # host staging pool, sized once from the shape
+    var trace_host: HostBuffer[DType.uint8]   # trace staging for load_trace, allocated once
 
     def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
         if len(families) != shape.entries * ENTRY:
@@ -185,6 +187,7 @@ struct Prover[p: Params, H: Hash]:
         self.profile_names = List[String]()
         self.profile_ms = List[Int]()
         self.proof = ProofWriter(ctx, proof_pool_bytes[Self.p, Self.H](self.shape))
+        self.trace_host = ctx.enqueue_create_host_buffer[DType.uint8](self.shape.columns_w * Self.p.N())
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
         var pts = shift_points(self.families)
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
@@ -263,7 +266,7 @@ struct Prover[p: Params, H: Hash]:
                                L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e, L.n_end + k * Self.p.h2() * e, L.d_end + k * Self.p.h2() * e)
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](base, Int64(L.zval), Int64(L.enc_z.trace), Int32(S.accumulators()),
-                                                            grid_dim=ceildiv(S.columns_z * N, BLOCK), block_dim=BLOCK)
+                                                            grid_dim=ceildiv(S.columns_z * N, BACKEND.block), block_dim=BACKEND.block)
             self._mark(ctx, profile, "accumulate", t0)
             encode[Self.p](ctx, base, L.enc_z, L.tables)
             self._mark(ctx, profile, "encode Z", t0)
@@ -426,13 +429,12 @@ def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: List[UInt8]) raises:
     arena.upload(ctx, off, h)
 
 
-def load_trace[p: Params, H: Hash](ctx: DeviceContext, prover: Prover[p, H], trace: List[UInt8]) raises:
-    """Copy a host trace (columns_w x N bytes, values below 127) into the arena."""
+def load_trace[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], trace: List[UInt8]) raises:
+    """Copy a host trace (columns_w x N bytes, values below 127) into the arena through the staging buffer."""
     var n = prover.shape.columns_w * p.N()
     if len(trace) != n:
         raise Error("trace has the wrong size")
-    var h = ctx.enqueue_create_host_buffer[DType.uint8](n)
     ctx.synchronize()
     for i in range(n):
-        h[i] = trace[i]
-    prover.arena.upload(ctx, prover.layout.enc_w.trace, h)
+        prover.trace_host[i] = trace[i]
+    prover.arena.upload(ctx, prover.layout.enc_w.trace, prover.trace_host)
