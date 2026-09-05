@@ -49,7 +49,7 @@ struct Backend(TrivialRegisterPassable):
 
 
 comptime SIMD_LANES = Backend(threadgroup_bytes=32768, mma_k=1, max_terms=128, vec_bytes=4,
-                              tile=Tile(BM=64, BN=64, BK=16, TM=4, TN=4))
+                              tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4))
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
 comptime BACKEND = SIMD_LANES   # ponytail: the only implementation; select by device family here when an MMA path lands
 comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = the 8 F2 lanes of E: residual, open, fold

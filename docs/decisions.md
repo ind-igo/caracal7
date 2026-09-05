@@ -168,3 +168,8 @@ Before the residual stage, the `Backend` / `tile_mac` rule of design section 9 w
 ## Proof staging pool (2026-09-05)
 
 - **`ProofWriter` stages into one host buffer allocated with the prover** (rule 6 applied to host staging, as design.md says). `proof_pool_bytes` sizes it from the shape: the fixed bytes at the largest prefix, every multiproof region bound, and the transcript-prefix upload region. Per proof: `reset`, host values written straight into the pool, device values as async copies into pool regions, the transcript prefix uploaded from a pool `scratch` region. No host buffer is created and no synchronize happens between the prefix and `finish`; before, every staged value created a host buffer and every host write synchronized. `finish` assembles with `memcpy` per segment (was a per-byte loop). finish 18 ms to 1 ms; warm prove 64 to 52 ms at 72 x 32, 349 to 326 ms at 288 x 128.
+
+## One GEMM: gemm.mojo deleted, the skeleton tuned (2026-09-05)
+
+- **`gemm.mojo` is gone.** It was the byte-GEMM ladder climb (naive, tiled, vec) that produced the 2026-09-04 numbers, used only by its test and bench; the skeleton `backend.gemm_f2` is the one GEMM (design section 8). `bench/bench_gemm.mojo` now runs the skeleton at 1024^3 on plain strided F2 operands, so tile numbers measured there are the numbers every GEMM-shaped stage inherits.
+- **Default tile `BK = 8`** (was 16). On the skeleton the difference is 2x: 64/64/16 at 152 byte-GMAC/s, 64/64/8 at 323, 4 x 8 register tiles at 97. In the prover: `lde` 10 to 5 ms, `quotient` 37 to 17 ms at 288 x 128; warm prove 326 to 305 ms. `LANE_TILE` (M = 8 lanes) is unchanged.
