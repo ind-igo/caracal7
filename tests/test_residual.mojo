@@ -32,6 +32,7 @@ struct Run:
     var stored: List[UInt8]
     var fam: List[UInt8]
     var alpha: E
+    var chals: List[UInt8]
     var d: Domains
 
     def __init__(out self) raises:
@@ -50,6 +51,7 @@ struct Run:
         var scratch = bump.alloc(quotient_elems[p]() * p.e)
         var stored = bump.alloc(3 * p.e * N)
         var alpha = bump.alloc(p.e)
+        var chals = bump.alloc(3 * p.e)
         var arena = Arena(ctx, bump.used)
         arena.upload(ctx, tab.base, build_tables[p](ctx, tab, self.d))
         arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1)))
@@ -62,10 +64,14 @@ struct Run:
         for i in range(p.e):
             ah[i] = self.alpha[i]
         arena.upload(ctx, alpha, ah)
+        self.chals = List[UInt8](capacity=3 * p.e)
+        for i in range(3 * p.e):
+            self.chals.append(UInt8((i * 53 + 11) % 127))
+        arena.upload(ctx, chals, _host(ctx, self.chals))
 
         to_packed[p](ctx, arena.base(), enc, tab)
         lde[p](ctx, arena.base(), enc.coeff, C, tab, ltmp, lde_buf)
-        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, res_buf)
+        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
         quotient[p](ctx, arena.base(), res_buf, tab, scratch, stored)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8](C * N * 2)
@@ -183,7 +189,7 @@ def test_residual_vanishes_on_h_and_matches_host_on_g() raises:
             reads.append(ext_embed[4](r.f2(r.lde, ((cb * G2 + b2) * G1 + b1) * 2)))
         var z1 = ext_embed[4](ext_pow[1](r.d.g1, j1))
         var z2 = ext_embed[4](ext_pow[1](r.d.g2, j2))
-        var want = residual_at(r.fam, r.alpha, z1, z2, e1, e2, reads)
+        var want = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)
         assert_true(want == r.e(r.res, (j2 * G1 + j1) * p.e), "residual mismatch on G")
 
 
@@ -204,7 +210,7 @@ def test_deep_identity_at_random_z() raises:
         else:
             reads.append(r.col_at(en.col_b, ext_mul[4](z1, ext_embed[4](ext_pow[1](r.d.g1, en.dj1_b))),
                                   ext_mul[4](z2, ext_embed[4](ext_pow[1](r.d.g2, en.dj2_b)))))
-    var rz = residual_at(r.fam, r.alpha, z1, z2, e1, e2, reads)
+    var rz = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)
     var q1coef = 2 * h1 * G2 * p.e
     var q2coef = q1coef + G2 * h1 * p.e
     var a = r.poly_at(q1coef, h2, z1, z2)

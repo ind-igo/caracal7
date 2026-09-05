@@ -225,7 +225,7 @@ struct Prover[p: Params, H: Hash]:
         # 8-10. residual grid, quotient, commit Q
         lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
         self._mark(ctx, profile, "lde", t0)
-        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.residual)
+        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.stage1, L.residual)
         self._mark(ctx, profile, "residual", t0)
         quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.trace)
         self._mark(ctx, profile, "quotient", t0)

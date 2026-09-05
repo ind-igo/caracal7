@@ -39,6 +39,7 @@ def main() raises:
     var scratch = bump.alloc(quotient_elems[p]() * p.e)
     var stored = bump.alloc(3 * p.e * p.N())
     var alpha = bump.alloc(p.e)
+    var chals = bump.alloc(3 * p.e)
     var arena = Arena(ctx, bump.used)
     arena.upload(ctx, tab.base, build_tables[p](ctx, tab, d))
     var th = ctx.enqueue_create_host_buffer[DType.uint8](COLS * p.N())
@@ -69,11 +70,11 @@ def main() raises:
     ctx.synchronize()
     report("lde", Int(perf_counter_ns() - t0), COLS * (p.N() * 2 * p.h1() + 2 * p.h1() * 2 * p.h2() * p.h2()))
 
-    residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, res_buf)
+    residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, res_buf)
+        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
     ctx.synchronize()
     report("residual", Int(perf_counter_ns() - t0), f.count * G * 8)
 

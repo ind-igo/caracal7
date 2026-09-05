@@ -9,11 +9,18 @@ Buffers (bytes; slowest ... fastest):
     quotient  five E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
     trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
 
-Family entry (ENTRY = 32 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
+Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
 col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
-mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32).
-Shifts are offsets on G in [0, 2 h_l): a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef *
-alpha^family, one entry per (family, read).
+mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32);
+chal u8 [32] (0 none, 1 beta, 2 delta, 3 gamma: a stage-1 challenge factor); basis u8 [33] (t < e: the
+factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l): a read at
+(omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t, one entry per (family, read).
+The challenge and basis factors are how an E-valued accumulator enters as e F-valued coordinate
+columns (statement-layer 2: a coefficient is a constant, a challenge expression, or a public read).
+
+Opening points (POINT = 4 bytes, (dj1, dj2) u16): a shift of z by g_l^dj, or a fixed coordinate:
+FIX_ONE is 1 and FIX_E is e_l = omega_l^(h_l - 1) (spec section 3: (1, z2), (e1, z2), (1, omega2 z2),
+(1, 1), (e1, e2)). Fixed points are opening points only; a residual read is always a shift.
 ponytail: collapsing shared reads into one kappa (statement-layer 5) is the compiler's job when a
 real family list exists; the kernel does not care.
 
@@ -34,8 +41,11 @@ from caracal7.params import Params
 from caracal7.tables import TableLayout
 from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
 
-comptime ENTRY = 32
+comptime ENTRY = 48
 comptime NONE = 65535
+comptime NO_BASIS = 255
+comptime FIX_ONE = 65534    # a point coordinate fixed at 1
+comptime FIX_E = 65535      # a point coordinate fixed at e_l
 comptime BLOCK = 256
 
 
@@ -50,9 +60,15 @@ comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
 
 
 def shift_points(fam: List[UInt8]) -> List[UInt8]:
-    """The opening points as (dj1, dj2) pairs on G: the DEEP point (0, 0) first, then every distinct
-    read shift of the family table in first-seen order (spec section 3, milestone 1)."""
-    var pts = List[UInt8](length=POINT, fill=0)
+    """The opening points as (dj1, dj2) pairs: the seven of spec section 3 in its order (z, the shifted
+    point, (1, z2), (e1, z2), (1, omega2 z2), (1, 1), (e1, e2)), then every other distinct read shift of
+    the family table in first-seen order."""
+    var pts = List[UInt8]()
+    for pt in [(0, 0), (2, 0), (FIX_ONE, 0), (FIX_E, 0), (FIX_ONE, 2), (FIX_ONE, FIX_ONE), (FIX_E, FIX_E)]:
+        var n = len(pts)
+        pts.extend(List[UInt8](length=POINT, fill=0))
+        _u16(pts, n, pt[0])
+        _u16(pts, n + 2, pt[1])
     for k in range(len(fam) // ENTRY):
         var en = entry(fam, k)
         for side in range(2):
@@ -66,6 +82,16 @@ def shift_points(fam: List[UInt8]) -> List[UInt8]:
                 _u16(pts, n, d1)
                 _u16(pts, n + 2, d2)
     return pts^
+
+
+def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
+    """One coordinate of an opening point: z g^dj, or the fixed 1 / e_l (host side; the kernel reads the
+    power table)."""
+    if dj == FIX_ONE:
+        return ext_embed[4](SIMD[DType.uint8, 1](1))
+    if dj == FIX_E:
+        return ext_embed[4](ext_pow[1](g, 2 * (h - 1)))
+    return ext_mul[4](z, ext_embed[4](ext_pow[1](g, dj)))
 
 
 def point_index(pts: List[UInt8], dj1: Int, dj2: Int) -> Int:
@@ -87,12 +113,12 @@ struct Families:
         self.count = 0
 
     def add(mut self, family: Int, coef: Int, col_a: Int, k1_a: Int = 0, k2_a: Int = 0,
-            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0) raises:
-        """Shifts k_l are on H, already reduced to [0, h_l). A gated entry must be linear: two
-        columns and a gate exceed the degree bound (2 h1 - 1, 2 h2 - 2) of spec section 8 and
-        would alias on G."""
-        if col_b >= 0 and mult != 0:
-            raise Error("gated entries must be linear (spec 8 degree bound)")
+            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0, chal: Int = 0, basis: Int = -1) raises:
+        """Shifts k_l are on H, already reduced to [0, h_l). An entry with the axis-2 gate must be
+        linear: two columns and (X2 - e2) exceed the bound 2 h2 - 2 of spec section 8 and would alias
+        on G. The axis-1 gate admits a quadratic entry (2 h1 - 1): the accumulator transition."""
+        if col_b >= 0 and mult == 2:
+            raise Error("axis-2 gated entries must be linear (spec 8 degree bound)")
         var e = List[UInt8](length=ENTRY, fill=0)
         for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b]:
             if v < 0 or v > 65535:
@@ -106,6 +132,8 @@ struct Families:
         e[28] = UInt8(mult)
         e[29] = UInt8(coef % 127)
         _u16(e, 30, family)
+        e[32] = UInt8(chal)
+        e[33] = UInt8(NO_BASIS if basis < 0 else basis)
         self.bytes.extend(e^)
         self.count += 1
 
@@ -130,16 +158,34 @@ struct Entry(TrivialRegisterPassable):
     var mult: Int
     var coef: Int
     var family: Int
+    var chal: Int
+    var basis: Int
 
 
 def entry(fam: List[UInt8], k: Int) -> Entry:
     var o = k * ENTRY
     return Entry(col_a=_get16(fam, o + 16), dj1_a=_get16(fam, o + 18), dj2_a=_get16(fam, o + 20),
                  col_b=_get16(fam, o + 22), dj1_b=_get16(fam, o + 24), dj2_b=_get16(fam, o + 26),
-                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=_get16(fam, o + 30))
+                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=_get16(fam, o + 30),
+                 chal=Int(fam[o + 32]), basis=Int(fam[o + 33]))
 
 
-def residual_at(fam: List[UInt8], alpha: E, z1: E, z2: E, e1: F2, e2: F2, reads: List[E]) -> E:
+def kappa_of(en: Entry, alpha: E, chals: List[UInt8]) -> E:
+    """coef * alpha^family * chal * b_t; chals holds the stage-1 challenges (beta, delta, gamma) as e bytes each."""
+    var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
+    if en.chal != 0:
+        var c = E(0)
+        for t in range(16):
+            c[t] = chals[(en.chal - 1) * 16 + t]
+        kappa = ext_mul[4](kappa, c)
+    if en.basis != NO_BASIS:
+        var b = E(0)
+        b[en.basis] = 1
+        kappa = ext_mul[4](kappa, b)
+    return kappa
+
+
+def residual_at(fam: List[UInt8], alpha: E, chals: List[UInt8], z1: E, z2: E, e1: F2, e2: F2, reads: List[E]) -> E:
     """R(z) from opened values: reads[2k], reads[2k + 1] are c_a and c_b of entry k at their shifted
     points. The verifier's step 5 and the tests share this."""
     var acc = E(0)
@@ -154,15 +200,14 @@ def residual_at(fam: List[UInt8], alpha: E, z1: E, z2: E, e1: F2, e2: F2, reads:
             v = ext_mul[4](v, g1)
         elif en.mult == 2:
             v = ext_mul[4](v, g2)
-        var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
-        acc = f_add(acc, ext_mul[4](kappa, v))
+        acc = f_add(acc, ext_mul[4](kappa_of(en, alpha, chals), v))
     return acc
 
 
 def synthetic_families() raises -> Families:
-    """Milestone 1: six families over eight columns, satisfied by `synthetic_trace`. They cover a
-    linear entry, a quadratic entry, both gates, a within-chain shift, a cyclic shift, and an
-    axis-2 shift."""
+    """Eight families over eight columns, satisfied by `synthetic_trace`. They cover a linear entry, a
+    quadratic entry, both gates, a within-chain shift, a cyclic shift, an axis-2 shift, a challenge
+    and basis coefficient, and a quadratic axis-1 transition."""
     var f = Families()
     f.add(0, 1, 2)                                   # c2 - c0 c1
     f.add(0, 126, 0, col_b=1)
@@ -177,6 +222,10 @@ def synthetic_families() raises -> Families:
     f.add(4, 126, 0, k1_a=3)
     f.add(5, 1, 7, k2_a=1, mult=2)                   # (X2 - e2) (c7(x1, omega2 x2) - c0)
     f.add(5, 126, 0, mult=2)
+    f.add(6, 1, 2, chal=3, basis=3)                  # gamma b_3 (c2 - c0 c1): a challenge-expression coefficient
+    f.add(6, 126, 0, col_b=1, chal=3, basis=3)
+    f.add(7, 1, 4, k1_a=1, col_b=5, mult=1)          # (X1 - e1) c5 (c4(next) - c0): quadratic with the axis-1 gate
+    f.add(7, 126, 0, col_b=5, mult=1)
     return f^
 
 
@@ -216,8 +265,8 @@ def _gid() -> Int:
     return Int(block_idx.x * block_dim.x + thread_idx.x)
 
 
-def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int32, alpha: Int64):
-    """kappa = coef * alpha^family, one thread per entry."""
+def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int32, alpha: Int64, chals: Int64):
+    """kappa = coef * alpha^family * chal * b_t, one thread per entry (see `kappa_of`)."""
     var gid = _gid()
     if gid >= Int(count):
         return
@@ -225,6 +274,14 @@ def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int
     var a = base.unsafe_load[width=16](Int(alpha))
     var fam = _d16(base, ent + 30)
     var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 29]))
+    var chal = Int(base[unsafe_offset=ent + 32])
+    if chal != 0:
+        kappa = ext_mul[4](kappa, base.unsafe_load[width=16](Int(chals) + (chal - 1) * 16))
+    var basis = Int(base[unsafe_offset=ent + 33])
+    if basis != NO_BASIS:
+        var b = E(0)
+        b[basis] = 1
+        kappa = ext_mul[4](kappa, b)
     base.unsafe_store[width=16](ent, kappa)
 
 
@@ -300,12 +357,12 @@ def lde[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
 
 
 def residual[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                        lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, dst: Int) raises:
+                        lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, chals: Int, dst: Int) raises:
     """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5 as
     one GEMM, A = the kappa table (8 F2 lanes x entries), B gathered from the LDE."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    ctx.enqueue_function[k_fold_alpha](base, Int64(families), Int32(count), Int64(alpha),
+    ctx.enqueue_function[k_fold_alpha](base, Int64(families), Int32(count), Int64(alpha), Int64(chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
     var o = strided(a=families, sa_m=2, sa_k=ENTRY, b=families, sb_k=0, sb_hi=0, sb_lo=0,
                     c=dst, sc_m=2, sc_hi=G1 * p.e, sc_lo=p.e)

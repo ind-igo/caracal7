@@ -12,7 +12,7 @@ from caracal7.params import REFERENCE
 from caracal7.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
-from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, shift_points
+from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace, shift_points, point_coord
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -80,8 +80,8 @@ def test_openings_and_fold() raises:
     for pt in range(P):
         var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
         var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
-        var z1 = ext_mul[4](_e(z, 0), ext_embed[4](ext_pow[1](d.g1, dj1)))
-        var z2 = ext_mul[4](_e(z, 1), ext_embed[4](ext_pow[1](d.g2, dj2)))
+        var z1 = point_coord(_e(z, 0), dj1, d.g1, p.h1())
+        var z2 = point_coord(_e(z, 1), dj2, d.g2, p.h2())
         for c in range(SYNTHETIC_COLUMNS):
             var want = _horner(coeff, c * N * 2, 2, 2, z1, z2, h2)
             assert_true(want == _e(openings, pt * C + c), "witness opening mismatch")

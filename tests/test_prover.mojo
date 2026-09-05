@@ -73,7 +73,7 @@ def test_prove_and_verify() raises:
     var ctx = DeviceContext()
     var f = synthetic_families()
     var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
-    assert_equal(shape.points, 4)                 # z, (omega1 z1, z2), (omega1^3 z1, z2), (z1, omega2 z2)
+    assert_equal(shape.points, 9)                 # the seven of spec 3, then (omega1^3 z1, z2), (z1, omega2 z2)
     var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())

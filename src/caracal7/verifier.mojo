@@ -16,7 +16,7 @@ from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.tables import Domains, RsDomain
-from caracal7.residual import ENTRY, NONE, entry, shift_points, point_index, residual_at
+from caracal7.residual import ENTRY, NONE, entry, shift_points, point_index, point_coord, residual_at
 from caracal7.encode import pack_slot, pack_index
 from caracal7.open import slot_weight
 from caracal7.merkle import check_multiproof, distinct_sorted
@@ -61,7 +61,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         reads.append(E(0) if en.col_b == NONE else _opening[p](openings, shape, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
     var z1 = _e[p](z, 0)
     var z2 = _e[p](z, 1)
-    var rz = residual_at(families, _e[p](stage1, 3), z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
+    var rz = residual_at(families, _e[p](stage1, 3), stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
     var one = ext_embed[4](SIMD[DType.uint8, 1](1))
     var z2h = ext_pow[4](z2, p.h2())
     var qa = _quotient_at[p](openings, shape, 0)
@@ -79,8 +79,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     for pt in range(shape.points):
         var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
         var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
-        var z1p = ext_mul[4](z1, ext_embed[4](ext_pow[1](d.g1, dj1)))
-        var z2p = ext_mul[4](z2, ext_embed[4](ext_pow[1](d.g2, dj2)))
+        var z1p = point_coord(z1, dj1, d.g1, p.h1())
+        var z2p = point_coord(z2, dj2, d.g2, p.h2())
         var gamma = _e[p](beta_gamma, shape.columns() + pt)
         for slot in range(p.N()):
             _add_e(running, slot, ext_mul[4](gamma, slot_weight[p](slot, z1p, z2p, d.rho1, d.rho2)))

@@ -4,7 +4,7 @@
     openings  (P, column, e)    alpha_{c,p} = <w_{z_p}, stored(c)>, witness columns then quotient columns
     fold_y    (slot, e)         y = sum_c beta_c stored(c) over both trees, the level-2 message
 
-Opening point p is (g1^dj1 z1, g2^dj2 z2) for the (dj1, dj2) pair at `shifts + POINT p`
+Opening point p is (g1^dj1 z1, g2^dj2 z2) for the (dj1, dj2) pair at `shifts + POINT p`, or a fixed coordinate (residual.mojo)
 (residual.shift_points); point 0 is z itself. The weight of a slot (t, x1', x2, r) is L(r) times
 Mon(x) + Par(x, r) at t = 0 and i (Mon(x) - Par(x, r)) at t = 1 for a pair representative x, and
 Mon(x) for a fixed slot (9.1). One thread per (point, slot) computes it from scratch; the
@@ -19,6 +19,7 @@ from max.gpu.host import DeviceContext
 from std.gpu import thread_idx, block_idx, block_dim
 
 from caracal7.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed
+from caracal7.residual import FIX_ONE, FIX_E
 from caracal7.params import Params
 from caracal7.tables import TableLayout, Domains
 from caracal7.encode import slot_target
@@ -97,6 +98,16 @@ def _rho(rho: UInt8, k: Int) -> E:
     return ext_embed[4](f_pow(SIMD[DType.uint8, 1](rho), k))
 
 
+@always_inline
+def _coord(base: Pointer[UInt8, MutAnyOrigin], z: E, dj: Int, gp: Int, h: Int) -> E:
+    """`point_coord` on the device: z g^dj from the power table, or the fixed 1 / e_l."""
+    if dj == FIX_ONE:
+        return ext_embed[4](SIMD[DType.uint8, 1](1))
+    var j = 2 * (h - 1) if dj == FIX_E else dj
+    var g = ext_embed[4](base.unsafe_load[width=2](gp + j * 2))
+    return g if dj == FIX_E else ext_mul[4](z, g)
+
+
 def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shifts: Int64, points: Int32,
                                 g1p: Int64, g2p: Int64, rho1: UInt8, rho2: UInt8, w_z: Int64):
     comptime N = p.N()
@@ -107,8 +118,8 @@ def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shi
     var sh = Int(shifts) + pt * 4
     var dj1 = Int(base[unsafe_offset=sh]) | Int(base[unsafe_offset=sh + 1]) << 8
     var dj2 = Int(base[unsafe_offset=sh + 2]) | Int(base[unsafe_offset=sh + 3]) << 8
-    var z1 = ext_mul[4](_e(base, Int(z)), ext_embed[4](base.unsafe_load[width=2](Int(g1p) + dj1 * 2)))
-    var z2 = ext_mul[4](_e(base, Int(z) + p.e), ext_embed[4](base.unsafe_load[width=2](Int(g2p) + dj2 * 2)))
+    var z1 = _coord(base, _e(base, Int(z)), dj1, Int(g1p), p.h1())
+    var z2 = _coord(base, _e(base, Int(z) + p.e), dj2, Int(g2p), p.h2())
     base.unsafe_store[width=16](Int(w_z) + gid * p.e, slot_weight[p](gid % N, z1, z2, rho1, rho2))
 
 
