@@ -26,6 +26,7 @@ from caracal7.arena import Arena
 from caracal7.residual import ENTRY, shift_points
 from caracal7.accumulate import ACC
 from caracal7.hash import Hash
+from caracal7.bytes import Base, append_u32
 
 comptime VERSION: UInt32 = 1
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
@@ -146,40 +147,29 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], m
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
     level, shape, public inputs, and H(family table) as the statement artifact hash of
     statement-layer 6 step 1. Prover and verifier build the same bytes."""
-    var w = _U32Writer()
-    w.u32(Int(VERSION))
+    var bytes = List[UInt8]()
+    append_u32(bytes, Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
               p.lambda_bits, p.queries(), p.n_cw()]:
-        w.u32(v)
-    w.u32(shape.columns_w)
-    w.u32(shape.columns_z)
-    w.u32(shape.columns_q)
-    w.u32(shape.points)
-    w.u32(len(shape.tail))
+        append_u32(bytes, v)
+    append_u32(bytes, shape.columns_w)
+    append_u32(bytes, shape.columns_z)
+    append_u32(bytes, shape.columns_q)
+    append_u32(bytes, shape.points)
+    append_u32(bytes, len(shape.tail))
     for lvl in shape.tail:
         for v in [lvl.length, lvl.rows, lvl.L, lvl.cosets, lvl.queries]:
-            w.u32(v)
-    w.u32(shape.clear_length)
-    w.u32(len(public_inputs))
-    w.bytes.extend(public_inputs.copy())
-    w.u32(len(shape.accs))
-    w.bytes.extend(shape.accs.copy())
+            append_u32(bytes, v)
+    append_u32(bytes, shape.clear_length)
+    append_u32(bytes, len(public_inputs))
+    bytes.extend(public_inputs.copy())
+    append_u32(bytes, len(shape.accs))
+    bytes.extend(shape.accs.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
-    H.leaf(rebind[Pointer[UInt8, MutAnyOrigin]](families.unsafe_ptr()), len(families),
-           rebind[Pointer[UInt8, MutAnyOrigin]](digest.unsafe_ptr()))
-    w.bytes.extend(digest^)
-    return w.bytes.copy()
-
-
-struct _U32Writer:
-    var bytes: List[UInt8]
-
-    def __init__(out self):
-        self.bytes = List[UInt8]()
-
-    def u32(mut self, v: Int):
-        for i in range(4):
-            self.bytes.append(UInt8((v >> (8 * i)) & 255))
+    H.leaf(rebind[Base](families.unsafe_ptr()), len(families),
+           rebind[Base](digest.unsafe_ptr()))
+    bytes.extend(digest^)
+    return bytes.copy()
 
 
 struct ProofWriter:
@@ -232,9 +222,9 @@ struct ProofWriter:
         self.multiproof.append(False)
 
     def u32(mut self, v: Int) raises:
-        var w = _U32Writer()
-        w.u32(v)
-        self.raw(w.bytes)
+        var bytes = List[UInt8]()
+        append_u32(bytes, v)
+        self.raw(bytes)
 
     def prefixed(mut self, src: List[UInt8]) raises:
         self.u32(len(src))
@@ -270,10 +260,10 @@ struct ProofWriter:
         for i in range(len(starts)):
             if self.multiproof[i]:
                 var n = stops[i] - starts[i]        # the body follows its own header; emit n - 4 then the body
-                var w = _U32Writer()
-                w.u32(n - 4)
+                var hdr = List[UInt8]()
+                append_u32(hdr, n - 4)
                 for j in range(4):
-                    dst[unsafe_offset=at + j] = w.bytes[j]
+                    dst[unsafe_offset=at + j] = hdr[j]
                 at += 4
                 unsafe_memcpy(dest=dst.unsafe_offset(at), src=src.unsafe_offset(starts[i] + 4), count=n - 4)
                 at += n - 4

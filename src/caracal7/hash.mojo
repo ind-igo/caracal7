@@ -6,28 +6,30 @@ The functions are plain Mojo with no allocation, so the same code runs inside a 
 per Merkle node, one thread for the transcript) and on the host for the verifier.
 """
 
+from caracal7.bytes import Base
+
 trait Hash:
     comptime DIGEST: Int          # output bytes, 32 for Blake3
     comptime BLOCK: Int           # input block bytes, 64 for Blake3
     comptime NAME: StringSpan[ImmStaticOrigin]
 
     @staticmethod
-    def leaf(src: Pointer[UInt8, MutAnyOrigin], bytes: Int, out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def leaf(src: Base, bytes: Int, out_ptr: Base):
         """Digest of one Merkle leaf: `bytes` bytes at `src` -> DIGEST bytes at `out_ptr`."""
         ...
 
     @staticmethod
-    def node(left: Pointer[UInt8, MutAnyOrigin], right: Pointer[UInt8, MutAnyOrigin], out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def node(left: Base, right: Base, out_ptr: Base):
         """Digest of two child digests."""
         ...
 
     @staticmethod
-    def absorb(state: Pointer[UInt8, MutAnyOrigin], ds: UInt8, src: Pointer[UInt8, MutAnyOrigin], bytes: Int):
+    def absorb(state: Base, ds: UInt8, src: Base, bytes: Int):
         """Transcript step: state <- H_keyed(key=state, ds || src[0:bytes]). Serial by definition."""
         ...
 
     @staticmethod
-    def squeeze(state: Pointer[UInt8, MutAnyOrigin], counter: Int, out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def squeeze(state: Base, counter: Int, out_ptr: Base):
         """DIGEST bytes of challenge material for block `counter` from the current state."""
         ...
 
@@ -83,14 +85,14 @@ def _compress(cv: _CV, block: _W, counter: UInt64, block_len: UInt32, flags: UIn
     return s.slice[8]() ^ s.slice[8, offset=8]()
 
 
-def _load_words[n: Int](src: Pointer[UInt8, MutAnyOrigin]) -> SIMD[DType.uint32, n]:
+def _load_words[n: Int](src: Base) -> SIMD[DType.uint32, n]:
     var w = SIMD[DType.uint32, n](0)
     comptime for i in range(4 * n):
         w[i // 4] |= UInt32(src[unsafe_offset=i]) << UInt32(8 * (i % 4))
     return w
 
 
-def _store_cv(cv: _CV, dst: Pointer[UInt8, MutAnyOrigin]):
+def _store_cv(cv: _CV, dst: Base):
     comptime for i in range(32):
         dst[unsafe_offset=i] = UInt8((cv[i // 4] >> UInt32(8 * (i % 4))) & 255)
 
@@ -99,8 +101,8 @@ def _parent(key: _CV, left: _CV, right: _CV, flags: UInt32) -> _CV:
     return _compress(key, left.join(right), 0, 64, flags | _PARENT)
 
 
-def _hash(key: _CV, flags0: UInt32, prefix: Int, ds: UInt8, src: Pointer[UInt8, MutAnyOrigin], bytes: Int,
-          dst: Pointer[UInt8, MutAnyOrigin]):
+def _hash(key: _CV, flags0: UInt32, prefix: Int, ds: UInt8, src: Base, bytes: Int,
+          dst: Base):
     """Blake3 of the message (ds if prefix else nothing) || src[0:bytes] under `key` and mode flags."""
     var msg_len = bytes + prefix
     var n_chunks = max(1, (msg_len + 1023) // 1024)
@@ -148,21 +150,21 @@ struct Blake3(Hash):
     comptime NAME = "blake3"
 
     @staticmethod
-    def leaf(src: Pointer[UInt8, MutAnyOrigin], bytes: Int, out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def leaf(src: Base, bytes: Int, out_ptr: Base):
         _hash(_IV, 0, 0, 0, src, bytes, out_ptr)
 
     @staticmethod
-    def node(left: Pointer[UInt8, MutAnyOrigin], right: Pointer[UInt8, MutAnyOrigin], out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def node(left: Base, right: Base, out_ptr: Base):
         # blake3(left || right): one 64-byte block, so one compression
         var w = _load_words[8](left).join(_load_words[8](right))
         _store_cv(_compress(_IV, w, 0, 64, _CHUNK_START | _CHUNK_END | _ROOT), out_ptr)
 
     @staticmethod
-    def absorb(state: Pointer[UInt8, MutAnyOrigin], ds: UInt8, src: Pointer[UInt8, MutAnyOrigin], bytes: Int):
+    def absorb(state: Base, ds: UInt8, src: Base, bytes: Int):
         _hash(_load_words[8](state), _KEYED, 1, ds, src, bytes, state)
 
     @staticmethod
-    def squeeze(state: Pointer[UInt8, MutAnyOrigin], counter: Int, out_ptr: Pointer[UInt8, MutAnyOrigin]):
+    def squeeze(state: Base, counter: Int, out_ptr: Base):
         # blake3_keyed(key=state, message=LE64(counter))
         var w = _W(0)
         w[0] = UInt32(counter & 0xFFFFFFFF)

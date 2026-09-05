@@ -22,8 +22,9 @@ from caracal7.residual import FIX_ONE, FIX_E
 from caracal7.params import Params
 from caracal7.tables import TableLayout, Domains
 from caracal7.encode import slot_target
-from caracal7.device import gid, load_e
 from caracal7.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
+from caracal7.bytes import Base, Buf, u16
+from std.gpu import global_idx
 
 
 
@@ -93,36 +94,36 @@ def _rho(rho: UInt8, k: Int) -> E:
 
 
 @always_inline
-def _coord(base: Pointer[UInt8, MutAnyOrigin], z: E, dj: Int, gp: Int, h: Int) -> E:
+def _coord(base: Base, z: E, dj: Int, gtab: Buf[2], h: Int) -> E:
     """`point_coord` on the device: z g^dj from the power table, or the fixed 1 / e_l."""
     if dj == FIX_ONE:
         return ext_one[4]()
     var j = 2 * (h - 1) if dj == FIX_E else dj
-    var g = ext_embed[4](base.unsafe_load[width=2](gp + j * 2))
+    var g = ext_embed[4](gtab.load(base, j))
     return g if dj == FIX_E else ext_mul[4](z, g)
 
 
-def k_build_queries[p: Params](base: Pointer[UInt8, MutAnyOrigin], z: Int64, shifts: Int64, points: Int32,
-                                g1p: Int64, g2p: Int64, rho1: UInt8, rho2: UInt8, w_z: Int64):
+def k_build_queries[p: Params](base: Base, z: Buf[16], shifts: Buf[1], points: Int32,
+                                g1p: Buf[2], g2p: Buf[2], rho1: UInt8, rho2: UInt8, w_z: Buf[16]):
     comptime N = p.N()
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(points) * N:
         return
     var pt = gid // N
-    var sh = Int(shifts) + pt * 4
-    var dj1 = Int(base[unsafe_offset=sh]) | Int(base[unsafe_offset=sh + 1]) << 8
-    var dj2 = Int(base[unsafe_offset=sh + 2]) | Int(base[unsafe_offset=sh + 3]) << 8
-    var z1 = _coord(base, load_e(base, Int(z)), dj1, Int(g1p), p.h1())
-    var z2 = _coord(base, load_e(base, Int(z) + p.e), dj2, Int(g2p), p.h2())
-    base.unsafe_store[width=16](Int(w_z) + gid * p.e, slot_weight[p](gid % N, z1, z2, rho1, rho2))
+    var sh = shifts.at(pt * 4)
+    var dj1 = u16(base, sh)
+    var dj2 = u16(base, sh + 2)
+    var z1 = _coord(base, z.load(base, 0), dj1, g1p, p.h1())
+    var z2 = _coord(base, z.load(base, 1), dj2, g2p, p.h2())
+    w_z.store(base, gid, slot_weight[p](gid % N, z1, z2, rho1, rho2))
 
 
-def build_queries[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def build_queries[p: Params](ctx: DeviceContext, base: Base,
                              z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_z: Int) raises:
     """w_z (P, slot, e) for the P opening points derived from z."""
     comptime k = k_build_queries[p]
-    ctx.enqueue_function[k](base, Int64(z), Int64(shifts), Int32(points), Int64(tab.base + tab.g1p), Int64(tab.base + tab.g2p),
-                            d.rho1, d.rho2, Int64(w_z),
+    ctx.enqueue_function[k](base, Buf[16](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
+                            d.rho1, d.rho2, Buf[16](w_z),
                             grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
 
@@ -137,20 +138,20 @@ def open_splits[p: Params]() -> Int:
     return s
 
 
-def k_sum_splits(base: Pointer[UInt8, MutAnyOrigin], src: Int64, splits: Int32, elems: Int32, dst: Int64, dst_stride: Int32, total: Int32):
+def k_sum_splits(base: Base, src: Buf[1], splits: Int32, elems: Int32, dst: Buf[1], dst_stride: Int32, total: Int32):
     """dst[o * dst_stride + i] = sum_s src[(o * splits + s) * elems + i] over F, for o * elems + i < total."""
-    var gid = gid()
+    var gid = Int(global_idx.x)
     if gid >= Int(total):
         return
     var o = gid // Int(elems)
     var i = gid % Int(elems)
     var acc: UInt32 = 0
     for k in range(Int(splits)):
-        acc += UInt32(base[unsafe_offset=Int(src) + (o * Int(splits) + k) * Int(elems) + i])
-    base[unsafe_offset=Int(dst) + o * Int(dst_stride) + i] = UInt8(acc % 127)
+        acc += UInt32(base[unsafe_offset=src.at((o * Int(splits) + k) * Int(elems) + i)])
+    base[unsafe_offset=dst.at(o * Int(dst_stride) + i)] = UInt8(acc % 127)
 
 
-def open[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def open[p: Params](ctx: DeviceContext, base: Base,
                     w_z: Int, points: Int, stored: Int, columns: Int, partial: Int, dst: Int, row_columns: Int) raises:
     """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`.
     Split-K: block (p, s) reduces slots [s K, (s + 1) K) into `partial` (p, s, c, e), then one sum."""
@@ -162,11 +163,11 @@ def open[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
         a=w_z, sa_m=2, sa_k=e, sa_z=K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K, sb_zd=splits,
         c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e), e // 2, columns, K, batch=points * splits)
     var total = points * columns * e
-    ctx.enqueue_function[k_sum_splits](base, Int64(partial), Int32(splits), Int32(columns * e), Int64(dst), Int32(row_columns * e), Int32(total),
+    ctx.enqueue_function[k_sum_splits](base, Buf[1](partial), Int32(splits), Int32(columns * e), Buf[1](dst), Int32(row_columns * e), Int32(total),
                                        grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)
 
 
-def fold[p: Params, acc: Bool](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+def fold[p: Params, acc: Bool](ctx: DeviceContext, base: Base,
                                beta: Int, stored: Int, columns: Int, y: Int) raises:
     """y (slot, e) += sum_c beta_c stored(c) over one tree (beta at the tree's first column): one
     GEMV per tree, every tree after the first accumulating."""

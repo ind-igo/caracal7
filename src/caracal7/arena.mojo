@@ -6,6 +6,8 @@ pointer plus Int64 offsets; nothing is allocated after setup.
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
+from caracal7.bytes import Base
+
 comptime ALIGN = 256
 
 
@@ -30,8 +32,8 @@ struct Arena:
         self.buf = ctx.enqueue_create_buffer[DType.uint8](bytes)
         self.bytes = bytes
 
-    def base(self) -> Pointer[UInt8, MutAnyOrigin]:
-        return rebind[Pointer[UInt8, MutAnyOrigin]](self.buf.unsafe_ptr())
+    def base(self) -> Base:
+        return rebind[Base](self.buf.unsafe_ptr())
 
     def upload(self, ctx: DeviceContext, off: Int, host: HostBuffer[DType.uint8]) raises:
         """Copy a host buffer into the arena at `off`. Setup only."""

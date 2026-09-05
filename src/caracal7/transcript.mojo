@@ -11,6 +11,7 @@ from max.gpu.host import DeviceContext
 from caracal7.params import Params
 from caracal7.arena import Bump
 from caracal7.hash import Hash
+from caracal7.bytes import Base, Buf
 
 # Domain separators, one per line of spec 9.4, in transcript order.
 comptime DS_PREFIX: UInt8 = 0       # protocol version, tower constants, grid, domains and rates, public inputs
@@ -36,24 +37,24 @@ struct TranscriptLayout(TrivialRegisterPassable):
         self.state = bump.alloc(STATE_BYTES)
 
 
-def _get_counter(state: Pointer[UInt8, MutAnyOrigin]) -> Int:
+def _get_counter(state: Base) -> Int:
     var c = 0
     comptime for i in range(8):
         c |= Int(state[unsafe_offset=_COUNTER + i]) << (8 * i)
     return c
 
 
-def _set_counter(state: Pointer[UInt8, MutAnyOrigin], c: Int):
+def _set_counter(state: Base, c: Int):
     comptime for i in range(8):
         state[unsafe_offset=_COUNTER + i] = UInt8((c >> (8 * i)) & 255)
 
 
-def absorb_into[H: Hash](state: Pointer[UInt8, MutAnyOrigin], ds: UInt8, src: Pointer[UInt8, MutAnyOrigin], bytes: Int):
+def absorb_into[H: Hash](state: Base, ds: UInt8, src: Base, bytes: Int):
     H.absorb(state, ds, src, bytes)
     _set_counter(state, 0)
 
 
-def sample[H: Hash](state: Pointer[UInt8, MutAnyOrigin], dst: Pointer[UInt8, MutAnyOrigin], count: Int, below: Int):
+def sample[H: Hash](state: Base, dst: Base, count: Int, below: Int):
     """below == 0: `count` F elements, one byte each. Else `count` u32 positions below `below`."""
     var scratch = state.unsafe_offset(_SCRATCH)
     var counter = _get_counter(state)
@@ -85,46 +86,46 @@ def sample[H: Hash](state: Pointer[UInt8, MutAnyOrigin], dst: Pointer[UInt8, Mut
     _set_counter(state, counter)
 
 
-def k_reset(base: Pointer[UInt8, MutAnyOrigin], state: Int64):
+def k_reset(base: Base, state: Buf[1]):
     comptime for i in range(STATE_BYTES):
-        base[unsafe_offset=Int(state) + i] = 0
+        base[unsafe_offset=state.at(i)] = 0
 
 
-def k_absorb[H: Hash](base: Pointer[UInt8, MutAnyOrigin], state: Int64, ds: UInt8, src: Int64, bytes: Int32):
-    absorb_into[H](base.unsafe_offset(Int(state)), ds, base.unsafe_offset(Int(src)), Int(bytes))
+def k_absorb[H: Hash](base: Base, state: Buf[1], ds: UInt8, src: Buf[1], bytes: Int32):
+    absorb_into[H](base.unsafe_offset(state.at(0)), ds, base.unsafe_offset(src.at(0)), Int(bytes))
 
 
-def k_sample[H: Hash](base: Pointer[UInt8, MutAnyOrigin], state: Int64, dst: Int64, count: Int32, below: Int32):
-    sample[H](base.unsafe_offset(Int(state)), base.unsafe_offset(Int(dst)), Int(count), Int(below))
+def k_sample[H: Hash](base: Base, state: Buf[1], dst: Buf[1], count: Int32, below: Int32):
+    sample[H](base.unsafe_offset(state.at(0)), base.unsafe_offset(dst.at(0)), Int(count), Int(below))
 
 
-def reset(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout) raises:
+def reset(ctx: DeviceContext, base: Base, t: TranscriptLayout) raises:
     """Zero the state: every proof starts from the same transcript as the verifier."""
-    ctx.enqueue_function[k_reset](base, Int64(t.state), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_reset](base, Buf[1](t.state), grid_dim=1, block_dim=1)
 
 
-def absorb[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
+def absorb[p: Params, H: Hash](ctx: DeviceContext, base: Base, t: TranscriptLayout,
                                ds: UInt8, src: Int, bytes: Int) raises:
     """Hash `bytes` at arena offset `src` into the state under separator `ds`. One thread: serial by definition."""
-    ctx.enqueue_function[k_absorb[H]](base, Int64(t.state), ds, Int64(src), Int32(bytes), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_absorb[H]](base, Buf[1](t.state), ds, Buf[1](src), Int32(bytes), grid_dim=1, block_dim=1)
 
 
-def squeeze_elements[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
+def squeeze_elements[p: Params, H: Hash](ctx: DeviceContext, base: Base, t: TranscriptLayout,
                                          dst: Int, count: Int) raises:
     """Write `count` E elements (e bytes each) to arena offset `dst`."""
-    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(dst), Int32(count * p.e), Int32(0),
+    ctx.enqueue_function[k_sample[H]](base, Buf[1](t.state), Buf[1](dst), Int32(count * p.e), Int32(0),
                                       grid_dim=1, block_dim=1)
 
 
-def squeeze_positions[p: Params, H: Hash](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], t: TranscriptLayout,
+def squeeze_positions[p: Params, H: Hash](ctx: DeviceContext, base: Base, t: TranscriptLayout,
                                           dst: Int, count: Int, below: Int) raises:
     """Write `count` uniform positions below `below` (u32 each) to arena offset `dst`."""
-    ctx.enqueue_function[k_sample[H]](base, Int64(t.state), Int64(dst), Int32(count), Int32(below),
+    ctx.enqueue_function[k_sample[H]](base, Buf[1](t.state), Buf[1](dst), Int32(count), Int32(below),
                                       grid_dim=1, block_dim=1)
 
 
-def _ptr(mut l: List[UInt8]) -> Pointer[UInt8, MutAnyOrigin]:
-    return rebind[Pointer[UInt8, MutAnyOrigin]](l.unsafe_ptr())
+def _ptr(mut l: List[UInt8]) -> Base:
+    return rebind[Base](l.unsafe_ptr())
 
 
 struct HostTranscript[p: Params, H: Hash]:
