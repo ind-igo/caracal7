@@ -29,16 +29,16 @@ def main() raises:
     arena.upload(ctx, e.trace, th)
     print(ctx.name(), " ", p, " columns=", COLS, " arena=", arena.bytes // (1 << 20), " MiB")
 
-    encode[p](ctx, arena.base(), e, tab)
+    encode[p](ctx, arena, e, tab)
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(REPS):
-        to_packed[p](ctx, arena.base(), e, tab)
+        to_packed[p](ctx, arena, e, tab)
     ctx.synchronize()
     var grid_ms = Float64(perf_counter_ns() - t0) / 1e6 / REPS
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        rs_encode[p](ctx, arena.base(), e, tab)
+        rs_encode[p](ctx, arena, e, tab)
     ctx.synchronize()
     var rs_ms = Float64(perf_counter_ns() - t0) / 1e6 / REPS
     # RS work: pass A ceil(K/315) + (5 + 7 + 9) F4 MACs per point, 16 base MACs each
@@ -59,6 +59,6 @@ def main() raises:
 def time_mask[mask: Int](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout, name: String) raises:
     var t = perf_counter_ns()
     for _ in range(REPS):
-        rs_encode[p, mask](ctx, arena.base(), e, tab)
+        rs_encode[p, mask](ctx, arena, e, tab)
     ctx.synchronize()
     print("  ", name, ": ", Float64(perf_counter_ns() - t) / 1e6 / REPS, " ms")

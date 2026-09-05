@@ -26,7 +26,7 @@ def _run[D: Int, T: Tile](M: Int, N: Int, K: Int, batch: Int) raises:
     var o = strided(a, K * 2, 2, sa_z=M * K * 2,
                     b=b, sb_k=N * 2, sb_hi=D * 2, sb_lo=2, sb_z=K * N * 2,
                     c=c, sc_m=N * 2, sc_hi=D * 2, sc_lo=2, sc_z=M * N * 2)
-    launch_gemm_f2[BACKEND, T, Strided, D](ctx, arena.base(), o, M, N, K, batch)
+    launch_gemm_f2[BACKEND, T, Strided, D](ctx, arena, o, M, N, K, batch)
     arena.download(ctx, 0, h)
     ctx.synchronize()
 
@@ -72,7 +72,7 @@ def test_f4() raises:
     arena.upload(ctx, 0, h)
     var o = strided(a, K * 4, 4, sa_z=M * K * 4, b=b, sb_k=N * 4, sb_hi=4, sb_lo=0, sb_z=K * N * 4,
                     c=c, sc_m=N * 4, sc_hi=4, sc_lo=0, sc_z=M * N * 4)
-    launch_gemm_f4[BACKEND, BACKEND.tile, Strided4, 1](ctx, arena.base(), o, M, N, K, batch)
+    launch_gemm_f4[BACKEND, BACKEND.tile, Strided4, 1](ctx, arena, o, M, N, K, batch)
     arena.download(ctx, 0, h)
     ctx.synchronize()
     var bad = 0

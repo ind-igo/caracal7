@@ -64,9 +64,14 @@ def put_u32(base: Base, off: Int, v: Int):
         base[unsafe_offset=off + b] = UInt8((v >> (8 * b)) & 255)
 
 
-# ---- host side, the same layouts in a List ----
+# ---- host side, the same layouts in a byte Span (a List converts, slices are free) ----
 
-def get_u16(l: List[UInt8], at: Int) -> Int:
+def host_base(s: Span[UInt8, _]) -> Base:
+    """The one place host bytes become a Base, for the Hash methods that run on both sides."""
+    return rebind[Base](s.unsafe_ptr())
+
+
+def get_u16(l: Span[UInt8, _], at: Int) -> Int:
     return Int(l[at]) | Int(l[at + 1]) << 8
 
 
@@ -80,7 +85,7 @@ def append_u32(mut l: List[UInt8], v: Int):
         l.append(UInt8((v >> (8 * i)) & 255))
 
 
-def list_e(l: List[UInt8], i: Int) -> E:
+def list_e(l: Span[UInt8, _], i: Int) -> E:
     """Element i of a (.., e) List."""
     var v = E(0)
     for t in range(16):

@@ -1,12 +1,11 @@
 """Arena: the one device allocation of a prover instance (docs/design.md rule 6).
 
-Every buffer is an offset into the arena, assigned by `Bump` at setup. Kernels take the arena base
-pointer plus Int64 offsets; nothing is allocated after setup.
+Every buffer is an offset into the arena, assigned by `Bump` at setup. Launchers take the `Arena` and pass its
+`DeviceBuffer` at enqueue; the kernel receives the base pointer (`bytes.Base`) plus `Buf[W]` offsets. The
+host never holds a raw device pointer. Nothing is allocated after setup.
 """
 
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-
-from caracal7.core.bytes import Base
 
 comptime ALIGN = 256
 
@@ -31,9 +30,6 @@ struct Arena:
     def __init__(out self, ctx: DeviceContext, bytes: Int) raises:
         self.buf = ctx.enqueue_create_buffer[DType.uint8](bytes)
         self.bytes = bytes
-
-    def base(self) -> Base:
-        return rebind[Base](self.buf.unsafe_ptr())
 
     def upload(self, ctx: DeviceContext, off: Int, host: HostBuffer[DType.uint8]) raises:
         """Copy a host buffer into the arena at `off`. Setup only."""

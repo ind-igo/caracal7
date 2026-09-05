@@ -115,19 +115,18 @@ def test_tail_kernels() raises:
     _up(ctx, arena, o_dom1, domain_bytes(dom1))
     _up(ctx, arena, o_dom2, domain_bytes(dom2))
     _up(ctx, arena, o_batch2, batch2)
-    var base = arena.base()
 
     # level-1 functionals on y
-    points(ctx, base, o_pos, Q, o_dom1, p.L0, o_pts)
-    tail_encode(ctx, base, o_y, ROWS, L0_TAIL, M_TAIL, o_etmp, o_code, rs)   # y as a tail level: Mat(y) (ROWS, 8, e)
-    tail_materialize[p](ctx, base, True, o_run, o_batch, o_pts, Q, N, o_w)
+    points(ctx, arena, o_pos, Q, o_dom1, p.L0, o_pts)
+    tail_encode(ctx, arena, o_y, ROWS, L0_TAIL, M_TAIL, o_etmp, o_code, rs)   # y as a tail level: Mat(y) (ROWS, 8, e)
+    tail_materialize[p](ctx, arena, True, o_run, o_batch, o_pts, Q, N, o_w)
     for d in range(3):
-        tail_round(ctx, base, o_w, o_y, N, d, o_r, o_partial, o_rounds + d * 3 * 16)
-    tail_fold(ctx, base, o_y, ROWS, o_r, o_ynext)
-    tail_fold(ctx, base, o_w, ROWS, o_r, o_wnext)
+        tail_round(ctx, arena, o_w, o_y, N, d, o_r, o_partial, o_rounds + d * 3 * 16)
+    tail_fold(ctx, arena, o_y, ROWS, o_r, o_ynext)
+    tail_fold(ctx, arena, o_w, ROWS, o_r, o_wnext)
     # tail-level functionals on y_next
-    points(ctx, base, o_pos2, Q, o_dom2, L0_TAIL, o_pts2)
-    tail_materialize[p](ctx, base, False, o_wnext, o_batch2, o_pts2, Q, ROWS, o_w2)
+    points(ctx, arena, o_pos2, Q, o_dom2, L0_TAIL, o_pts2)
+    tail_materialize[p](ctx, arena, False, o_wnext, o_batch2, o_pts2, Q, ROWS, o_w2)
 
     var pts = _down(ctx, arena, o_pts, Q * 4)
     var w = _down(ctx, arena, o_w, N * 16)

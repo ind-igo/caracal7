@@ -27,6 +27,7 @@ from caracal7.core.field import E, f_add, ext_mul, ext_inv0, ext_one
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.arena import Arena
 
 comptime ACC = 40
 comptime ACC_W_MAX = 8
@@ -91,13 +92,13 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
     z2.store(base, p.h2(), ext_one[4]())
 
 
-def accumulate[p: Params](ctx: DeviceContext, base: Base, trace: Int, acc: Int, gamma: Int,
+def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int, gamma: Int,
                           num: Int, den: Int, scratch: Int, zval: Int, chain_prod: Int, z2: Int, n_end: Int, d_end: Int) raises:
     """One accumulator: its descriptor at `acc`, Z into zval (row, e), Z2 into z2 (h2, e), the chain-end factors into n_end, d_end (h2, e)."""
     comptime N = p.N()
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_factors[p]](base, Buf[1](trace), Buf[1](acc), Buf[16](gamma), Buf[16](num), Buf[16](den),
+    ctx.enqueue_function[k_factors[p]](arena.buf, Buf[1](trace), Buf[1](acc), Buf[16](gamma), Buf[16](num), Buf[16](den),
                                        grid_dim=ceildiv(N, B), block_dim=B)
-    ctx.enqueue_function[k_chain_scan[p]](base, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](zval), Buf[16](chain_prod),
+    ctx.enqueue_function[k_chain_scan[p]](arena.buf, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](zval), Buf[16](chain_prod),
                                           Buf[16](n_end), Buf[16](d_end), grid_dim=ceildiv(p.h2(), B), block_dim=B)
-    ctx.enqueue_function[k_z2[p]](base, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)

@@ -12,7 +12,8 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import Params
 from caracal7.core.hash import Hash
 from caracal7.core.backend import BACKEND
-from caracal7.core.bytes import Base, Buf, u32, put_u32
+from caracal7.core.bytes import Base, Buf, u32, put_u32, host_base
+from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
 comptime MAX_QUERIES = 1024        # ponytail: frontier walk keeps the position list in registers
@@ -54,21 +55,20 @@ def k_level[H: Hash](base: Base, src: Buf[H.DIGEST], n: Int32, dst: Buf[H.DIGEST
         if 2 * j + 1 < Int(n):
             H.node(left, left.unsafe_offset(H.DIGEST), dst_ptr)
         else:
-            comptime for b in range(H.DIGEST):
-                dst_ptr[unsafe_offset=b] = left[unsafe_offset=b]
+            dst.store(base, j, src.load(base, 2 * j))
 
 
-def merkle[p: Params, H: Hash](ctx: DeviceContext, base: Base,
+def merkle[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
                                code: Int, row_bytes: Int, leaves: Int, tree: Int) raises:
     """Hash `leaves` rows of `row_bytes` at `code` into `tree`."""
-    ctx.enqueue_function[k_leaves[H]](base, Buf[1](code), Int32(row_bytes), Int32(leaves), Buf[H.DIGEST](tree),
+    ctx.enqueue_function[k_leaves[H]](arena.buf, Buf[1](code), Int32(row_bytes), Int32(leaves), Buf[H.DIGEST](tree),
                                       grid_dim=(leaves + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
     var level = tree
     var n = leaves
     while n > 1:
         var next = level + n * H.DIGEST
         var m = (n + 1) // 2
-        ctx.enqueue_function[k_level[H]](base, Buf[H.DIGEST](level), Int32(n), Buf[H.DIGEST](next),
+        ctx.enqueue_function[k_level[H]](arena.buf, Buf[H.DIGEST](level), Int32(n), Buf[H.DIGEST](next),
                                          grid_dim=(m + BACKEND.block - 1) // BACKEND.block, block_dim=BACKEND.block)
         level = next
         n = m
@@ -112,9 +112,7 @@ def k_frontier[H: Hash](base: Base, tree: Buf[H.DIGEST], leaves: Int32, position
                 i += 2
             else:
                 if s < n:
-                    var src = base.unsafe_offset(level + s * H.DIGEST)
-                    comptime for b in range(H.DIGEST):
-                        base[unsafe_offset=out + b] = src[unsafe_offset=b]
+                    Buf[H.DIGEST](out).store(base, 0, Buf[H.DIGEST](level).load(base, s))
                     out += H.DIGEST
                 i += 1
             next[nm] = Int32(k >> 1)
@@ -151,7 +149,7 @@ def multiproof_region[H: Hash](row_bytes: Int, leaves: Int, count: Int) -> Int:
     return multiproof_bound[H](row_bytes, leaves, count) + 4 + 4 * count
 
 
-def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Base,
+def query_gather[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
                                      code: Int, row_bytes: Int, leaves: Int, tree: Int,
                                      positions: Int, count: Int, dst: Int) raises -> Int:
     """Multiproof of the rows at `positions` into `dst`; returns the byte bound to read back
@@ -160,15 +158,11 @@ def query_gather[p: Params, H: Hash](ctx: DeviceContext, base: Base,
         raise Error("too many queries for the frontier kernel")
     var bound = multiproof_bound[H](row_bytes, leaves, count)
     var order = dst + bound
-    ctx.enqueue_function[k_frontier[H]](base, Buf[H.DIGEST](tree), Int32(leaves), Buf[4](positions), Int32(count),
+    ctx.enqueue_function[k_frontier[H]](arena.buf, Buf[H.DIGEST](tree), Int32(leaves), Buf[4](positions), Int32(count),
                                         Int32(row_bytes), Buf[1](dst), Buf[4](order), grid_dim=1, block_dim=1)
-    ctx.enqueue_function[k_rows](base, Buf[1](code), Int32(row_bytes), Buf[4](order), Buf[1](dst),
+    ctx.enqueue_function[k_rows](arena.buf, Buf[1](code), Int32(row_bytes), Buf[4](order), Buf[1](dst),
                                  grid_dim=count, block_dim=BACKEND.block)
     return bound
-
-
-def _ptr(mut l: List[UInt8]) -> Base:
-    return rebind[Base](l.unsafe_ptr())
 
 
 def distinct_sorted(positions: List[Int]) -> List[Int]:
@@ -183,7 +177,7 @@ def distinct_sorted(positions: List[Int]) -> List[Int]:
     return known^
 
 
-def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, positions: List[Int],
+def check_multiproof[H: Hash](root: Span[UInt8, _], leaves: Int, row_bytes: Int, positions: List[Int],
                               mut proof: List[UInt8]) raises -> List[UInt8]:
     """Host side. Recomputes the root from the multiproof (without its u32 header); raises on mismatch.
     Returns the opened rows in ascending distinct position order."""
@@ -196,7 +190,7 @@ def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, po
         rows.append(proof[i])
     var digests = List[UInt8](length=m * H.DIGEST, fill=0)
     for i in range(m):
-        H.leaf(_ptr(rows).unsafe_offset(i * row_bytes), row_bytes, _ptr(digests).unsafe_offset(i * H.DIGEST))
+        H.leaf(host_base(rows).unsafe_offset(i * row_bytes), row_bytes, host_base(digests).unsafe_offset(i * H.DIGEST))
     var at = m * row_bytes
     var n = leaves
     while n > 1:
@@ -207,19 +201,19 @@ def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, po
             var k = known[i]
             var s = k ^ 1
             var out = List[UInt8](length=H.DIGEST, fill=0)
-            var mine = _ptr(digests).unsafe_offset(i * H.DIGEST)
+            var mine = host_base(digests).unsafe_offset(i * H.DIGEST)
             if i + 1 < m and known[i + 1] == s:
-                H.node(mine, mine.unsafe_offset(H.DIGEST), _ptr(out))
+                H.node(mine, mine.unsafe_offset(H.DIGEST), host_base(out))
                 i += 2
             elif s < n:
                 if at + H.DIGEST > len(proof):
                     raise Error("multiproof truncated")
-                var sib = _ptr(proof).unsafe_offset(at)
+                var sib = host_base(proof).unsafe_offset(at)
                 at += H.DIGEST
                 if k & 1 == 0:
-                    H.node(mine, sib, _ptr(out))
+                    H.node(mine, sib, host_base(out))
                 else:
-                    H.node(sib, mine, _ptr(out))
+                    H.node(sib, mine, host_base(out))
                 i += 1
             else:
                 for b in range(H.DIGEST):
@@ -233,6 +227,6 @@ def check_multiproof[H: Hash](root: List[UInt8], leaves: Int, row_bytes: Int, po
         n = (n + 1) // 2
     if at != len(proof):
         raise Error("multiproof has trailing bytes")
-    if digests != root:
+    if Span(digests) != root:
         raise Error("multiproof root mismatch")
     return rows^

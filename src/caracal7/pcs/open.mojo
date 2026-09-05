@@ -24,6 +24,7 @@ from caracal7.core.tables import TableLayout, Domains
 from caracal7.pcs.encode import slot_target
 from caracal7.core.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
 from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
 
@@ -118,11 +119,11 @@ def k_build_queries[p: Params](base: Base, z: Buf[16], shifts: Buf[1], points: I
     w_z.store(base, gid, slot_weight[p](gid % N, z1, z2, rho1, rho2))
 
 
-def build_queries[p: Params](ctx: DeviceContext, base: Base,
+def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
                              z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_z: Int) raises:
     """w_z (P, slot, e) for the P opening points derived from z."""
     comptime k = k_build_queries[p]
-    ctx.enqueue_function[k](base, Buf[16](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
+    ctx.enqueue_function[k](arena.buf, Buf[16](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
                             d.rho1, d.rho2, Buf[16](w_z),
                             grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
@@ -151,7 +152,7 @@ def k_sum_splits(base: Base, src: Buf[1], splits: Int32, elems: Int32, dst: Buf[
     base[unsafe_offset=dst.at(o * Int(dst_stride) + i)] = UInt8(acc % 127)
 
 
-def open[p: Params](ctx: DeviceContext, base: Base,
+def open[p: Params](ctx: DeviceContext, arena: Arena,
                     w_z: Int, points: Int, stored: Int, columns: Int, partial: Int, dst: Int, row_columns: Int) raises:
     """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`.
     Split-K: block (p, s) reduces slots [s K, (s + 1) K) into `partial` (p, s, c, e), then one sum."""
@@ -159,20 +160,20 @@ def open[p: Params](ctx: DeviceContext, base: Base,
     comptime e = p.e
     var splits = open_splits[p]()
     var K = N // splits
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, base, strided(
+    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, arena, strided(
         a=w_z, sa_m=2, sa_k=e, sa_z=K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K, sb_zd=splits,
         c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e), e // 2, columns, K, batch=points * splits)
     var total = points * columns * e
-    ctx.enqueue_function[k_sum_splits](base, Buf[1](partial), Int32(splits), Int32(columns * e), Buf[1](dst), Int32(row_columns * e), Int32(total),
+    ctx.enqueue_function[k_sum_splits](arena.buf, Buf[1](partial), Int32(splits), Int32(columns * e), Buf[1](dst), Int32(row_columns * e), Int32(total),
                                        grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)
 
 
-def fold[p: Params, acc: Bool](ctx: DeviceContext, base: Base,
+def fold[p: Params, acc: Bool](ctx: DeviceContext, arena: Arena,
                                beta: Int, stored: Int, columns: Int, y: Int) raises:
     """y (slot, e) += sum_c beta_c stored(c) over one tree (beta at the tree's first column): one
     GEMV per tree, every tree after the first accumulating."""
     comptime N = p.N()
     comptime e = p.e
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1, acc=acc](ctx, base, strided(
+    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1, acc=acc](ctx, arena, strided(
         a=beta, sa_m=2, sa_k=e, b=stored, sb_k=N, sb_hi=1, sb_lo=0,
         c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns)

@@ -41,22 +41,22 @@ def test_device_matches_host() raises:
     arena.upload(ctx, msg_off, mh)
 
     var host = HostTranscript[p, Blake3]()
-    reset(ctx, arena.base(), t)
-    absorb[p, Blake3](ctx, arena.base(), t, DS_PREFIX, msg_off, MSG)
+    reset(ctx, arena, t)
+    absorb[p, Blake3](ctx, arena, t, DS_PREFIX, msg_off, MSG)
     host.absorb(DS_PREFIX, msg)
-    squeeze_elements[p, Blake3](ctx, arena.base(), t, chal, ELEMS)
+    squeeze_elements[p, Blake3](ctx, arena, t, chal, ELEMS)
     var want_e = host.elements(ELEMS)
     var got_e = _download(ctx, arena, chal, ELEMS * p.e)
     assert_equal(got_e, want_e)
     for b in got_e:
         assert_true(b < 127)
 
-    absorb[p, Blake3](ctx, arena.base(), t, DS_TREE_W, chal, 32)   # absorb the first 32 challenge bytes
+    absorb[p, Blake3](ctx, arena, t, DS_TREE_W, chal, 32)   # absorb the first 32 challenge bytes
     var first = List[UInt8](capacity=32)
     for i in range(32):
         first.append(got_e[i])
     host.absorb(DS_TREE_W, first)
-    squeeze_positions[p, Blake3](ctx, arena.base(), t, chal, POS, BELOW)
+    squeeze_positions[p, Blake3](ctx, arena, t, chal, POS, BELOW)
     var want_p = host.positions(POS, BELOW)
     var got = _download(ctx, arena, chal, POS * 4)
     var distinct = 0
@@ -69,9 +69,9 @@ def test_device_matches_host() raises:
     assert_true(distinct > POS // 2)
 
     # a second proof starts from the same state: reset, absorb, squeeze again equals the first run
-    reset(ctx, arena.base(), t)
-    absorb[p, Blake3](ctx, arena.base(), t, DS_PREFIX, msg_off, MSG)
-    squeeze_elements[p, Blake3](ctx, arena.base(), t, chal, ELEMS)
+    reset(ctx, arena, t)
+    absorb[p, Blake3](ctx, arena, t, DS_PREFIX, msg_off, MSG)
+    squeeze_elements[p, Blake3](ctx, arena, t, chal, ELEMS)
     assert_equal(_download(ctx, arena, chal, ELEMS * p.e), want_e)
 
 

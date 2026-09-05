@@ -21,22 +21,22 @@ def report(name: String, ns: Int):
 
 def run[T: Tile](ctx: DeviceContext, arena: Arena, a: Int, b: Int, c: Int, name: String) raises:
     var o = strided(a=a, sa_m=K * 2, sa_k=2, b=b, sb_k=N * 2, sb_hi=2, sb_lo=0, c=c, sc_m=N * 2, sc_hi=2, sc_lo=0)
-    launch_gemm_f2[BACKEND, T, Strided, 1](ctx, arena.base(), o, M, N, K)   # warm-up / compile
+    launch_gemm_f2[BACKEND, T, Strided, 1](ctx, arena, o, M, N, K)   # warm-up / compile
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(REPS):
-        launch_gemm_f2[BACKEND, T, Strided, 1](ctx, arena.base(), o, M, N, K)
+        launch_gemm_f2[BACKEND, T, Strided, 1](ctx, arena, o, M, N, K)
     ctx.synchronize()
     report(name, Int(perf_counter_ns() - t0))
 
 
 def run4[T: Tile](ctx: DeviceContext, arena: Arena, a: Int, b: Int, c: Int, name: String) raises:
     var o = strided(a=a, sa_m=K * 4, sa_k=4, b=b, sb_k=N * 4, sb_hi=4, sb_lo=0, c=c, sc_m=N * 4, sc_hi=4, sc_lo=0)
-    launch_gemm_f4[BACKEND, T, Strided4, 1](ctx, arena.base(), o, M, N, K)
+    launch_gemm_f4[BACKEND, T, Strided4, 1](ctx, arena, o, M, N, K)
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(REPS):
-        launch_gemm_f4[BACKEND, T, Strided4, 1](ctx, arena.base(), o, M, N, K)
+        launch_gemm_f4[BACKEND, T, Strided4, 1](ctx, arena, o, M, N, K)
     ctx.synchronize()
     var ns = Int(perf_counter_ns() - t0)
     var macs = Float64(M) * Float64(N) * Float64(K) * Float64(REPS)

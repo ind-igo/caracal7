@@ -29,12 +29,13 @@ from caracal7.core.backend import BACKEND, Tile, Strided, launch_gemm_f2, stride
 
 comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
 from caracal7.core.bytes import Base, Buf
+from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
 
-def lane_dft[p: Params](ctx: DeviceContext, base: Base, src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
+def lane_dft[p: Params](ctx: DeviceContext, arena: Arena, src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
     """dst[j] = sum_i v[i] table[j, i] in E, j < n, i < k: v[i] at src + i stride, table (n, k, 2) F2, dst (n, e)."""
-    launch_gemm_f2[BACKEND, DFT_TILE, Strided, 1](ctx, base, strided(
+    launch_gemm_f2[BACKEND, DFT_TILE, Strided, 1](ctx, arena, strided(
         a=src, sa_m=2, sa_k=stride, b=table, sb_k=2, sb_hi=k * 2, sb_lo=0,
         c=dst, sc_m=2, sc_hi=p.e, sc_lo=0), p.e // 2, n, k)
 
@@ -86,7 +87,7 @@ def k_q3[p: Params](base: Base, p1: Buf[16], p2: Buf[16], e2a: UInt8, e2b: UInt8
     dst.store(base, k, q)
 
 
-def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Base, tab: TableLayout,
+def small_grid_accumulator[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout,
                                       z2: Int, z_end: Int, z_end_stride: Int, n_end: Int, d_end: Int,
                                       lines: Int, pac: Int, p1: Int, p2: Int, alpha: Int, power: Int, e2: F2,
                                       q3c: Int, first: Bool) raises:
@@ -97,27 +98,27 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Base, tab: Table
     var specs = [(z2, 16), (z2 + 16, 16), (z_end, z_end_stride), (n_end, 16), (d_end, 16)]   # a, b, c, n, d
     for i in range(5):
         var line = specs[i]
-        lane_dft[p](ctx, base, line[0], line[1], w, h2, h2, lines + i * h2 * 16)
+        lane_dft[p](ctx, arena, line[0], line[1], w, h2, h2, lines + i * h2 * 16)
     var a = lines
     var b = lines + h2 * 16
     var c = lines + 2 * h2 * 16
     var n = lines + 3 * h2 * 16
     var d = lines + 4 * h2 * 16
-    ctx.enqueue_function[k_polymul](base, Buf[16](b), Int32(h2), Buf[16](d), Int32(h2), Buf[16](p1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_polymul](base, Buf[16](a), Int32(h2), Buf[16](c), Int32(h2), Buf[16](pac), grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_polymul](base, Buf[16](pac), Int32(2 * h2 - 1), Buf[16](n), Int32(h2), Buf[16](p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_q3[p]](base, Buf[16](p1), Buf[16](p2), e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](q3c), Int32(0 if first else 1),
+    ctx.enqueue_function[k_polymul](arena.buf, Buf[16](b), Int32(h2), Buf[16](d), Int32(h2), Buf[16](p1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](arena.buf, Buf[16](a), Int32(h2), Buf[16](c), Int32(h2), Buf[16](pac), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](arena.buf, Buf[16](pac), Int32(2 * h2 - 1), Buf[16](n), Int32(h2), Buf[16](p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_q3[p]](arena.buf, Buf[16](p1), Buf[16](p2), e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](q3c), Int32(0 if first else 1),
                                   grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
-def small_grid_values[p: Params](ctx: DeviceContext, base: Base, tab: TableLayout, q3c: Int, q3: Int) raises:
+def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, q3c: Int, q3: Int) raises:
     """Q3 on G2 from its coefficients: the 2 h2-point DFT."""
-    lane_dft[p](ctx, base, q3c, 16, tab.base + tab.wfwd2, 2 * p.h2(), 2 * p.h2(), q3)
+    lane_dft[p](ctx, arena, q3c, 16, tab.base + tab.wfwd2, 2 * p.h2(), 2 * p.h2(), q3)
 
 
 # ---- host side ----
 
-def interp_cyclic(vals: List[UInt8], off: Int, n: Int, w: F2, z: E) raises -> E:
+def interp_cyclic(vals: Span[UInt8, _], off: Int, n: Int, w: F2, z: E) raises -> E:
     """P(z) for the polynomial of degree < n with values vals[off + i] on the cyclic group <w> of order
     n, by the barycentric formula: (z^n - 1) / n * sum_i v_i w^i / (z - w^i). Raises when z is in the group."""
     var acc = E(0)

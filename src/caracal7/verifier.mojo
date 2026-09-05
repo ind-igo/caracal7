@@ -21,7 +21,7 @@ from caracal7.relations import ENTRY, NONE, ACC, entry, shift_points, point_inde
 from caracal7.core.bytes import get_u16, list_e
 
 
-def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: List[UInt8], mut families: List[UInt8]) raises -> Bool:
+def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8]) raises -> Bool:
     if len(families) != shape.entries * ENTRY or len(shift_points(families)) != shape.points * 4:
         raise Error("family table does not match the shape")
     var r = ProofReader(proof_bytes^)
@@ -31,7 +31,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if r.u32() != Int(VERSION):
         raise Error("bad version")
     var pub = r.prefixed()
-    if pub != public_inputs:
+    if Span(pub) != public_inputs:
         raise Error("public inputs differ")
     var prefix = prefix_bytes[p, H](shape, public_inputs, families)
     t.absorb(DS_PREFIX, prefix)
@@ -248,7 +248,7 @@ def _index_of(opened: List[Int], s: Int) raises -> Int:
     raise Error("sampled position was not opened")
 
 
-def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: List[UInt8], idx: Int, tau: Int) -> E:
+def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: Span[UInt8, _], idx: Int, tau: Int) -> E:
     """sum_c beta_c coord_tau(X[s, c]) over the three trees at opened row idx."""
     var acc = E(0)
     var wz = shape.columns_w + shape.columns_z
@@ -264,7 +264,7 @@ def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: List[UInt8], idx: I
     return acc
 
 
-def _tail_symbol(o: Opened, idx: Int, r_prev: List[UInt8]) -> E:
+def _tail_symbol(o: Opened, idx: Int, r_prev: Span[UInt8, _]) -> E:
     """<X[s, :], r_bar> for a tail row of 8 E symbols."""
     var rr = host_r3(r_prev)
     var acc = E(0)
@@ -273,7 +273,7 @@ def _tail_symbol(o: Opened, idx: Int, r_prev: List[UInt8]) -> E:
     return acc
 
 
-def _materialize[p: Params](level1: Bool, running: List[UInt8], length: Int, batch: List[UInt8], o: Opened, count: Int, dom: RsDomain) -> List[UInt8]:
+def _materialize[p: Params](level1: Bool, running: Span[UInt8, _], length: Int, batch: Span[UInt8, _], o: Opened, count: Int, dom: RsDomain) -> List[UInt8]:
     """w~ = batch_0 running + sum_q batch_q g_q as a vector (tail.mojo's kernels on the host)."""
     var w = List[UInt8](length=length * p.e, fill=0)
     var b0 = list_e(batch, 0)
@@ -324,7 +324,7 @@ def _add_e(mut l: List[UInt8], i: Int, v: E):
         l[i * 16 + t] = s[t]
 
 
-def encode_at[p: Params](y: List[UInt8], pt: F4) -> InlineArray[E, 4]:
+def encode_at[p: Params](y: Span[UInt8, _], pt: F4) -> InlineArray[E, 4]:
     """Enc(y)(pt) in E (x) F4 as four E coordinates: sum_i (sum_j y[slot(i, j)] b_j) pt^i, the F4 scalar
     pt^i acting on the coordinates by its 4 x 4 matrix (spec 9.1 alphabet rule)."""
     var acc = InlineArray[E, 4](fill=E(0))
@@ -342,11 +342,11 @@ def encode_at[p: Params](y: List[UInt8], pt: F4) -> InlineArray[E, 4]:
 
 
 
-def _opening[p: Params](openings: List[UInt8], shape: Shape, point: Int, column: Int) -> E:
+def _opening[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, column: Int) -> E:
     return list_e(openings, point * shape.columns() + column)
 
 
-def _factor_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, accs: List[UInt8], k: Int, gamma: E, den: Bool) -> E:
+def _factor_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, accs: Span[UInt8, _], k: Int, gamma: E, den: Bool) -> E:
     """N or D of accumulator k at an opening point: gamma + sum_j b_j c_j(point) (accumulate.mojo)."""
     var v = gamma
     for j in range(get_u16(accs, k * ACC + (4 if den else 2))):
@@ -356,7 +356,7 @@ def _factor_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, accs:
     return v
 
 
-def _coords_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, col0: Int) -> E:
+def _coords_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, col0: Int) -> E:
     """An E-valued column at a point from its e coordinate columns: sum_tau b_tau <w_z, coord_tau>."""
     var acc = E(0)
     for tau in range(p.e):
@@ -366,6 +366,6 @@ def _coords_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, col0:
     return acc
 
 
-def _quotient_at[p: Params](openings: List[UInt8], shape: Shape, q: Int) -> E:
+def _quotient_at[p: Params](openings: Span[UInt8, _], shape: Shape, q: Int) -> E:
     """Q(z) for Q in (A, B, Q2) from the quotient coordinate columns at point 0."""
     return _coords_at[p](openings, shape, 0, shape.columns_w + shape.columns_z + q * p.e)

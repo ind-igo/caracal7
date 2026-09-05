@@ -24,6 +24,7 @@ from layout import row_major, stack_allocation
 
 from caracal7.core.field import F2, F4, f_add, f_reduce_signed, WIDE_BIAS
 from caracal7.core.bytes import Base
+from caracal7.core.arena import Arena
 
 
 @fieldwise_init
@@ -217,10 +218,10 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
 
 
 def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
-    ctx: DeviceContext, base: Base, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
+    ctx: DeviceContext, arena: Arena, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
     comptime kernel = gemm_f2[B, T, L, D, acc]
-    ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
+    ctx.enqueue_function[kernel](arena.buf, o, Int32(M), Int32(N), Int32(K),
                                  grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())
 
 
@@ -367,8 +368,8 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
 
 
 def launch_gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
-    ctx: DeviceContext, base: Base, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
+    ctx: DeviceContext, arena: Arena, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
     comptime kernel = gemm_f4[B, T, L, D, acc]
-    ctx.enqueue_function[kernel](base, o, Int32(M), Int32(N), Int32(K),
+    ctx.enqueue_function[kernel](arena.buf, o, Int32(M), Int32(N), Int32(K),
                                  grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())

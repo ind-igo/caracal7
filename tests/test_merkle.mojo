@@ -62,8 +62,8 @@ def test_tree_and_multiproof() raises:
     arena.upload(ctx, code_off, ch)
     arena.upload(ctx, pos_off, ph)
 
-    merkle[p, Blake3](ctx, arena.base(), code_off, ROW, LEAVES, tree)
-    var bound = query_gather[p, Blake3](ctx, arena.base(), code_off, ROW, LEAVES, tree, pos_off, QUERIES, stage)
+    merkle[p, Blake3](ctx, arena, code_off, ROW, LEAVES, tree)
+    var bound = query_gather[p, Blake3](ctx, arena, code_off, ROW, LEAVES, tree, pos_off, QUERIES, stage)
 
     var rh = ctx.enqueue_create_host_buffer[DType.uint8](32)
     var mh = ctx.enqueue_create_host_buffer[DType.uint8](bound)

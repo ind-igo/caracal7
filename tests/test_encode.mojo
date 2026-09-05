@@ -33,7 +33,7 @@ def _run() raises -> Tuple[List[UInt8], List[UInt8], List[UInt8], List[UInt8], L
     for i in range(COLS * N):
         th[i] = UInt8((i * 7919 + 13) % 127)
     arena.upload(ctx, e.trace, th)
-    encode[p](ctx, arena.base(), e, tab)
+    encode[p](ctx, arena, e, tab)
 
     var ch = ctx.enqueue_create_host_buffer[DType.uint8](COLS * N * 2)
     var sh = ctx.enqueue_create_host_buffer[DType.uint8](COLS * N)
@@ -154,7 +154,7 @@ def _rs_domain_check(L0: Int, m: Int, K: Int, cols: Int) raises:
     for i in range(K * cols * 4):
         sh[i] = UInt8((i * 7919 + 13) % 127)
     arena.upload(ctx, src, sh)
-    rs_encode_on(ctx, arena.base(), src, etmp, code, cols, K, L0, m, rs)
+    rs_encode_on(ctx, arena, src, etmp, code, cols, K, L0, m, rs)
     var oh = ctx.enqueue_create_host_buffer[DType.uint8](m * L0 * cols * 4)
     arena.download(ctx, code, oh)
     ctx.synchronize()

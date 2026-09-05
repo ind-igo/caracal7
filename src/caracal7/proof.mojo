@@ -25,7 +25,7 @@ from caracal7.core.params import Params
 from caracal7.core.arena import Arena
 from caracal7.relations import ENTRY, ACC, shift_points
 from caracal7.core.hash import Hash
-from caracal7.core.bytes import Base, append_u32
+from caracal7.core.bytes import Base, append_u32, host_base
 
 comptime VERSION: UInt32 = 1
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
@@ -142,7 +142,7 @@ struct Shape(Writable):
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
-def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], mut families: List[UInt8]) -> List[UInt8]:
+def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8]) -> List[UInt8]:
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
     level, shape, public inputs, and H(family table) as the statement artifact hash of
     statement-layer 6 step 1. Prover and verifier build the same bytes."""
@@ -165,8 +165,7 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], m
     append_u32(bytes, len(shape.accs))
     bytes.extend(shape.accs.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
-    H.leaf(rebind[Base](families.unsafe_ptr()), len(families),
-           rebind[Base](digest.unsafe_ptr()))
+    H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest^)
     return bytes.copy()
 
@@ -210,7 +209,7 @@ struct ProofWriter:
         """A pool region that is not part of the proof (host bytes to upload)."""
         return self.pool.create_sub_buffer[DType.uint8](self._take(bytes), bytes)
 
-    def raw(mut self, src: List[UInt8]) raises:
+    def raw(mut self, src: Span[UInt8, _]) raises:
         if len(src) == 0:
             return
         var start = self._take(len(src))
@@ -225,7 +224,7 @@ struct ProofWriter:
         append_u32(bytes, v)
         self.raw(bytes)
 
-    def prefixed(mut self, src: List[UInt8]) raises:
+    def prefixed(mut self, src: Span[UInt8, _]) raises:
         self.u32(len(src))
         self.raw(src)
 

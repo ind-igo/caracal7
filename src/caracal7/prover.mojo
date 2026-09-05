@@ -214,7 +214,7 @@ struct Prover[p: Params, H: Hash]:
             self.profile_ms.append((now - t0) // 1000000)
             t0 = now
 
-    def prove(mut self, ctx: DeviceContext, public_inputs: List[UInt8], profile: Bool = False) raises -> List[UInt8]:
+    def prove(mut self, ctx: DeviceContext, public_inputs: Span[UInt8, _], profile: Bool = False) raises -> List[UInt8]:
         """Spec section 10 in order. The trace must already be in the arena at layout.enc_w.trace.
         Every call is an enqueue; proof values are staged as async copies and read after the one
         synchronize in `proof.finish`. `profile` inserts a synchronize after every stage and records
@@ -224,7 +224,6 @@ struct Prover[p: Params, H: Hash]:
         var t0 = perf_counter_ns()
         comptime N = Self.p.N()
         comptime e = Self.p.e
-        var base = self.arena.base()
         ref L = self.layout
         var T = L.transcript
         ref S = self.shape
@@ -243,89 +242,89 @@ struct Prover[p: Params, H: Hash]:
         for i in range(len(prefix)):
             prefix_host[i] = prefix[i]
         self.arena.upload(ctx, L.prefix, prefix_host)
-        reset(ctx, base, T)
-        absorb[Self.p, Self.H](ctx, base, T, DS_PREFIX, L.prefix, len(prefix))
+        reset(ctx, self.arena, T)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_PREFIX, L.prefix, len(prefix))
         self._mark(ctx, profile, "prefix", t0)
 
         # 3. commit W -> stage-1 challenges
-        encode[Self.p](ctx, base, L.enc_w, L.tables)
+        encode[Self.p](ctx, self.arena, L.enc_w, L.tables)
         self._mark(ctx, profile, "encode W", t0)
-        merkle[Self.p, Self.H](ctx, base, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
+        merkle[Self.p, Self.H](ctx, self.arena, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
         self._mark(ctx, profile, "merkle W", t0)
-        absorb[Self.p, Self.H](ctx, base, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 3)             # beta, delta, gamma
+        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.stage1, 3)             # beta, delta, gamma
         self._mark(ctx, profile, "transcript W", t0)
 
         # 4-7. the Z stage and commit Z with Z2 -> alpha
         for k in range(S.accumulators()):
-            accumulate[Self.p](ctx, base, L.enc_w.trace, L.accs + k * ACC, L.stage1 + 2 * e, L.num, L.den, L.zscratch,
+            accumulate[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.stage1 + 2 * e, L.num, L.den, L.zscratch,
                                L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e, L.n_end + k * Self.p.h2() * e, L.d_end + k * Self.p.h2() * e)
         if S.columns_z > 0:
-            ctx.enqueue_function[k_values_to_trace[Self.p]](base, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
+            ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
                                                             grid_dim=ceildiv(S.columns_z * N, BACKEND.block), block_dim=BACKEND.block)
             self._mark(ctx, profile, "accumulate", t0)
-            encode[Self.p](ctx, base, L.enc_z, L.tables)
+            encode[Self.p](ctx, self.arena, L.enc_z, L.tables)
             self._mark(ctx, profile, "encode Z", t0)
-            merkle[Self.p, Self.H](ctx, base, L.enc_z.code, row_z, Self.p.L(), L.tree_z)
+            merkle[Self.p, Self.H](ctx, self.arena, L.enc_z.code, row_z, Self.p.L(), L.tree_z)
             self._mark(ctx, profile, "merkle Z", t0)
-            absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
+            absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
             self.proof.stage(self.arena, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
-            absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, L.z2, S.accumulators() * Self.p.h2() * e)
+            absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Z, L.z2, S.accumulators() * Self.p.h2() * e)
             self.proof.stage(self.arena, L.z2, S.accumulators() * Self.p.h2() * e)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, L.alpha, 1)
+        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.alpha, 1)
         self._mark(ctx, profile, "transcript Z", t0)
 
         # 7.4: the small grid, Q3 in the clear (sent with the Q root)
         comptime h2 = Self.p.h2()
         var e2 = ext_pow[1](self.domains.omega2, h2 - 1)
         for k in range(S.accumulators()):
-            small_grid_accumulator[Self.p](ctx, base, L.tables, L.z2 + k * h2 * e, L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e,
+            small_grid_accumulator[Self.p](ctx, self.arena, L.tables, L.z2 + k * h2 * e, L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e,
                                            L.n_end + k * h2 * e, L.d_end + k * h2 * e, L.sg, L.sg + 5 * h2 * e, L.sg + 7 * h2 * e, L.sg + 9 * h2 * e,
                                            L.alpha, k, e2, L.sg + 12 * h2 * e, k == 0)
         if S.accumulators() > 0:
-            small_grid_values[Self.p](ctx, base, L.tables, L.sg + 12 * h2 * e, L.q3)
+            small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg + 12 * h2 * e, L.q3)
             self._mark(ctx, profile, "small grid", t0)
 
         # 8-10. residual grid, quotient, commit Q
-        lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
+        lde[Self.p](ctx, self.arena, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
         if S.columns_z > 0:
-            lde[Self.p](ctx, base, L.enc_z.coeff, S.columns_z, L.tables, L.ltmp, L.lde + S.columns_w * 4 * N * 2)
+            lde[Self.p](ctx, self.arena, L.enc_z.coeff, S.columns_z, L.tables, L.ltmp, L.lde + S.columns_w * 4 * N * 2)
         self._mark(ctx, profile, "lde", t0)
-        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual)
+        residual[Self.p](ctx, self.arena, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual)
         self._mark(ctx, profile, "residual", t0)
-        quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.trace)
+        quotient[Self.p](ctx, self.arena, L.residual, L.tables, L.quotient, L.enc_q.trace)
         self._mark(ctx, profile, "quotient", t0)
-        encode[Self.p](ctx, base, L.enc_q, L.tables)
+        encode[Self.p](ctx, self.arena, L.enc_q, L.tables)
         self._mark(ctx, profile, "encode Q", t0)
-        merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
+        merkle[Self.p, Self.H](ctx, self.arena, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
         self._mark(ctx, profile, "merkle Q", t0)
-        absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         if S.accumulators() > 0:
-            absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, L.q3, 2 * h2 * e)
+            absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Q, L.q3, 2 * h2 * e)
             self.proof.stage(self.arena, L.q3, 2 * h2 * e)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
+        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.z, 2)                  # z = (z1, z2)
         self._mark(ctx, profile, "transcript Q", t0)
 
         # 11. openings at the P points
-        build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
+        build_queries[Self.p](ctx, self.arena, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
         self._mark(ctx, profile, "build_queries", t0)
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.open_partial, L.openings, S.columns())
+        open[Self.p](ctx, self.arena, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.open_partial, L.openings, S.columns())
         if S.columns_z > 0:
-            open[Self.p](ctx, base, L.w_z, S.points, L.enc_z.stored, S.columns_z, L.open_partial, L.openings + S.columns_w * e, S.columns())
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + (S.columns_w + S.columns_z) * e, S.columns())
+            open[Self.p](ctx, self.arena, L.w_z, S.points, L.enc_z.stored, S.columns_z, L.open_partial, L.openings + S.columns_w * e, S.columns())
+        open[Self.p](ctx, self.arena, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + (S.columns_w + S.columns_z) * e, S.columns())
         self._mark(ctx, profile, "open", t0)
-        absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
         self.proof.stage(self.arena, L.openings, S.points * S.columns() * e)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, L.beta_gamma, S.columns() + S.points)
+        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.beta_gamma, S.columns() + S.points)
         self._mark(ctx, profile, "transcript openings", t0)
 
         # 12. fold to the level-2 message
-        fold[Self.p, False](ctx, base, L.beta_gamma, L.enc_w.stored, S.columns_w, L.fold_y)
+        fold[Self.p, False](ctx, self.arena, L.beta_gamma, L.enc_w.stored, S.columns_w, L.fold_y)
         if S.columns_z > 0:
-            fold[Self.p, True](ctx, base, L.beta_gamma + S.columns_w * e, L.enc_z.stored, S.columns_z, L.fold_y)
-        fold[Self.p, True](ctx, base, L.beta_gamma + (S.columns_w + S.columns_z) * e, L.enc_q.stored, S.columns_q, L.fold_y)
+            fold[Self.p, True](ctx, self.arena, L.beta_gamma + S.columns_w * e, L.enc_z.stored, S.columns_z, L.fold_y)
+        fold[Self.p, True](ctx, self.arena, L.beta_gamma + (S.columns_w + S.columns_z) * e, L.enc_q.stored, S.columns_q, L.fold_y)
         self._mark(ctx, profile, "fold", t0)
 
         # 13. tail: each committed level opens the previous one
@@ -333,42 +332,42 @@ struct Prover[p: Params, H: Hash]:
         var y_len = N
         var running = L.running0
         if len(S.tail) > 0:
-            running0[Self.p](ctx, base, L.w_z, L.beta_gamma + S.columns() * e, S.points, L.running0)
+            running0[Self.p](ctx, self.arena, L.w_z, L.beta_gamma + S.columns() * e, S.points, L.running0)
         for i in range(len(S.tail)):
             var lvl = S.tail[i]
             var tl = L.tail[i]
-            tail_encode(ctx, base, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs)
+            tail_encode(ctx, self.arena, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs)
             self._mark(ctx, profile, "tail encode " + String(i), t0)
-            merkle[Self.p, Self.H](ctx, base, tl.code, 8 * e, lvl.L, tl.tree)
+            merkle[Self.p, Self.H](ctx, self.arena, tl.code, 8 * e, lvl.L, tl.tree)
             self._mark(ctx, profile, "tail merkle " + String(i), t0)
-            absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
+            absorb[Self.p, Self.H](ctx, self.arena, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             self.proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
             self._open_previous(ctx, i, T)
             self._mark(ctx, profile, "open previous " + String(i), t0)
             var count = self._prev_queries(i)
             var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
             var prev_L0 = Self.p.L0 if i == 0 else S.tail[i - 1].L // S.tail[i - 1].cosets
-            points(ctx, base, L.positions, count, prev_dom, prev_L0, L.pts)
+            points(ctx, self.arena, L.positions, count, prev_dom, prev_L0, L.pts)
             # the expected symbols v are the verifier's to compute from the opened rows (spec 9.3); nothing is sent
-            squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
+            squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.batch, self._v_count(i) + 1)   # batching scalars
             self._mark(ctx, profile, "transcript batch " + String(i), t0)
-            tail_materialize[Self.p](ctx, base, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
+            tail_materialize[Self.p](ctx, self.arena, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
             self._mark(ctx, profile, "materialize " + String(i), t0)
             for d in range(3):
-                tail_round(ctx, base, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)
-                absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
-                squeeze_elements[Self.p, Self.H](ctx, base, T, L.r + d * e, 1)          # r_d
+                tail_round(ctx, self.arena, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)
+                absorb[Self.p, Self.H](ctx, self.arena, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
+                squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.r + d * e, 1)          # r_d
             self.proof.stage(self.arena, tl.rounds, 9 * e)
             self._mark(ctx, profile, "rounds " + String(i), t0)
-            tail_fold(ctx, base, y, lvl.rows, L.r, tl.y)
-            tail_fold(ctx, base, tl.w_tilde, lvl.rows, L.r, tl.running)
+            tail_fold(ctx, self.arena, y, lvl.rows, L.r, tl.y)
+            tail_fold(ctx, self.arena, tl.w_tilde, lvl.rows, L.r, tl.running)
             self._mark(ctx, profile, "fold " + String(i), t0)
             y = tl.y
             y_len = lvl.rows
             running = tl.running
 
         # last: the clear vector, then open the last committed level
-        absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * e)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_CLEAR, y, y_len * e)
         self.proof.stage(self.arena, y, y_len * e)
         self._mark(ctx, profile, "transcript clear", t0)
         self._open_previous(ctx, len(S.tail), T)
@@ -386,21 +385,20 @@ struct Prover[p: Params, H: Hash]:
     def _open_previous(mut self, ctx: DeviceContext, i: Int, T: TranscriptLayout) raises:
         """Sample S on the level before tail level i (level 1 when i == 0), gather its multiproof(s),
         and stage them. The stage region is reused: the copy out is enqueued before the next gather."""
-        var base = self.arena.base()
         ref L = self.layout
         ref S = self.shape
         if i == 0:
-            squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, Self.p.queries(), Self.p.L())
+            squeeze_positions[Self.p, Self.H](ctx, self.arena, T, L.positions, Self.p.queries(), Self.p.L())
             for tree in [(L.enc_w.code, S.columns_w, L.tree_w), (L.enc_z.code, S.columns_z, L.tree_z), (L.enc_q.code, S.columns_q, L.tree_q)]:
                 if tree[1] == 0:
                     continue                                    # no Z tree without accumulators
-                var bound = query_gather[Self.p, Self.H](ctx, base, tree[0], 4 * Self.p.n_cw() * tree[1], Self.p.L(),
+                var bound = query_gather[Self.p, Self.H](ctx, self.arena, tree[0], 4 * Self.p.n_cw() * tree[1], Self.p.L(),
                                                          tree[2], L.positions, Self.p.queries(), L.proof_stage)
                 self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
         else:
             var lvl = S.tail[i - 1]
-            squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, lvl.queries, lvl.L)
-            var bound = query_gather[Self.p, Self.H](ctx, base, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
+            squeeze_positions[Self.p, Self.H](ctx, self.arena, T, L.positions, lvl.queries, lvl.L)
+            var bound = query_gather[Self.p, Self.H](ctx, self.arena, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
                                                      L.positions, lvl.queries, L.proof_stage)
             self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
 
@@ -418,7 +416,7 @@ def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
     return n
 
 
-def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: List[UInt8]) raises:
+def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: Span[UInt8, _]) raises:
     var h = ctx.enqueue_create_host_buffer[DType.uint8](len(l))
     ctx.synchronize()
     for i in range(len(l)):
@@ -426,7 +424,7 @@ def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: List[UInt8]) raises:
     arena.upload(ctx, off, h)
 
 
-def load_trace[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], trace: List[UInt8]) raises:
+def load_trace[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], trace: Span[UInt8, _]) raises:
     """Copy a host trace (columns_w x N bytes, values below 127) into the arena through the staging buffer."""
     var n = prover.shape.columns_w * p.N()
     if len(trace) != n:

@@ -21,6 +21,7 @@ from caracal7.core.tables import RsTables, RsDomain
 from caracal7.pcs.encode import rs_encode_on, pack_index
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u32, list_e
+from caracal7.core.arena import Arena
 
 comptime ROUND_THREADS = 1024      # partial sums of one sumcheck round
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4
@@ -184,56 +185,56 @@ def _grid(n: Int) -> Int:
     return ceildiv(n, BACKEND.block)
 
 
-def tail_encode(ctx: DeviceContext, base: Base,
+def tail_encode(ctx: DeviceContext, arena: Arena,
                 y: Int, rows: Int, L0: Int, m: Int, etmp: Int, code: Int, rs: RsTables) raises:
     """Mat(y) (rows, 8, e) -> code (m L0, 8, e): the RS encoder on 32 F4 columns, no inverse."""
-    rs_encode_on(ctx, base, y, etmp, code, 32, rows, L0, m, rs)
+    rs_encode_on(ctx, arena, y, etmp, code, 32, rows, L0, m, rs)
 
 
-def points(ctx: DeviceContext, base: Base, positions: Int, count: Int, dom: Int, L0: Int, pts: Int) raises:
-    ctx.enqueue_function[k_points](base, Buf[4](positions), Int32(count), Buf[4](dom), Int32(L0), Buf[4](pts),
+def points(ctx: DeviceContext, arena: Arena, positions: Int, count: Int, dom: Int, L0: Int, pts: Int) raises:
+    ctx.enqueue_function[k_points](arena.buf, Buf[4](positions), Int32(count), Buf[4](dom), Int32(L0), Buf[4](pts),
                                    grid_dim=_grid(count), block_dim=BACKEND.block)
 
 
-def running0[p: Params](ctx: DeviceContext, base: Base, w_z: Int, gamma: Int, P: Int, dst: Int) raises:
-    ctx.enqueue_function[k_running0[p]](base, Buf[16](w_z), Buf[16](gamma), Int32(P), Buf[16](dst),
+def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, P: Int, dst: Int) raises:
+    ctx.enqueue_function[k_running0[p]](arena.buf, Buf[16](w_z), Buf[16](gamma), Int32(P), Buf[16](dst),
                                         grid_dim=_grid(p.N()), block_dim=BACKEND.block)
 
 
-def tail_materialize[p: Params](ctx: DeviceContext, base: Base, level1: Bool,
+def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
                                 running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int) raises:
     if level1:
-        ctx.enqueue_function[k_materialize_level1[p]](base, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Buf[16](w_tilde),
+        ctx.enqueue_function[k_materialize_level1[p]](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Buf[16](w_tilde),
                                                       grid_dim=_grid(p.N()), block_dim=BACKEND.block)
     else:
-        ctx.enqueue_function[k_materialize_tail](base, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Int32(length), Buf[16](w_tilde),
+        ctx.enqueue_function[k_materialize_tail](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Int32(length), Buf[16](w_tilde),
                                                  grid_dim=_grid(length), block_dim=BACKEND.block)
 
 
-def tail_round(ctx: DeviceContext, base: Base,
+def tail_round(ctx: DeviceContext, arena: Arena,
                w_tilde: Int, y: Int, length: Int, digit: Int, r: Int, partial: Int, dst: Int) raises:
     """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`."""
-    ctx.enqueue_function[k_round_partial](base, Buf[16](w_tilde), Buf[16](y), Int32(length), Int32(digit), Buf[16](r), Buf[16](partial),
+    ctx.enqueue_function[k_round_partial](arena.buf, Buf[16](w_tilde), Buf[16](y), Int32(length), Int32(digit), Buf[16](r), Buf[16](partial),
                                           grid_dim=_grid(ROUND_THREADS), block_dim=BACKEND.block)
-    ctx.enqueue_function[k_round_sum](base, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_round_sum](arena.buf, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=1)
 
 
-def tail_fold(ctx: DeviceContext, base: Base, src: Int, rows: Int, r: Int, dst: Int) raises:
+def tail_fold(ctx: DeviceContext, arena: Arena, src: Int, rows: Int, r: Int, dst: Int) raises:
     """dst = Mat(src) r_bar, for the message and for the query."""
-    ctx.enqueue_function[k_fold8](base, Buf[16](src), Int32(rows), Buf[16](r), Buf[16](dst), grid_dim=_grid(rows), block_dim=BACKEND.block)
+    ctx.enqueue_function[k_fold8](arena.buf, Buf[16](src), Int32(rows), Buf[16](r), Buf[16](dst), grid_dim=_grid(rows), block_dim=BACKEND.block)
 
 
 # ---- host side of the same formulas (verifier, tests) ----
 
 
-def host_r3(r: List[UInt8]) -> InlineArray[E, 3]:
+def host_r3(r: Span[UInt8, _]) -> InlineArray[E, 3]:
     var out = InlineArray[E, 3](fill=E(0))
     for i in range(3):
         out[i] = list_e(r, i)
     return out^
 
 
-def tail_encode_at(y: List[UInt8], rows: Int, pt: F4) -> E:
+def tail_encode_at(y: Span[UInt8, _], rows: Int, pt: F4) -> E:
     """Enc(y)(pt) over E: sum_row y[row] pt^row."""
     var acc = E(0)
     var pw = F4(1, 0, 0, 0)
@@ -243,7 +244,7 @@ def tail_encode_at(y: List[UInt8], rows: Int, pt: F4) -> E:
     return acc
 
 
-def fold8_host(src: List[UInt8], rows: Int, r: List[UInt8]) -> List[UInt8]:
+def fold8_host(src: Span[UInt8, _], rows: Int, r: Span[UInt8, _]) -> List[UInt8]:
     var rr = host_r3(r)
     var out = List[UInt8](capacity=rows * 16)
     for row in range(rows):
@@ -255,7 +256,7 @@ def fold8_host(src: List[UInt8], rows: Int, r: List[UInt8]) -> List[UInt8]:
     return out^
 
 
-def quadratic_at(s: List[UInt8], off: Int, r: E) -> E:
+def quadratic_at(s: Span[UInt8, _], off: Int, r: E) -> E:
     """The degree-2 polynomial with values s[off], s[off + 1], s[off + 2] at 0, 1, 2, evaluated at r:
     s0 (r - 1)(r - 2) / 2 - s1 r (r - 2) + s2 r (r - 1) / 2."""
     var one = ext_one[4]()

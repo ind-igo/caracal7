@@ -38,6 +38,7 @@ from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
@@ -69,7 +70,7 @@ struct EncLayout(TrivialRegisterPassable):
 # ---- idft2: inverse 2D DFT over F2, one dense pass per axis ----
 # ponytail: dense O(h^2) per axis on the F2 skeleton; mixed-radix stages (spec 10.2) when h_l grows past a few hundred.
 
-def idft2[p: Params](ctx: DeviceContext, base: Base, trace: Int, ctmp: Int, coeff: Int,
+def idft2[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, ctmp: Int, coeff: Int,
                      columns: Int, tab: TableLayout) raises:
     """trace (column, x2, x1) F -> coeff (column, k2, k1, 2): inverse DFT per axis, two skeleton launches.
     Axis 1: C[k1, line] = sum_t1 Winv1[k1, t1] trace[line, t1]; axis 2 per column: C[k2, k1] = sum_t2 Winv2[k2, t2] ctmp[t2, k1]."""
@@ -77,10 +78,10 @@ def idft2[p: Params](ctx: DeviceContext, base: Base, trace: Int, ctmp: Int, coef
     comptime h2 = p.h2()
     var o1 = strided(a=tab.base + tab.winv1, sa_m=h1 * 2, sa_k=2, b=trace, sb_k=1, sb_hi=h1, sb_lo=0,
                      c=ctmp, sc_m=2, sc_hi=h1 * 2, sc_lo=0)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes, 1](ctx, base, o1, h1, columns * h2, h1)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes, 1](ctx, arena, o1, h1, columns * h2, h1)
     var o2 = strided(a=tab.base + tab.winv2, sa_m=h2 * 2, sa_k=2, b=ctmp, sb_k=h1 * 2, sb_hi=2, sb_lo=0,
                      c=coeff, sc_m=h1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * h1 * 2, sc_z=h2 * h1 * 2)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o2, h2, h1, h2, batch=columns)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o2, h2, h1, h2, batch=columns)
 
 
 # ---- to_stored: mixed basis on the odd digit, Frobenius-real slots (spec 9.1) ----
@@ -201,7 +202,7 @@ struct RsRows(Loader4):
         return x
 
 
-def rs_pass_a(ctx: DeviceContext, base: Base, src: Int, etmp: Int, rs: RsTables,
+def rs_pass_a(ctx: DeviceContext, arena: Arena, src: Int, etmp: Int, rs: RsTables,
               twist: Int, columns: Int, K: Int, b: Int, M: Int) raises:
     """etmp[lin, t1, c] = sum_q wa[lin, t1, q] x_{crt(lin) + M q} twist: one F4 GEMM per line,
     M = 2^b, N = columns, K = Q, batch = the odd part."""
@@ -211,7 +212,7 @@ def rs_pass_a(ctx: DeviceContext, base: Base, src: Int, etmp: Int, rs: RsTables,
     o.aux0 = Int64(rs.base + rs.crt)
     o.aux1 = Int64(twist)
     o.aux2 = Int64(K)
-    launch_gemm_f4[BACKEND, F4_TILE, RsRows, 1](ctx, base, o, 1 << b, columns, rs.Q, batch=M)
+    launch_gemm_f4[BACKEND, F4_TILE, RsRows, 1](ctx, arena, o, 1 << b, columns, rs.Q, batch=M)
 
 
 def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
@@ -258,35 +259,35 @@ def grid(n: Int) -> Int:
     return ceildiv(n, BACKEND.block)
 
 
-def encode[p: Params](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
-    to_packed[p](ctx, base, e, tab)
-    rs_encode[p](ctx, base, e, tab)
+def encode[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout) raises:
+    to_packed[p](ctx, arena, e, tab)
+    rs_encode[p](ctx, arena, e, tab)
 
 
-def to_packed[p: Params](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
+def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout) raises:
     """trace -> coeff -> stored -> packed."""
     var cols = Int32(e.columns)
     var n_grid = e.columns * p.N()
-    idft2[p](ctx, base, e.trace, e.ctmp, e.coeff, e.columns, tab)
+    idft2[p](ctx, arena, e.trace, e.ctmp, e.coeff, e.columns, tab)
     comptime k3 = k_to_stored[p]
-    ctx.enqueue_function[k3](base, Buf[2](e.coeff), Buf[1](e.stored), Buf[1](tab.base + tab.rho1), Buf[1](tab.base + tab.rho2), cols,
+    ctx.enqueue_function[k3](arena.buf, Buf[2](e.coeff), Buf[1](e.stored), Buf[1](tab.base + tab.rho1), Buf[1](tab.base + tab.rho2), cols,
                              grid_dim=grid(n_grid), block_dim=BACKEND.block)
-    pack[p](ctx, base, e)
+    pack[p](ctx, arena, e)
 
 
-def pack[p: Params](ctx: DeviceContext, base: Base, e: EncLayout) raises:
+def pack[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout) raises:
     """stored -> packed. Also the entry point of the quotient tree, which writes `stored` directly."""
     comptime k4 = k_pack[p]
-    ctx.enqueue_function[k4](base, Buf[1](e.stored), Buf[4](e.packed), Int32(e.columns),
+    ctx.enqueue_function[k4](arena.buf, Buf[1](e.stored), Buf[4](e.packed), Int32(e.columns),
                              grid_dim=grid(e.columns * p.N() // 4), block_dim=BACKEND.block)
 
 
-def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, base: Base, e: EncLayout, tab: TableLayout) raises:
+def rs_encode[p: Params, mask: Int = 15](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout) raises:
     """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only."""
-    rs_encode_on[mask](ctx, base, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
+    rs_encode_on[mask](ctx, arena, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
 
 
-def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Base,
+def rs_encode_on[mask: Int = 15](ctx: DeviceContext, arena: Arena,
                                  src: Int, etmp: Int, code: Int, columns: Int, K: Int, L0: Int, m: Int, rs: RsTables) raises:
     """src (K, columns, 4) -> code (m L0, columns, 4) on the domain of `rs`: pass A, then the radix
     stages of M, per coset. etmp holds (L0, columns, 4)."""
@@ -305,26 +306,26 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, base: Base,
         var twist = rs.base + rs.twist + k * K * 4 if m > 1 else -1
         var code_k = code + k * L0 * columns * 4
         comptime if mask & 1:
-            rs_pass_a(ctx, base, src, etmp, rs, twist, columns, K, b, M)
+            rs_pass_a(ctx, arena, src, etmp, rs, twist, columns, K, b, M)
         comptime if mask & 2:
             if F5 > 1:
-                _stage[5](ctx, base, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9, gx)
+                _stage[5](ctx, arena, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9, gx)
         comptime if mask & 4:
             if F7 > 1:
-                _stage[7](ctx, base, etmp, rs.base + rs.w7, code_k, ruri, cols, b, M, F9, gx)
+                _stage[7](ctx, arena, etmp, rs.base + rs.w7, code_k, ruri, cols, b, M, F9, gx)
         comptime if mask & 8:
             if F9 == 9:
-                _stage[9](ctx, base, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
+                _stage[9](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
             elif F9 == 3:
-                _stage[3](ctx, base, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
+                _stage[3](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
 
 
-def _stage[r: Int](ctx: DeviceContext, base: Base, etmp: Int, wr: Int, code_k: Int, ruri: Int,
+def _stage[r: Int](ctx: DeviceContext, arena: Arena, etmp: Int, wr: Int, code_k: Int, ruri: Int,
                    cols: Int32, b: Int, M: Int, stride: Int, gx: Int) raises:
     """Dispatch the runtime stride (a product of the later radices) to a comptime one."""
     comptime for st in [1, 3, 7, 9, 21, 63]:
         if stride == st:
-            ctx.enqueue_function[k_rs_stage[r, st]](base, Buf[4](etmp), Buf[4](wr), Buf[4](code_k), Buf[1](ruri), cols, Int32(b), Int32(M),
+            ctx.enqueue_function[k_rs_stage[r, st]](arena.buf, Buf[4](etmp), Buf[4](wr), Buf[4](code_k), Buf[1](ruri), cols, Int32(b), Int32(M),
                                                     grid_dim=(gx, ceildiv((1 << b) * (M // r), RW)), block_dim=(CW, RW))
             return
     raise Error("unsupported radix stride")

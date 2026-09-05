@@ -34,7 +34,7 @@ comptime FIX_E = 65535      # a point coordinate fixed at e_l
 comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
 
 
-def shift_points(fam: List[UInt8]) -> List[UInt8]:
+def shift_points(fam: Span[UInt8, _]) -> List[UInt8]:
     """The opening points as (dj1, dj2) pairs: the seven of spec section 3 in its order (z, the shifted
     point, (1, z2), (e1, z2), (1, omega2 z2), (1, 1), (e1, e2)), then every other distinct read shift of
     the family table in first-seen order."""
@@ -69,7 +69,7 @@ def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
     return ext_mul[4](z, ext_embed[4](ext_pow[1](g, dj)))
 
 
-def point_index(pts: List[UInt8], dj1: Int, dj2: Int) -> Int:
+def point_index(pts: Span[UInt8, _], dj1: Int, dj2: Int) -> Int:
     for i in range(len(pts) // POINT):
         if get_u16(pts, i * POINT) == dj1 and get_u16(pts, i * POINT + 2) == dj2:
             return i
@@ -156,7 +156,7 @@ struct Entry(TrivialRegisterPassable):
     var basis2: Int
 
 
-def entry(fam: List[UInt8], k: Int) -> Entry:
+def entry(fam: Span[UInt8, _], k: Int) -> Entry:
     var o = k * ENTRY
     return Entry(col_a=get_u16(fam, o + 16), dj1_a=get_u16(fam, o + 18), dj2_a=get_u16(fam, o + 20),
                  col_b=get_u16(fam, o + 22), dj1_b=get_u16(fam, o + 24), dj2_b=get_u16(fam, o + 26),
@@ -164,7 +164,7 @@ def entry(fam: List[UInt8], k: Int) -> Entry:
                  chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
 
 
-def kappa_of(en: Entry, alpha: E, chals: List[UInt8]) -> E:
+def kappa_of(en: Entry, alpha: E, chals: Span[UInt8, _]) -> E:
     """coef * alpha^family * chal * b_t; chals holds the stage-1 challenges (beta, delta, gamma) as e bytes each."""
     var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
     if en.chal != 0:
@@ -180,7 +180,7 @@ def kappa_of(en: Entry, alpha: E, chals: List[UInt8]) -> E:
     return kappa
 
 
-def residual_at(fam: List[UInt8], alpha: E, chals: List[UInt8], z1: E, z2: E, e1: F2, e2: F2, reads: List[E]) -> E:
+def residual_at(fam: Span[UInt8, _], alpha: E, chals: Span[UInt8, _], z1: E, z2: E, e1: F2, e2: F2, reads: List[E]) -> E:
     """R(z) from opened values: reads[2k], reads[2k + 1] are c_a and c_b of entry k at their shifted
     points. The verifier's step 5 and the tests share this."""
     var acc = E(0)

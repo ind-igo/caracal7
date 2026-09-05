@@ -107,7 +107,7 @@ def _check(accs: List[UInt8], k: Int) raises:
     for t in range(16):
         gl.append(gamma[t])
     arena.upload(ctx, o_gamma, _host(ctx, gl))
-    accumulate[p](ctx, arena.base(), o_trace, o_acc, o_gamma, o_num, o_den, o_scratch, o_z, o_prod, o_z2, o_nend, o_dend)
+    accumulate[p](ctx, arena, o_trace, o_acc, o_gamma, o_num, o_den, o_scratch, o_z, o_prod, o_z2, o_nend, o_dend)
     var z = _down(ctx, arena, o_z, N * 16)
     var z2 = _down(ctx, arena, o_z2, (h2 + 1) * 16)
     var prod = _down(ctx, arena, o_prod, h2 * 16)

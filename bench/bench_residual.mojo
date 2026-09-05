@@ -57,34 +57,34 @@ def main() raises:
     arena.upload(ctx, e.trace, th)
     arena.upload(ctx, families, fh)
     arena.upload(ctx, alpha, ah)
-    to_packed[p](ctx, arena.base(), e, tab)
+    to_packed[p](ctx, arena, e, tab)
     print(ctx.name(), " ", p, " columns=", COLS, " entries=", f.count, " G=", G)
 
     def report(name: String, ns: Int, macs: Int):
         var us = ns // REPS // 1000
         print(name, ": ", us, " us  ", macs // (us + 1) // 1000, " GMAC/s (F2 products)")
 
-    lde[p](ctx, arena.base(), e.coeff, COLS, tab, ltmp, lde_buf)
+    lde[p](ctx, arena, e.coeff, COLS, tab, ltmp, lde_buf)
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(REPS):
-        lde[p](ctx, arena.base(), e.coeff, COLS, tab, ltmp, lde_buf)
+        lde[p](ctx, arena, e.coeff, COLS, tab, ltmp, lde_buf)
     ctx.synchronize()
     report("lde", Int(perf_counter_ns() - t0), COLS * (p.N() * 2 * p.h1() + 2 * p.h1() * 2 * p.h2() * p.h2()))
 
-    residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
+    residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
+        residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
     ctx.synchronize()
     report("residual", Int(perf_counter_ns() - t0), f.count * G * 8)
 
-    quotient[p](ctx, arena.base(), res_buf, tab, scratch, stored)
+    quotient[p](ctx, arena, res_buf, tab, scratch, stored)
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        quotient[p](ctx, arena.base(), res_buf, tab, scratch, stored)
+        quotient[p](ctx, arena, res_buf, tab, scratch, stored)
     ctx.synchronize()
     report("quotient", Int(perf_counter_ns() - t0), 8 * (p.h1() * 2 * p.h1() * 2 * p.h2() + p.h1() * p.h1() * 2 * p.h2()
                                                           + 2 * p.h2() * 2 * p.h2() * p.h1() + p.h1() * p.h1() * p.h2() + p.h2() * p.h2() * p.h1()))

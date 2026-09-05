@@ -92,13 +92,12 @@ def test_q3_matches_host_division_and_interpolation() raises:
     arena.upload(ctx, o_dend, _host(ctx, dend))
     arena.upload(ctx, o_alpha, _host(ctx, alpha))
     var e2 = ext_pow[1](d.omega2, h2 - 1)
-    var base = arena.base()
     # two accumulators sharing the lines: R2 = (1 + alpha) (X2 - e2)(b d - a c n)
-    small_grid_accumulator[p](ctx, base, tab, o_z2, o_zend, 16, o_nend, o_dend, o_sg, o_sg + 5 * h2 * 16, o_sg + 7 * h2 * 16,
+    small_grid_accumulator[p](ctx, arena, tab, o_z2, o_zend, 16, o_nend, o_dend, o_sg, o_sg + 5 * h2 * 16, o_sg + 7 * h2 * 16,
                               o_sg + 9 * h2 * 16, o_alpha, 0, e2, o_sg + 12 * h2 * 16, True)
-    small_grid_accumulator[p](ctx, base, tab, o_z2, o_zend, 16, o_nend, o_dend, o_sg, o_sg + 5 * h2 * 16, o_sg + 7 * h2 * 16,
+    small_grid_accumulator[p](ctx, arena, tab, o_z2, o_zend, 16, o_nend, o_dend, o_sg, o_sg + 5 * h2 * 16, o_sg + 7 * h2 * 16,
                               o_sg + 9 * h2 * 16, o_alpha, 1, e2, o_sg + 12 * h2 * 16, False)
-    small_grid_values[p](ctx, base, tab, o_sg + 12 * h2 * 16, o_q3)
+    small_grid_values[p](ctx, arena, tab, o_sg + 12 * h2 * 16, o_q3)
     var qh = ctx.enqueue_create_host_buffer[DType.uint8](2 * h2 * 16)
     arena.download(ctx, o_q3, qh)
     ctx.synchronize()

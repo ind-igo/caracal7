@@ -24,6 +24,7 @@ from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT
 from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
 
@@ -106,7 +107,7 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
 
 # ---- host orchestration ----
 
-def lde[p: Params](ctx: DeviceContext, base: Base,
+def lde[p: Params](ctx: DeviceContext, arena: Arena,
                    coeff: Int, columns: Int, tab: TableLayout, ltmp: Int, dst: Int) raises:
     """coeff (column, k2, k1, 2) -> dst (column, j2, j1, 2): forward DFT per axis onto G (spec 10.2).
     The twist by g^i is inside the tables g_l^(j k), so there is no separate pass."""
@@ -117,20 +118,20 @@ def lde[p: Params](ctx: DeviceContext, base: Base,
     # axis 1: rows are the (column, k2) lines, B[k1, j1] = g1^(j1 k1) read from the (j, k) table
     var o1 = strided(a=coeff, sa_m=h1 * 2, sa_k=2, b=tab.base + tab.wfwd1, sb_k=2, sb_hi=h1 * 2, sb_lo=0,
                      c=ltmp, sc_m=G1 * 2, sc_hi=2, sc_lo=0)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o1, columns * h2, G1, h1)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o1, columns * h2, G1, h1)
     # axis 2: per column, C[j2, j1] = sum_k2 g2^(j2 k2) ltmp[k2, j1]
     var o2 = strided(a=tab.base + tab.wfwd2, sa_m=2 * h2 * 2, sa_k=2, b=ltmp, sb_k=G1 * 2, sb_hi=2, sb_lo=0,
                      c=dst, sc_m=G1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * G1 * 2, sc_z=G2 * G1 * 2)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, base, o2, G2, G1, h2, batch=columns)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o2, G2, G1, h2, batch=columns)
 
 
-def residual[p: Params](ctx: DeviceContext, base: Base,
+def residual[p: Params](ctx: DeviceContext, arena: Arena,
                         lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, chals: Int, dst: Int) raises:
     """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5 as
     one GEMM, A = the kappa table (8 F2 lanes x entries), B gathered from the LDE."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    ctx.enqueue_function[k_fold_alpha](base, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
+    ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
     var o = strided(a=families, sa_m=2, sa_k=ENTRY, b=families, sb_k=0, sb_hi=0, sb_lo=0,
                     c=dst, sc_m=2, sc_hi=G1 * p.e, sc_lo=p.e)
@@ -139,10 +140,10 @@ def residual[p: Params](ctx: DeviceContext, base: Base,
     o.aux2 = Int64(tab.base + tab.gate2)
     # ponytail: D = G1 is not a power of two, so the point split costs an integer division per gathered
     # element; a (j2, j1) 2D launch removes it when the residual shows up in the profile.
-    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, base, o, p.e // 2, G1 * G2, count)
+    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, arena, o, p.e // 2, G1 * G2, count)
 
 
-def quotient[p: Params](ctx: DeviceContext, base: Base,
+def quotient[p: Params](ctx: DeviceContext, arena: Arena,
                         residual_buf: Int, tab: TableLayout, scratch: Int, trace_q: Int) raises:
     """residual -> A, B, Q2 coefficients -> their values on H -> 3 e coordinate columns as the
     trace of the quotient tree, which the level-1 encoder then treats like any witness column.
@@ -163,32 +164,32 @@ def quotient[p: Params](ctx: DeviceContext, base: Base,
     var v1 = t2 + h1 * h2 * e               # (3, x1, k2, e)
     var vals = v1 + 3 * N * e               # (3, x2, x1, e)
     # 1. Q1 on the coset from R over all of G1: q1m (t, j1)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
         c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, G1)
     # 2. axis 1: coset values t -> coefficients k1
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,
         c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, h1)
     # 3. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.ginv2, sa_m=G2 * 2, sa_k=2, b=t1, sb_k=e, sb_hi=G2 * e, sb_lo=2,
         c=q1coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), G2, h1 * 8, G2)
     # 4. Q2 = S1 / (-2) on H1 x g2 H2: axis 1 from the even j1 of the odd j2 rows, q2m = 63 winv1
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
         c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * 8, h1)
     # 5. axis 2: coset values t2 -> coefficients k2
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv2, sa_m=h2 * 2, sa_k=2, b=t2, sb_k=e, sb_hi=h2 * e, sb_lo=2,
         c=q2coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), h2, h1 * 8, h2)
     # 6, 7. values on H of A, B, Q2 (batch of three): the even rows of g_l^(j k) are omega_l^(x k)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.wfwd1, sa_m=2 * h1 * 2, sa_k=2, b=q1coef, sb_k=e, sb_hi=h1 * e, sb_lo=2,
         c=v1, sc_m=h2 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h1, h2 * 8, h1, batch=3)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, base, strided(
+    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.wfwd2, sa_m=4 * h2 * 2, sa_k=2, b=v1, sb_k=e, sb_hi=h2 * e, sb_lo=2,
         c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
-    ctx.enqueue_function[k8](base, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)
+    ctx.enqueue_function[k8](arena.buf, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)

@@ -20,11 +20,11 @@ def main() raises:
     var code = bump.alloc(LEAVES * ROW)
     var tree = bump.alloc(tree_nodes(LEAVES) * 32)
     var arena = Arena(ctx, bump.used)
-    merkle[p, Blake3](ctx, arena.base(), code, ROW, LEAVES, tree)
+    merkle[p, Blake3](ctx, arena, code, ROW, LEAVES, tree)
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(REPS):
-        merkle[p, Blake3](ctx, arena.base(), code, ROW, LEAVES, tree)
+        merkle[p, Blake3](ctx, arena, code, ROW, LEAVES, tree)
     ctx.synchronize()
     var ms = Float64(perf_counter_ns() - t0) / 1e6 / REPS
     print("merkle", LEAVES, "leaves x", ROW, "B:", ms, "ms,", Float64(LEAVES * ROW) / ms / 1e6, "GB/s")

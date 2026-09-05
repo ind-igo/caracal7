@@ -71,10 +71,10 @@ struct Run:
             self.chals.append(UInt8((i * 53 + 11) % 127))
         arena.upload(ctx, chals, _host(ctx, self.chals))
 
-        to_packed[p](ctx, arena.base(), enc, tab)
-        lde[p](ctx, arena.base(), enc.coeff, C, tab, ltmp, lde_buf)
-        residual[p](ctx, arena.base(), lde_buf, families, f.count, tab, alpha, chals, res_buf)
-        quotient[p](ctx, arena.base(), res_buf, tab, scratch, stored)
+        to_packed[p](ctx, arena, enc, tab)
+        lde[p](ctx, arena, enc.coeff, C, tab, ltmp, lde_buf)
+        residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
+        quotient[p](ctx, arena, res_buf, tab, scratch, stored)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8](C * N * 2)
         var lh = ctx.enqueue_create_host_buffer[DType.uint8](C * G * 2)
