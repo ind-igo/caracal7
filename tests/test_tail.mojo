@@ -11,7 +11,7 @@ from caracal7.params import REFERENCE
 from caracal7.tables import RsDomain, RsTables, build_rs_tables
 from caracal7.arena import Arena, Bump
 from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold
-from caracal7.tail import host_e, tail_encode_at, fold8_host, quadratic_at
+from caracal7.tail import host_e, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -135,6 +135,7 @@ def test_tail_kernels() raises:
     var wnext = _down(ctx, arena, o_wnext, ROWS * 16)
     var pts2 = _down(ctx, arena, o_pts2, Q * 4)
     var w2 = _down(ctx, arena, o_w2, ROWS * 16)
+    var code = _down(ctx, arena, o_code, M_TAIL * L0_TAIL * 32 * 4)
 
     for q in range(Q):
         var pt = F4(pts[4 * q], pts[4 * q + 1], pts[4 * q + 2], pts[4 * q + 3])
@@ -160,6 +161,11 @@ def test_tail_kernels() raises:
     for q in range(Q):
         var pt = F4(pts2[4 * q], pts2[4 * q + 1], pts2[4 * q + 2], pts2[4 * q + 3])
         assert_true(pt == dom2.point(pos2_list[q]), "coset point mismatch")
+        # the encoder is linear: the r_bar-combined row of Enc(y) at s is Enc(fold(y))(pt), the verifier's expected symbol
+        var row = E(0)
+        for a in range(8):
+            row = f_add(row, ext_mul[4](rbar_at(host_r3(r), a, 3), host_e(code, pos2_list[q] * 8 + a)))
+        assert_true(row == tail_encode_at(ynext, ROWS, pt), "expected symbol from the committed row mismatch")
         claim2 = f_add(claim2, ext_mul[4](host_e(batch2, 1 + q), tail_encode_at(ynext, ROWS, pt)))
     assert_true(_inner(ynext, w2, ROWS) == claim2, "tail query does not carry the batched claim")
 
