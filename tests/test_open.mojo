@@ -56,8 +56,8 @@ def _horner(coef: List[UInt8], off: Int, stride: Int, ext: Int, z1: E, z2: E, ro
 def test_openings_and_fold() raises:
     var ctx = DeviceContext()
     var f = synthetic_families()
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     _ = prover.prove(ctx, List[UInt8]())
     ref L = prover.layout
@@ -69,9 +69,11 @@ def test_openings_and_fold() raises:
     var scratch = _dl(ctx, prover, L.quotient, 14 * N * p.e)
     var beta = _dl(ctx, prover, L.beta_gamma, C * p.e)
     var stored_w = _dl(ctx, prover, L.enc_w.stored, SYNTHETIC_COLUMNS * N)
+    var stored_z = _dl(ctx, prover, L.enc_z.stored, shape.columns_z * N)
     var stored_q = _dl(ctx, prover, L.enc_q.stored, shape.columns_q * N)
     var y = _dl(ctx, prover, L.fold_y, N * p.e)
     var code_w = _dl(ctx, prover, L.enc_w.code, p.L() * SYNTHETIC_COLUMNS * 4)
+    var code_z = _dl(ctx, prover, L.enc_z.code, p.L() * shape.columns_z * 4)
     var code_q = _dl(ctx, prover, L.enc_q.code, p.L() * shape.columns_q * 4)
     var pts = shift_points(f.bytes)
     var d = prover.domains
@@ -94,14 +96,14 @@ def test_openings_and_fold() raises:
         for tau in range(p.e):
             var basis = E(0)
             basis[tau] = 1
-            got = f_add(got, ext_mul[4](basis, _e(openings, SYNTHETIC_COLUMNS + q * p.e + tau)))
+            got = f_add(got, ext_mul[4](basis, _e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
         assert_true(want == got, "quotient opening mismatch")
     # fold at a few slots
     var slots: List[Int] = [0, 1, 77, N // 2, N - 1]
     for slot in slots:
         var acc = E(0)
         for c in range(C):
-            var v = stored_w[c * N + slot] if c < SYNTHETIC_COLUMNS else stored_q[(c - SYNTHETIC_COLUMNS) * N + slot]
+            var v = stored_w[c * N + slot] if c < SYNTHETIC_COLUMNS else (stored_z[(c - SYNTHETIC_COLUMNS) * N + slot] if c < SYNTHETIC_COLUMNS + shape.columns_z else stored_q[(c - SYNTHETIC_COLUMNS - shape.columns_z) * N + slot])
             acc = f_add(acc, f_mul(_e(beta, c), E(v)))
         assert_true(acc == _e(y, slot), "fold mismatch")
     # the alphabet rule at a few code positions: Enc(y)(g^s) = sum_c beta_c X[s, c] coordinate-wise in E (x) F4
@@ -111,7 +113,7 @@ def test_openings_and_fold() raises:
         for tau in range(4):
             var want = E(0)
             for c in range(C):
-                var sym = code_w[(s * SYNTHETIC_COLUMNS + c) * 4 + tau] if c < SYNTHETIC_COLUMNS else code_q[(s * shape.columns_q + c - SYNTHETIC_COLUMNS) * 4 + tau]
+                var sym = code_w[(s * SYNTHETIC_COLUMNS + c) * 4 + tau] if c < SYNTHETIC_COLUMNS else (code_z[(s * shape.columns_z + c - SYNTHETIC_COLUMNS) * 4 + tau] if c < SYNTHETIC_COLUMNS + shape.columns_z else code_q[(s * shape.columns_q + c - SYNTHETIC_COLUMNS - shape.columns_z) * 4 + tau])
                 want = f_add(want, f_mul(_e(beta, c), E(sym)))
             assert_true(enc[tau] == want, "alphabet rule mismatch")
             nonzero = nonzero or want != E(0)

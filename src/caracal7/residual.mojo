@@ -12,9 +12,10 @@ Buffers (bytes; slowest ... fastest):
 Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
 col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
 mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32);
-chal u8 [32] (0 none, 1 beta, 2 delta, 3 gamma: a stage-1 challenge factor); basis u8 [33] (t < e: the
-factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l): a read at
-(omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t, one entry per (family, read).
+chal u8 [32] (0 none, 1 beta, 2 delta, 3 gamma: a stage-1 challenge factor); basis, basis2 u8 [33, 35)
+(t < e: the factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l):
+a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t * b_t2, one entry
+per (family, read).
 The challenge and basis factors are how an E-valued accumulator enters as e F-valued coordinate
 columns (statement-layer 2: a coefficient is a constant, a challenge expression, or a public read).
 
@@ -40,6 +41,7 @@ from caracal7.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_emb
 from caracal7.params import Params
 from caracal7.tables import TableLayout
 from caracal7.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
+from caracal7.accumulate import ACC, ACC_W_MAX
 
 comptime ENTRY = 48
 comptime NONE = 65535
@@ -104,16 +106,42 @@ def point_index(pts: List[UInt8], dj1: Int, dj2: Int) -> Int:
 # ---- host side of the family list ----
 
 struct Families:
-    """Builder for the entry table. Shifts are given on H (k in omega^k) and stored doubled."""
+    """Builder for the entry table and the accumulator descriptors (accumulate.mojo). Shifts are
+    given on H (k in omega^k) and stored doubled."""
     var bytes: List[UInt8]
     var count: Int
+    var accs: List[UInt8]
 
     def __init__(out self):
         self.bytes = List[UInt8]()
         self.count = 0
+        self.accs = List[UInt8]()
+
+    def accumulator(mut self, family: Int, z_col: Int, num: List[Int], den: List[Int]) raises:
+        """A permutation accumulator (spec 6.2) on witness columns: N = gamma + fp(num), D = gamma +
+        fp(den). Its transition (X1 - e1) (Z(next) D - Z N) over the coordinate columns z_col + t is
+        e (2 + |num| + |den|) entries: Z = sum_t Z_t b_t and fp(c) = sum_j c_j b_j."""
+        if len(num) > ACC_W_MAX or len(den) > ACC_W_MAX or len(num) == 0 or len(den) == 0:
+            raise Error("accumulator record width")
+        for t in range(16):
+            self.add(family, 1, z_col + t, k1_a=1, mult=1, chal=3, basis=t)
+            for j in range(len(den)):
+                self.add(family, 1, z_col + t, k1_a=1, col_b=den[j], mult=1, basis=t, basis2=j)
+            self.add(family, 126, z_col + t, mult=1, chal=3, basis=t)
+            for j in range(len(num)):
+                self.add(family, 126, z_col + t, col_b=num[j], mult=1, basis=t, basis2=j)
+        var a = List[UInt8](length=ACC, fill=0)
+        _u16(a, 0, z_col)
+        _u16(a, 2, len(num))
+        _u16(a, 4, len(den))
+        for j in range(len(num)):
+            _u16(a, 6 + 2 * j, num[j])
+        for j in range(len(den)):
+            _u16(a, 22 + 2 * j, den[j])
+        self.accs.extend(a^)
 
     def add(mut self, family: Int, coef: Int, col_a: Int, k1_a: Int = 0, k2_a: Int = 0,
-            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0, chal: Int = 0, basis: Int = -1) raises:
+            col_b: Int = -1, k1_b: Int = 0, k2_b: Int = 0, mult: Int = 0, chal: Int = 0, basis: Int = -1, basis2: Int = -1) raises:
         """Shifts k_l are on H, already reduced to [0, h_l). An entry with the axis-2 gate must be
         linear: two columns and (X2 - e2) exceed the bound 2 h2 - 2 of spec section 8 and would alias
         on G. The axis-1 gate admits a quadratic entry (2 h1 - 1): the accumulator transition."""
@@ -134,6 +162,7 @@ struct Families:
         _u16(e, 30, family)
         e[32] = UInt8(chal)
         e[33] = UInt8(NO_BASIS if basis < 0 else basis)
+        e[34] = UInt8(NO_BASIS if basis2 < 0 else basis2)
         self.bytes.extend(e^)
         self.count += 1
 
@@ -160,6 +189,7 @@ struct Entry(TrivialRegisterPassable):
     var family: Int
     var chal: Int
     var basis: Int
+    var basis2: Int
 
 
 def entry(fam: List[UInt8], k: Int) -> Entry:
@@ -167,7 +197,7 @@ def entry(fam: List[UInt8], k: Int) -> Entry:
     return Entry(col_a=_get16(fam, o + 16), dj1_a=_get16(fam, o + 18), dj2_a=_get16(fam, o + 20),
                  col_b=_get16(fam, o + 22), dj1_b=_get16(fam, o + 24), dj2_b=_get16(fam, o + 26),
                  mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=_get16(fam, o + 30),
-                 chal=Int(fam[o + 32]), basis=Int(fam[o + 33]))
+                 chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
 
 
 def kappa_of(en: Entry, alpha: E, chals: List[UInt8]) -> E:
@@ -178,10 +208,11 @@ def kappa_of(en: Entry, alpha: E, chals: List[UInt8]) -> E:
         for t in range(16):
             c[t] = chals[(en.chal - 1) * 16 + t]
         kappa = ext_mul[4](kappa, c)
-    if en.basis != NO_BASIS:
-        var b = E(0)
-        b[en.basis] = 1
-        kappa = ext_mul[4](kappa, b)
+    for t in [en.basis, en.basis2]:
+        if t != NO_BASIS:
+            var b = E(0)
+            b[t] = 1
+            kappa = ext_mul[4](kappa, b)
     return kappa
 
 
@@ -204,10 +235,12 @@ def residual_at(fam: List[UInt8], alpha: E, chals: List[UInt8], z1: E, z2: E, e1
     return acc
 
 
-def synthetic_families() raises -> Families:
-    """Eight families over eight columns, satisfied by `synthetic_trace`. They cover a linear entry, a
-    quadratic entry, both gates, a within-chain shift, a cyclic shift, an axis-2 shift, a challenge
-    and basis coefficient, and a quadratic axis-1 transition."""
+def synthetic_families(columns_w: Int = 9, with_accumulator: Bool = True) raises -> Families:
+    """Eight families over nine columns, satisfied by `synthetic_trace`, plus one permutation
+    accumulator (c8 is a permutation of c0 across the grid) whose coordinate columns start the Z
+    tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
+    a within-chain shift, a cyclic shift, an axis-2 shift, a challenge and basis coefficient, a
+    quadratic axis-1 transition, and the accumulator."""
     var f = Families()
     f.add(0, 1, 2)                                   # c2 - c0 c1
     f.add(0, 126, 0, col_b=1)
@@ -226,14 +259,17 @@ def synthetic_families() raises -> Families:
     f.add(6, 126, 0, col_b=1, chal=3, basis=3)
     f.add(7, 1, 4, k1_a=1, col_b=5, mult=1)          # (X1 - e1) c5 (c4(next) - c0): quadratic with the axis-1 gate
     f.add(7, 126, 0, col_b=5, mult=1)
+    if with_accumulator:
+        f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
     return f^
 
 
-comptime SYNTHETIC_COLUMNS = 8
+comptime SYNTHETIC_COLUMNS = 9
+comptime SYNTHETIC_PERM = 17                            # c8[i] = c0[(17 i + 5) mod N]: coprime to every grid N
 
 
 def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
-    """Eight columns (column, x2, x1) satisfying `synthetic_families`."""
+    """Nine columns (column, x2, x1) satisfying `synthetic_families`."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
@@ -255,6 +291,7 @@ def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
             t[4 * N + i] = t[x2 * h1 + (x1 + h1 - 1) % h1] if x1 > 0 else UInt8((i * 7) % 127)     # c4(omega1 x1) = c0(x1)
             t[6 * N + i] = t[x2 * h1 + (x1 + 3) % h1]                                              # c6 = c0(omega1^3 x1)
             t[7 * N + i] = t[(x2 - 1) * h1 + x1] if x2 > 0 else UInt8((i * 11) % 127)              # c7(omega2 x2) = c0(x2)
+            t[8 * N + i] = t[(SYNTHETIC_PERM * i + 5) % N]                                             # c8 = c0 permuted
     return t^
 
 
@@ -277,11 +314,12 @@ def k_fold_alpha(base: Pointer[UInt8, MutAnyOrigin], families: Int64, count: Int
     var chal = Int(base[unsafe_offset=ent + 32])
     if chal != 0:
         kappa = ext_mul[4](kappa, base.unsafe_load[width=16](Int(chals) + (chal - 1) * 16))
-    var basis = Int(base[unsafe_offset=ent + 33])
-    if basis != NO_BASIS:
-        var b = E(0)
-        b[basis] = 1
-        kappa = ext_mul[4](kappa, b)
+    for i in range(2):
+        var basis = Int(base[unsafe_offset=ent + 33 + i])
+        if basis != NO_BASIS:
+            var b = E(0)
+            b[basis] = 1
+            kappa = ext_mul[4](kappa, b)
     base.unsafe_store[width=16](ent, kappa)
 
 
@@ -323,13 +361,14 @@ struct Family[p: Params](Loader):
         return v
 
 
-def k_values_to_trace[p: Params](base: Pointer[UInt8, MutAnyOrigin], vals: Int64, trace: Int64):
-    """trace[q * e + tau, x] = coordinate tau of Q_q(x) for x in H, Q_q in (A, B, Q2): the quotient
-    coordinate columns are ordinary F-valued columns from here on (see docs/decisions.md)."""
+def k_values_to_trace[p: Params](base: Pointer[UInt8, MutAnyOrigin], vals: Int64, trace: Int64, groups: Int32):
+    """trace[q * e + tau, x] = coordinate tau of V_q(x) for x in H, q < groups, vals (groups, x, e):
+    E-valued columns (A, B, Q2; the accumulators) are ordinary F-valued coordinate columns from here
+    on (see docs/decisions.md)."""
     comptime N = p.N()
     comptime e = p.e
     var gid = _gid()
-    if gid >= 3 * e * N:
+    if gid >= Int(groups) * e * N:
         return
     var c = gid // N
     var x = gid % N
@@ -423,4 +462,4 @@ def quotient[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
         c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
-    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), grid_dim=ceildiv(3 * e * N, BLOCK), block_dim=BLOCK)
+    ctx.enqueue_function[k8](base, Int64(vals), Int64(trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BLOCK), block_dim=BLOCK)

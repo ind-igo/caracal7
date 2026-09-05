@@ -172,14 +172,12 @@ def open[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
                                        grid_dim=ceildiv(total, BLOCK), block_dim=BLOCK)
 
 
-def fold[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                    beta: Int, stored_w: Int, columns_w: Int, stored_q: Int, columns_q: Int, y: Int) raises:
-    """y (slot, e) = sum_c beta_c stored(c) over both trees: one GEMV per tree, the second accumulating."""
+def fold[p: Params, acc: Bool](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
+                               beta: Int, stored: Int, columns: Int, y: Int) raises:
+    """y (slot, e) += sum_c beta_c stored(c) over one tree (beta at the tree's first column): one
+    GEMV per tree, every tree after the first accumulating."""
     comptime N = p.N()
     comptime e = p.e
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, base, strided(
-        a=beta, sa_m=2, sa_k=e, b=stored_w, sb_k=N, sb_hi=1, sb_lo=0,
-        c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns_w)
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1, acc=True](ctx, base, strided(
-        a=beta + columns_w * e, sa_m=2, sa_k=e, b=stored_q, sb_k=N, sb_hi=1, sb_lo=0,
-        c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns_q)
+    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1, acc=acc](ctx, base, strided(
+        a=beta, sa_m=2, sa_k=e, b=stored, sb_k=N, sb_hi=1, sb_lo=0,
+        c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns)

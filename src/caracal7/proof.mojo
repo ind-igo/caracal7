@@ -5,11 +5,12 @@ Order, every integer little-endian, every field element e bytes:
     header      version u32, public inputs (u32 length + bytes); the parameters are bound through
                 the transcript prefix (prefix_bytes), not sent
     W root      H.DIGEST
-    Q root      H.DIGEST                       (Z root, Z2, Q3 join in milestone 2)
-    openings    alpha_{c,p}: P x (columns_w + columns_q) x e
+    Z root      H.DIGEST; Z2 per accumulator (h2 e)
+    Q root      H.DIGEST                       (Q3 joins with the small grid)
+    openings    alpha_{c,p}: P x (columns_w + columns_z + columns_q) x e
     per level l = 2 .. ell-1:
-                Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; two at
-                level 1, W and Q); three sumcheck messages (9 e)
+                Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; three at
+                level 1: W, Z, Q); three sumcheck messages (9 e)
     last        clear vector y_ell (|y_ell| x e); multiproof(s) of level ell-1
 
 Multiproofs are length-prefixed because the sibling frontier depends on the sampled positions.
@@ -23,6 +24,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 from caracal7.params import Params
 from caracal7.arena import Arena
 from caracal7.residual import ENTRY, shift_points
+from caracal7.accumulate import ACC
 from caracal7.hash import Hash
 
 comptime VERSION: UInt32 = 1
@@ -83,39 +85,46 @@ def _log2(x: Float64) -> Float64:
 struct Shape(Writable):
     """Everything the proof size depends on besides Params: set by the IR program."""
     var columns_w: Int          # witness tree
+    var columns_z: Int          # accumulator tree, e coordinate columns per accumulator
     var columns_q: Int          # quotient tree, 3 e coordinate columns
     var points: Int             # P opening points
     var entries: Int            # family table entries (residual.mojo)
+    var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
-    def __init__[p: Params](out self, columns_w: Int, families: List[UInt8]) raises:
+    def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8]()) raises:
         """P and the entry count come from the family table (residual.mojo)."""
         p.check()
-        if len(families) % ENTRY != 0:
-            raise Error("family table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0:
+            raise Error("family or accumulator table is not whole entries")
         self.columns_w = columns_w
+        self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
         self.points = len(shift_points(families)) // 4
         self.entries = len(families) // ENTRY
+        self.accs = accs.copy()
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
+    def accumulators(self) -> Int:
+        return len(self.accs) // ACC
+
     def columns(self) -> Int:
-        return self.columns_w + self.columns_q
+        return self.columns_w + self.columns_z + self.columns_q
 
     def fixed_bytes[p: Params, digest: Int](self, public_bytes: Int) -> Int:
         """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
-        opened (two at level 1: W and Q). Mirrors ProofWriter's order exactly."""
-        var n = 4 + 4 + public_bytes + digest + digest
+        opened (three at level 1: W, Z, Q). Mirrors ProofWriter's order exactly."""
+        var n = 4 + 4 + public_bytes + 3 * digest + self.accumulators() * p.h2() * p.e
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
-            n += digest + (2 if i == 0 else 1) * 4 + 9 * p.e
-        n += self.clear_length * p.e + (2 if len(self.tail) == 0 else 1) * 4
+            n += digest + (3 if i == 0 else 1) * 4 + 9 * p.e
+        n += self.clear_length * p.e + (3 if len(self.tail) == 0 else 1) * 4
         return n
 
     def write_to(self, mut w: Some[Writer]):
-        w.write("Shape(columns=", self.columns_w, "+", self.columns_q, ", P=", self.points,
+        w.write("Shape(columns=", self.columns_w, "+", self.columns_z, "+", self.columns_q, ", P=", self.points,
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
@@ -129,6 +138,7 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], m
               p.lambda_bits, p.queries(), p.n_cw()]:
         w.u32(v)
     w.u32(shape.columns_w)
+    w.u32(shape.columns_z)
     w.u32(shape.columns_q)
     w.u32(shape.points)
     w.u32(len(shape.tail))
@@ -138,6 +148,8 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: List[UInt8], m
     w.u32(shape.clear_length)
     w.u32(len(public_inputs))
     w.bytes.extend(public_inputs.copy())
+    w.u32(len(shape.accs))
+    w.bytes.extend(shape.accs.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(rebind[Pointer[UInt8, MutAnyOrigin]](families.unsafe_ptr()), len(families),
            rebind[Pointer[UInt8, MutAnyOrigin]](digest.unsafe_ptr()))

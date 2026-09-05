@@ -6,6 +6,7 @@ openings at P points, the tail, and the clear vector. No Z tree (milestone 2), n
 """
 
 from std.time import perf_counter_ns
+from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
 from caracal7.params import Params
@@ -13,12 +14,13 @@ from caracal7.arena import Arena, Bump
 from caracal7.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
 from caracal7.encode import EncLayout, encode
 from caracal7.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
-from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
+from caracal7.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
-from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT
+from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT, k_values_to_trace, BLOCK
 from caracal7.open import build_queries, open, open_splits, fold
+from caracal7.accumulate import ACC, accumulate
 from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0
 from caracal7.tail import tail_materialize, tail_round, tail_fold
 
@@ -55,13 +57,22 @@ struct ProverLayout:
     var tables: TableLayout
     var transcript: TranscriptLayout
     var enc_w: EncLayout            # witness tree: trace .. code
+    var enc_z: EncLayout            # accumulator tree: trace .. code (the Z stage writes the trace)
     var enc_q: EncLayout            # quotient tree: trace .. code (quotient writes the trace)
     var tree_w: Int                 # (node, 32), level 0 first, tree_nodes(L0) nodes
+    var tree_z: Int
     var tree_q: Int
     var families: Int               # (entry, ENTRY)        the family table, kappa folded in on device
+    var accs: Int                   # (accumulator, ACC)    accumulator descriptors
     var shifts: Int                 # (P, POINT)            opening points as (dj1, dj2) on G
+    var num: Int                    # (row, e)              the Z stage: N, D, 1/D, Z per accumulator in turn
+    var den: Int
+    var zscratch: Int
+    var zval: Int                   # (accumulator, row, e) Z values, the Z tree's trace before the coordinate split
+    var chain_prod: Int             # (x2, e)
+    var z2: Int                     # (accumulator, x2, e)  Z2 in the clear
     var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
-    var lde: Int                    # (column, G2, G1, 2)   witness columns on the residual grid
+    var lde: Int                    # (column, G2, G1, 2)   witness then accumulator columns on the residual grid
     var residual: Int               # (G2, G1, e)
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
     var w_z: Int                    # (P, slot, e)          evaluation queries
@@ -75,7 +86,8 @@ struct ProverLayout:
     var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
     var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
     # challenges, one region each so nothing is overwritten before its consumer runs
-    var stage1: Int                 # (4, e)                beta_1, delta, gamma, alpha
+    var stage1: Int                 # (3, e)                beta, delta, gamma
+    var alpha: Int                  # (1, e)
     var z: Int                      # (2, e)
     var beta_gamma: Int             # (columns + P, e)      beta per column, gamma per point
     var positions: Int              # (max queries, u32)    S of the level being opened
@@ -92,23 +104,33 @@ struct ProverLayout:
         _ = bump.alloc(self.tables.bytes)
         self.transcript = TranscriptLayout(bump)
         self.enc_w = EncLayout.__init__[p](bump, shape.columns_w)
+        self.enc_z = EncLayout.__init__[p](bump, shape.columns_z)
         self.enc_q = EncLayout.__init__[p](bump, shape.columns_q)
         self.tree_w = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
+        self.tree_z = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.families = bump.alloc(shape.entries * ENTRY)
+        self.accs = bump.alloc(len(shape.accs))
         self.shifts = bump.alloc(shape.points * POINT)
-        self.ltmp = bump.alloc(shape.columns_w * p.h2() * 2 * p.h1() * 2)
-        self.lde = bump.alloc(shape.columns_w * G * 2)
+        self.num = bump.alloc(N * p.e)
+        self.den = bump.alloc(N * p.e)
+        self.zscratch = bump.alloc(N * p.e)
+        self.zval = bump.alloc(shape.accumulators() * N * p.e)
+        self.chain_prod = bump.alloc(p.h2() * p.e)
+        self.z2 = bump.alloc(shape.accumulators() * p.h2() * p.e)
+        self.ltmp = bump.alloc(max(shape.columns_w, shape.columns_z) * p.h2() * 2 * p.h1() * 2)
+        self.lde = bump.alloc((shape.columns_w + shape.columns_z) * G * 2)
         self.residual = bump.alloc(G * p.e)
         self.quotient = bump.alloc(quotient_elems[p]() * p.e)
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
-        self.open_partial = bump.alloc(shape.points * open_splits[p]() * max(shape.columns_w, shape.columns_q) * p.e)
+        self.open_partial = bump.alloc(shape.points * open_splits[p]() * max(shape.columns_w, max(shape.columns_z, shape.columns_q)) * p.e)
         self.fold_y = bump.alloc(N * p.e)
         self.running0 = bump.alloc(N * p.e)
         self.dom1 = bump.alloc(DOM_BYTES)
         var stage = max(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()),
-                        multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries()))
+                        max(multiproof_region[H](4 * p.n_cw() * shape.columns_z, p.L(), p.queries()),
+                            multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries())))
         var max_queries = p.queries()
         var max_v = 4 * p.n_cw() * p.queries()
         for lvl in shape.tail:
@@ -117,7 +139,8 @@ struct ProverLayout:
             max_v = max(max_v, lvl.queries)
         self.proof_stage = bump.alloc(stage)
         self.prefix = bump.alloc(PREFIX_MAX)
-        self.stage1 = bump.alloc(4 * p.e)
+        self.stage1 = bump.alloc(3 * p.e)
+        self.alpha = bump.alloc(p.e)
         self.z = bump.alloc(2 * p.e)
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
         self.positions = bump.alloc(max_queries * 4)
@@ -164,6 +187,8 @@ struct Prover[p: Params, H: Hash]:
             ph[i] = pts[i]
         self.arena.upload(ctx, self.layout.families, fh)
         self.arena.upload(ctx, self.layout.shifts, ph)
+        if len(self.shape.accs) > 0:
+            _upload(ctx, self.arena, self.layout.accs, self.shape.accs)
         _upload(ctx, self.arena, self.layout.dom1, domain_bytes(self.domains.level1))
         for i in range(len(self.shape.tail)):
             var lvl = self.shape.tail[i]
@@ -195,6 +220,7 @@ struct Prover[p: Params, H: Hash]:
         var T = L.transcript
         ref S = self.shape
         var row_w = 4 * Self.p.n_cw() * S.columns_w
+        var row_z = 4 * Self.p.n_cw() * S.columns_z
         var row_q = 4 * Self.p.n_cw() * S.columns_q
         self.proof.reset()
 
@@ -212,20 +238,42 @@ struct Prover[p: Params, H: Hash]:
         absorb[Self.p, Self.H](ctx, base, T, DS_PREFIX, L.prefix, len(prefix))
         self._mark(ctx, profile, "prefix", t0)
 
-        # 3. commit W. Milestone 1 has no Z tree, so alpha is squeezed here as the fourth stage-1 challenge.
+        # 3. commit W -> stage-1 challenges
         encode[Self.p](ctx, base, L.enc_w, L.tables)
         self._mark(ctx, profile, "encode W", t0)
         merkle[Self.p, Self.H](ctx, base, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
         self._mark(ctx, profile, "merkle W", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
-        squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 4)             # beta_1, delta, gamma, alpha
+        squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 3)             # beta, delta, gamma
         self._mark(ctx, profile, "transcript W", t0)
+
+        # 4-7. the Z stage and commit Z with Z2 -> alpha
+        for k in range(S.accumulators()):
+            accumulate[Self.p](ctx, base, L.enc_w.trace, L.accs + k * ACC, L.stage1 + 2 * e, L.num, L.den, L.zscratch,
+                               L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e)
+        if S.columns_z > 0:
+            ctx.enqueue_function[k_values_to_trace[Self.p]](base, Int64(L.zval), Int64(L.enc_z.trace), Int32(S.accumulators()),
+                                                            grid_dim=ceildiv(S.columns_z * N, BLOCK), block_dim=BLOCK)
+            self._mark(ctx, profile, "accumulate", t0)
+            encode[Self.p](ctx, base, L.enc_z, L.tables)
+            self._mark(ctx, profile, "encode Z", t0)
+            merkle[Self.p, Self.H](ctx, base, L.enc_z.code, row_z, Self.p.L(), L.tree_z)
+            self._mark(ctx, profile, "merkle Z", t0)
+        absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
+        self.proof.stage(self.arena, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
+        if S.columns_z > 0:
+            absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, L.z2, S.accumulators() * Self.p.h2() * e)
+            self.proof.stage(self.arena, L.z2, S.accumulators() * Self.p.h2() * e)
+        squeeze_elements[Self.p, Self.H](ctx, base, T, L.alpha, 1)
+        self._mark(ctx, profile, "transcript Z", t0)
 
         # 8-10. residual grid, quotient, commit Q
         lde[Self.p](ctx, base, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
+        if S.columns_z > 0:
+            lde[Self.p](ctx, base, L.enc_z.coeff, S.columns_z, L.tables, L.ltmp, L.lde + S.columns_w * 4 * N * 2)
         self._mark(ctx, profile, "lde", t0)
-        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.stage1 + 3 * e, L.stage1, L.residual)
+        residual[Self.p](ctx, base, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual)
         self._mark(ctx, profile, "residual", t0)
         quotient[Self.p](ctx, base, L.residual, L.tables, L.quotient, L.enc_q.trace)
         self._mark(ctx, profile, "quotient", t0)
@@ -242,7 +290,9 @@ struct Prover[p: Params, H: Hash]:
         build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
         self._mark(ctx, profile, "build_queries", t0)
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.open_partial, L.openings, S.columns())
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + S.columns_w * e, S.columns())
+        if S.columns_z > 0:
+            open[Self.p](ctx, base, L.w_z, S.points, L.enc_z.stored, S.columns_z, L.open_partial, L.openings + S.columns_w * e, S.columns())
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + (S.columns_w + S.columns_z) * e, S.columns())
         self._mark(ctx, profile, "open", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
         self.proof.stage(self.arena, L.openings, S.points * S.columns() * e)
@@ -250,7 +300,10 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, profile, "transcript openings", t0)
 
         # 12. fold to the level-2 message
-        fold[Self.p](ctx, base, L.beta_gamma, L.enc_w.stored, S.columns_w, L.enc_q.stored, S.columns_q, L.fold_y)
+        fold[Self.p, False](ctx, base, L.beta_gamma, L.enc_w.stored, S.columns_w, L.fold_y)
+        if S.columns_z > 0:
+            fold[Self.p, True](ctx, base, L.beta_gamma + S.columns_w * e, L.enc_z.stored, S.columns_z, L.fold_y)
+        fold[Self.p, True](ctx, base, L.beta_gamma + (S.columns_w + S.columns_z) * e, L.enc_q.stored, S.columns_q, L.fold_y)
         self._mark(ctx, profile, "fold", t0)
 
         # 13. tail: each committed level opens the previous one
@@ -316,12 +369,10 @@ struct Prover[p: Params, H: Hash]:
         ref S = self.shape
         if i == 0:
             squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, Self.p.queries(), Self.p.L())
-            var bound = query_gather[Self.p, Self.H](ctx, base, L.enc_w.code, 4 * Self.p.n_cw() * S.columns_w, Self.p.L(),
-                                                     L.tree_w, L.positions, Self.p.queries(), L.proof_stage)
-            self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
-            bound = query_gather[Self.p, Self.H](ctx, base, L.enc_q.code, 4 * Self.p.n_cw() * S.columns_q, Self.p.L(),
-                                                 L.tree_q, L.positions, Self.p.queries(), L.proof_stage)
-            self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+            for tree in [(L.enc_w.code, S.columns_w, L.tree_w), (L.enc_z.code, S.columns_z, L.tree_z), (L.enc_q.code, S.columns_q, L.tree_q)]:
+                var bound = query_gather[Self.p, Self.H](ctx, base, tree[0], 4 * Self.p.n_cw() * tree[1], Self.p.L(),
+                                                         tree[2], L.positions, Self.p.queries(), L.proof_stage)
+                self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
         else:
             var lvl = S.tail[i - 1]
             squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, lvl.queries, lvl.L)
@@ -335,6 +386,7 @@ def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
     bound, and the transcript prefix upload."""
     var n = shape.fixed_bytes[p, H.DIGEST](PREFIX_MAX) + PREFIX_MAX
     n += multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries())
+    n += multiproof_region[H](4 * p.n_cw() * shape.columns_z, p.L(), p.queries())
     n += multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries())
     for lvl in shape.tail:
         n += multiproof_region[H](8 * p.e, lvl.L, lvl.queries)

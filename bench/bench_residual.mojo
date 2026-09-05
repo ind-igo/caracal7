@@ -21,7 +21,7 @@ def main() raises:
     var ctx = DeviceContext()
     var d = Domains.__init__[p]()
     var f = Families()
-    var syn = synthetic_families()
+    var syn = synthetic_families(with_accumulator=False)
     for r in range(ENTRIES // syn.count):
         for k in range(syn.count):
             for i in range(ENTRY):

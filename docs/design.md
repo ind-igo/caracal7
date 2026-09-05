@@ -45,7 +45,9 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 | `packed` | (i, column, 4) | F4 symbols, N/4 per column, column fastest so the RS passes are coalesced |
 | `code` | (s, column, 4) | codeword rows, leaf-major: leaf `s` is contiguous, `4 * columns` bytes (`n_cw = 1`; the split multiplies the row) |
 | `tree` | (level, node, 32) | Blake3 digests, leaves first |
-| `lde` | (column, G2, G1, coord) | evaluations on the residual grid G; 2 coordinates for witness columns, e for accumulators |
+| `num`, `den`, `zval` | (row, e) | the Z stage per accumulator: N, D, then Z; `zval` is split into e coordinate columns as the Z tree's trace (accumulate.mojo) |
+| `z2` | (accumulator, x2, e) | Z2 in the clear |
+| `lde` | (column, G2, G1, 2) | evaluations on the residual grid G: witness columns, then the accumulator coordinate columns (F-valued, so 2 coordinates each) |
 | `residual` | (G2, G1, e) | batched residual, E-valued |
 | `w_tilde` | (slot, e) | the batched query of the current level, reused per level |
 | `round_msgs` | (level, 3, 3, e) | sumcheck messages |
@@ -76,10 +78,11 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `tail_fold` | y, r̄ → y_next | one per row | GEMV with the 8-column matrix |
 | `tail_encode` | y → tail_code | the RS encoder on 32 F4 columns | the 8 E-valued columns are 32 F4 columns to `rs_encode_on`, no inverse; its scatter pass writes the `(s, 8, e)` leaf-major layout |
 | `lde` | coeff → lde | GEMM skeleton, one launch per axis | forward DFT onto `G` with the twist inside the `g_l^(j k)` tables (dense; mixed radix when `h_l` grows) |
+| `accumulate` | trace, gamma → zval, z2 | one thread per chain; one thread for Z2 | factors N, D per row, batched inversion and the running product along each chain, Z2 across chains (spec 10 steps 4-6) |
 | `residual` | lde, tables → residual | the GEMM skeleton, `C[8 lanes, point]` | the fused pass of statement-layer 5 as one GEMM of the kappa table against family rows gathered from the LDE; milestone 1 runs it on synthetic families |
 | `quotient` | residual → trace of A, B, Q2 | GEMM skeleton launches | `Q1` on the coset from `R` over `G1`, inverse DFTs to the `A`, `B`, `Q2` coefficients, forward DFTs to their values on `H`; the coordinate columns then take the witness encoder path |
 
-Milestone 1 ends with the W and Q trees, the residual and quotient on synthetic families, openings at P points, the tail, and the verifier, as the spec's build order says. Milestone 2 adds the Z tree: `factor`, `batch_invert`, `chain_scan`, the small grid and Q3. Milestone 3 adds `radix_sort`.
+Milestone 1 ended with the W and Q trees, the residual and quotient on synthetic families, openings at P points, the tail, and the verifier, as the spec's build order says. Milestone 2 adds the Z tree (`accumulate`, committed through the same encoder and Merkle path, alpha after it), the seven spec points, and the small grid with Q3. Milestone 3 adds `radix_sort`.
 
 Stage order the host enqueues for the tail, per level: commit `Mat(y_l)` (`tail_encode`, `merkle`, transcript absorb) → squeeze `S_{l-1}` → `query_gather` on the previous level → squeeze batching scalars → `tail_materialize` → three times (`tail_round`, absorb, squeeze `r_i`) → `tail_fold`. The last level sends `y_ell` in the clear.
 
@@ -111,6 +114,7 @@ src/caracal7/
   encode.mojo       idft2, to_stored, pack, rs_encode
   hash.mojo         Hash trait, Blake3
   merkle.mojo       tree, query_gather (multiproof)
+  accumulate.mojo   the Z stage: factors, batched inversion, chain scan, Z2
   residual.mojo     lde, residual, quotient
   open.mojo         build_queries, open, fold
   tail.mojo         tail_encode, materialize, round, fold

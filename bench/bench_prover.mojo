@@ -17,7 +17,7 @@ comptime WIDE = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf
 def run[p: Params](name: String) raises:
     var ctx = DeviceContext()
     var f = synthetic_families()
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     _ = prover.prove(ctx, List[UInt8]())
     var t0 = perf_counter_ns()

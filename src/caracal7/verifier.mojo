@@ -4,7 +4,7 @@ checks; every step is a host function over proof bytes and a host `H: Hash`. Ste
 grid, public columns, boundaries) arrive with the Z tree and the frontend.
 
 Step 7 is the tail of spec 9.3 on the host, directly: per committed level the root, the previous
-level's multiproofs against their roots, the expected symbols computed from the opened rows (the E (x) F4
+level's multiproofs against the three roots, the expected symbols computed from the opened rows (the E (x) F4
 alphabet rule of 9.1 at level 1, the r_bar-combined row later), the batched query materialized as a
 vector, three sumcheck checks, and the fold of the query; then the clear vector, its consistency
 at the last opened positions, and <y_ell, w~_ell>. ponytail: O(|y_l|) host work per level; the
@@ -13,13 +13,14 @@ tensor form of 9.3 when a verifier budget exists."""
 from caracal7.params import Params
 from caracal7.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
-from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
+from caracal7.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.tables import Domains, RsDomain
 from caracal7.residual import ENTRY, NONE, entry, shift_points, point_index, point_coord, residual_at
 from caracal7.encode import pack_slot, pack_index
 from caracal7.open import slot_weight
 from caracal7.merkle import check_multiproof, distinct_sorted
+from caracal7.accumulate import ACC, acc_get16
 from caracal7.tail import e_mul_f4, host_e, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 
@@ -39,9 +40,15 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     t.absorb(DS_PREFIX, prefix)
     var root_w = r.take(H.DIGEST)
     t.absorb(DS_TREE_W, root_w)
-    var stage1 = t.elements(4)                      # beta_1, delta, gamma, alpha
+    var stage1 = t.elements(3)                      # beta, delta, gamma
 
-    # step 2: Q root -> z
+    # step 2: Z root and Z2 -> alpha; Q root -> z
+    var root_z = r.take(H.DIGEST)
+    t.absorb(DS_TREE_Z, root_z)
+    var z2v = r.take(shape.accumulators() * p.h2() * p.e)
+    if shape.accumulators() > 0:
+        t.absorb(DS_TREE_Z, z2v)
+    var alpha = t.elements(1)
     var root_q = r.take(H.DIGEST)
     t.absorb(DS_TREE_Q, root_q)
     var z = t.elements(2)
@@ -50,6 +57,27 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var openings = r.take(shape.points * shape.columns() * p.e)
     t.absorb(DS_OPENINGS, openings)
     var beta_gamma = t.elements(shape.columns() + shape.points)
+
+    var one = ext_embed[4](SIMD[DType.uint8, 1](1))
+    # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
+    # (1, z2) (point 2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2)
+    # (point 6). The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
+    var gamma1 = _e[p](stage1, 2)
+    for k in range(shape.accumulators()):
+        var z_col = acc_get16(shape.accs, k, 0)
+        if _coords_at[p](openings, shape, 2, z_col) != one:
+            raise Error("accumulator chain start is not 1")
+        if _e[p](z2v, k * p.h2()) != one:
+            raise Error("Z2(1) is not 1")
+        var n_end = gamma1
+        var d_end = gamma1
+        for j in range(acc_get16(shape.accs, k, 2)):
+            n_end[j] = f_add(n_end[j], _opening[p](openings, shape, 6, acc_get16(shape.accs, k, 6 + 2 * j))[0])
+        for j in range(acc_get16(shape.accs, k, 4)):
+            d_end[j] = f_add(d_end[j], _opening[p](openings, shape, 6, acc_get16(shape.accs, k, 22 + 2 * j))[0])
+        var lhs = ext_mul[4](ext_mul[4](_e[p](z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, 6, z_col)), n_end)
+        if lhs != d_end:
+            raise Error("accumulator grand product is not 1")
 
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     var d = Domains.__init__[p]()
@@ -61,8 +89,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         reads.append(E(0) if en.col_b == NONE else _opening[p](openings, shape, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
     var z1 = _e[p](z, 0)
     var z2 = _e[p](z, 1)
-    var rz = residual_at(families, _e[p](stage1, 3), stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
-    var one = ext_embed[4](SIMD[DType.uint8, 1](1))
+    var rz = residual_at(families, _e[p](alpha, 0), stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
     var z2h = ext_pow[4](z2, p.h2())
     var qa = _quotient_at[p](openings, shape, 0)
     var qb = _quotient_at[p](openings, shape, 1)
@@ -97,7 +124,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var lvl = shape.tail[i]
         var root = r.take(H.DIGEST)
         t.absorb(DS_TAIL_ROOT, root)
-        var prev = _open_previous[p, H](r, t, shape, i, root_w, root_q, roots)
+        var prev = _open_previous[p, H](r, t, shape, i, root_w, root_z, root_q, roots)
         var count = p.queries() if i == 0 else shape.tail[i - 1].queries
         var v_count = 4 * count if i == 0 else count
         # the expected symbols v (9.3) from the opened rows; a function of the transcript, so not sent nor absorbed
@@ -138,7 +165,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         raise Error("shape.clear_length does not match the tail schedule")
     var y = r.take(shape.clear_length * p.e)
     t.absorb(DS_CLEAR, y)
-    var last = _open_previous[p, H](r, t, shape, len(shape.tail), root_w, root_q, roots)
+    var last = _open_previous[p, H](r, t, shape, len(shape.tail), root_w, root_z, root_q, roots)
     r.done()
     for idx in range(len(last.opened)):
         if len(shape.tail) == 0:
@@ -161,32 +188,39 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
 @fieldwise_init
 struct Opened:
     """One level opened: the sampled positions, the distinct ascending list, and its rows
-    (two row sets at level 1: witness and quotient trees)."""
+    (three row sets at level 1: witness, accumulator, and quotient trees)."""
     var positions: List[Int]
     var opened: List[Int]
     var rows_w: List[UInt8]
+    var rows_z: List[UInt8]
     var rows_q: List[UInt8]
     var row_w: Int
+    var row_z: Int
     var row_q: Int
 
 
 def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript[p, H], shape: Shape, i: Int,
-                                       root_w: List[UInt8], root_q: List[UInt8], roots: List[List[UInt8]]) raises -> Opened:
+                                       root_w: List[UInt8], root_z: List[UInt8], root_q: List[UInt8], roots: List[List[UInt8]]) raises -> Opened:
     """Sample S on the level before committed level i (level 1 when i == 0) and check its multiproof(s)."""
     if i == 0:
         var positions = t.positions(p.queries(), p.L())
         var row_w = 4 * shape.columns_w
+        var row_z = 4 * shape.columns_z
         var row_q = 4 * shape.columns_q
         var mp_w = r.prefixed()
         var rows_w = check_multiproof[H](root_w, p.L(), row_w, positions, mp_w)
+        var mp_z = r.prefixed()
+        var rows_z = check_multiproof[H](root_z, p.L(), row_z, positions, mp_z)
         var mp_q = r.prefixed()
         var rows_q = check_multiproof[H](root_q, p.L(), row_q, positions, mp_q)
-        return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows_w^, rows_q=rows_q^, row_w=row_w, row_q=row_q)
+        return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows_w^, rows_z=rows_z^, rows_q=rows_q^,
+                      row_w=row_w, row_z=row_z, row_q=row_q)
     var lvl = shape.tail[i - 1]
     var positions = t.positions(lvl.queries, lvl.L)
     var mp = r.prefixed()
     var rows = check_multiproof[H](roots[i - 1], lvl.L, 8 * p.e, positions, mp)
-    return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows^, rows_q=List[UInt8](), row_w=8 * p.e, row_q=0)
+    return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows^, rows_z=List[UInt8](), rows_q=List[UInt8](),
+                  row_w=8 * p.e, row_z=0, row_q=0)
 
 
 def _index_of(opened: List[Int], s: Int) raises -> Int:
@@ -197,10 +231,17 @@ def _index_of(opened: List[Int], s: Int) raises -> Int:
 
 
 def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: List[UInt8], idx: Int, tau: Int) -> E:
-    """sum_c beta_c coord_tau(X[s, c]) over both trees at opened row idx."""
+    """sum_c beta_c coord_tau(X[s, c]) over the three trees at opened row idx."""
     var acc = E(0)
+    var wz = shape.columns_w + shape.columns_z
     for c in range(shape.columns()):
-        var sym = o.rows_w[idx * o.row_w + c * 4 + tau] if c < shape.columns_w else o.rows_q[idx * o.row_q + (c - shape.columns_w) * 4 + tau]
+        var sym: UInt8
+        if c < shape.columns_w:
+            sym = o.rows_w[idx * o.row_w + c * 4 + tau]
+        elif c < wz:
+            sym = o.rows_z[idx * o.row_z + (c - shape.columns_w) * 4 + tau]
+        else:
+            sym = o.rows_q[idx * o.row_q + (c - wz) * 4 + tau]
         acc = f_add(acc, f_mul(_e[p](beta, c), E(sym)))
     return acc
 
@@ -293,11 +334,16 @@ def _opening[p: Params](openings: List[UInt8], shape: Shape, point: Int, column:
     return _e[p](openings, point * shape.columns() + column)
 
 
-def _quotient_at[p: Params](openings: List[UInt8], shape: Shape, q: Int) -> E:
-    """Q(z) = sum_tau e_tau <w_z, coord_tau(Q)> at point 0 from the quotient coordinate columns."""
+def _coords_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, col0: Int) -> E:
+    """An E-valued column at a point from its e coordinate columns: sum_tau b_tau <w_z, coord_tau>."""
     var acc = E(0)
     for tau in range(p.e):
         var basis = E(0)
         basis[tau] = 1
-        acc = f_add(acc, ext_mul[4](basis, _opening[p](openings, shape, 0, shape.columns_w + q * p.e + tau)))
+        acc = f_add(acc, ext_mul[4](basis, _opening[p](openings, shape, point, col0 + tau)))
     return acc
+
+
+def _quotient_at[p: Params](openings: List[UInt8], shape: Shape, q: Int) -> E:
+    """Q(z) for Q in (A, B, Q2) from the quotient coordinate columns at point 0."""
+    return _coords_at[p](openings, shape, 0, shape.columns_w + shape.columns_z + q * p.e)

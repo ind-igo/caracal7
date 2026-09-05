@@ -18,9 +18,9 @@ comptime p = REFERENCE
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var s = tail_schedule[p]()
     assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
-    var shape = Shape.__init__[p](53, synthetic_families().bytes)
+    var shape = Shape.__init__[p](53, synthetic_families(53).bytes, synthetic_families(53).accs)
     assert_equal(shape.clear_length, p.N())
-    assert_equal(shape.columns(), 53 + 48)
+    assert_equal(shape.columns(), 53 + 16 + 48)
 
 
 def test_tail_schedule_folds_a_larger_grid() raises:
@@ -36,7 +36,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].L, 18432)
     assert_equal(s[1].cosets, 4)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
-    var shape = Shape.__init__[big](357, synthetic_families().bytes)
+    var shape = Shape.__init__[big](357, synthetic_families(357).bytes, synthetic_families(357).accs)
     assert_equal(shape.clear_length, 576)
 
 
@@ -51,12 +51,12 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var shape = Shape.__init__[narrow](43, synthetic_families().bytes)
+    var shape = Shape.__init__[narrow](43, synthetic_families(43).bytes, synthetic_families(43).accs)
     assert_equal(shape.clear_length, 3969)
 
 
 def test_layout_plans_the_arena() raises:
-    var shape = Shape.__init__[p](53, synthetic_families().bytes)
+    var shape = Shape.__init__[p](53, synthetic_families(53).bytes, synthetic_families(53).accs)
     var L = ProverLayout.__init__[p, Blake3](shape)
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
@@ -64,7 +64,7 @@ def test_layout_plans_the_arena() raises:
     for off in [L.tree_w, L.tree_q, L.families, L.shifts, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
                 L.prefix, L.stage1, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
-    print("arena for 53 + 48 columns:", L.bytes // (1 << 20), "MiB")
+    print("arena for 53 + 16 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
 
 def test_prove_and_verify() raises:
@@ -72,21 +72,26 @@ def test_prove_and_verify() raises:
     it verifies end to end, and one flipped byte in each region fails the check that owns it."""
     var ctx = DeviceContext()
     var f = synthetic_families()
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
     assert_equal(shape.points, 9)                 # the seven of spec 3, then (omega1^3 z1, z2), (z1, omega2 z2)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())
     var fixed = shape.fixed_bytes[p, 32](0)
     assert_true(len(proof) > fixed, "proof shorter than its fixed part")
     print("proof bytes:", len(proof), " fixed:", fixed)
     assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
-    var openings = 8 + 64
+    var openings = 8 + 3 * 32 + shape.accumulators() * p.h2() * p.e
     var clear = openings + shape.points * shape.columns() * p.e
     var multiproof = clear + shape.clear_length * p.e
     # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
     # itself only sees a dishonest y with a matching frontier, which no byte flip produces
+    var z2_bytes = 8 + 2 * 32
+    var z_open = openings + (2 * shape.columns() + shape.columns_w) * p.e     # Z coordinate 0 at point (1, z2)
     for tamper in [(openings + 5, "residual identity fails at z"),
+                   (z2_bytes + 1, "Z2(1) is not 1"),
+                   (z2_bytes + (p.h2() - 1) * p.e + 2, "accumulator grand product is not 1"),
+                   (z_open + 3, "accumulator chain start is not 1"),
                    (clear + 3, "multiproof"),          # truncated or trailing bytes, by where S lands
                    (multiproof + 4 + 7, "multiproof root mismatch"),
                    (len(proof) - 1, "multiproof root mismatch")]:
@@ -106,9 +111,9 @@ def test_prove_and_verify_with_tail() raises:
                           tail_digits=3, tail_clear_max=2500, lambda_bits=103)
     var ctx = DeviceContext()
     var f = synthetic_families()
-    var shape = Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes)
+    var shape = Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes, f.accs)
     assert_equal(len(shape.tail), 2)
-    var prover = Prover[big, Blake3](ctx, Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    var prover = Prover[big, Blake3](ctx, Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
     load_trace[big, Blake3](ctx, prover, synthetic_trace[big](1))
     var t0 = perf_counter_ns()
     var proof = prover.prove(ctx, List[UInt8]())
@@ -117,9 +122,9 @@ def test_prove_and_verify_with_tail() raises:
     var t2 = perf_counter_ns()
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
-    # a flipped byte in the first level's sumcheck messages: after its root and the two level-1 multiproofs
-    var pos = 8 + 64 + shape.points * shape.columns() * big.e + 32
-    for _ in range(2):
+    # a flipped byte in the first level's sumcheck messages: after its root and the three level-1 multiproofs
+    var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
+    for _ in range(3):
         var n = Int(proof[pos]) | Int(proof[pos + 1]) << 8 | Int(proof[pos + 2]) << 16 | Int(proof[pos + 3]) << 24
         pos += 4 + n
     var bad = proof.copy()

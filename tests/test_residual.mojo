@@ -38,7 +38,7 @@ struct Run:
     def __init__(out self) raises:
         var ctx = DeviceContext()
         self.d = Domains.__init__[p]()
-        var f = synthetic_families()
+        var f = synthetic_families(with_accumulator=False)
         self.fam = f.bytes.copy()
         var bump = Bump()
         var enc = EncLayout.__init__[p](bump, C)
