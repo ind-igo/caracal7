@@ -60,6 +60,8 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
     var o_z = bump.alloc(N * 16)
     var o_prod = bump.alloc(h2 * 16)
     var o_z2 = bump.alloc(h2 * 16)
+    var o_nend = bump.alloc(h2 * 16)
+    var o_dend = bump.alloc(h2 * 16)
     var arena = Arena(ctx, bump.used)
     arena.upload(ctx, o_trace, _host(ctx, trace))
     arena.upload(ctx, o_acc, _host(ctx, f.accs))
@@ -67,7 +69,7 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
     for t in range(16):
         gl.append(gamma[t])
     arena.upload(ctx, o_gamma, _host(ctx, gl))
-    accumulate[p](ctx, arena.base(), o_trace, o_acc, o_gamma, o_num, o_den, o_scratch, o_z, o_prod, o_z2)
+    accumulate[p](ctx, arena.base(), o_trace, o_acc, o_gamma, o_num, o_den, o_scratch, o_z, o_prod, o_z2, o_nend, o_dend)
     var z = _down(ctx, arena, o_z, N * 16)
     var z2 = _down(ctx, arena, o_z2, h2 * 16)
     var prod = _down(ctx, arena, o_prod, h2 * 16)
@@ -93,6 +95,11 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
         assert_true(_e(z2, x2 + 1) == ext_mul[4](_e(z2, x2), _e(prod, x2)), "Z2 recurrence fails")
     assert_true(ext_mul[4](_e(z2, h2 - 1), _e(prod, h2 - 1)) == one, "grand product is not 1: c8 is not a permutation of c0")
     assert_true(_e(z, N - 1) != one, "vacuous")
+    var nend = _down(ctx, arena, o_nend, h2 * 16)
+    var dend = _down(ctx, arena, o_dend, h2 * 16)
+    for x2 in range(h2):
+        assert_true(_e(nend, x2) == host_factor(f.accs, 0, trace, N, x2 * h1 + h1 - 1, gamma, False), "chain-end N")
+        assert_true(_e(dend, x2) == host_factor(f.accs, 0, trace, N, x2 * h1 + h1 - 1, gamma, True), "chain-end D")
 
 
 def main() raises:

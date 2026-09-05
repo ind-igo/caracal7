@@ -81,7 +81,8 @@ def test_prove_and_verify() raises:
     assert_true(len(proof) > fixed, "proof shorter than its fixed part")
     print("proof bytes:", len(proof), " fixed:", fixed)
     assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
-    var openings = 8 + 3 * 32 + shape.accumulators() * p.h2() * p.e
+    var q3_bytes = 8 + 3 * 32 + shape.accumulators() * p.h2() * p.e
+    var openings = q3_bytes + 2 * p.h2() * p.e
     var clear = openings + shape.points * shape.columns() * p.e
     var multiproof = clear + shape.clear_length * p.e
     # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
@@ -92,6 +93,7 @@ def test_prove_and_verify() raises:
                    (z2_bytes + 1, "Z2(1) is not 1"),
                    (z2_bytes + (p.h2() - 1) * p.e + 2, "accumulator grand product is not 1"),
                    (z_open + 3, "accumulator chain start is not 1"),
+                   (q3_bytes + 7, "small grid identity fails at z2"),
                    (clear + 3, "multiproof"),          # truncated or trailing bytes, by where S lands
                    (multiproof + 4 + 7, "multiproof root mismatch"),
                    (len(proof) - 1, "multiproof root mismatch")]:
@@ -123,7 +125,7 @@ def test_prove_and_verify_with_tail() raises:
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
     # a flipped byte in the first level's sumcheck messages: after its root and the three level-1 multiproofs
-    var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
+    var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + 2 * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
     for _ in range(3):
         var n = Int(proof[pos]) | Int(proof[pos + 1]) << 8 | Int(proof[pos + 2]) << 16 | Int(proof[pos + 3]) << 24
         pos += 4 + n

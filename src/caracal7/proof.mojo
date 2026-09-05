@@ -6,7 +6,7 @@ Order, every integer little-endian, every field element e bytes:
                 the transcript prefix (prefix_bytes), not sent
     W root      H.DIGEST
     Z root      H.DIGEST; Z2 per accumulator (h2 e)
-    Q root      H.DIGEST                       (Q3 joins with the small grid)
+    Q root      H.DIGEST; Q3 (2 h2 e) when there are accumulators
     openings    alpha_{c,p}: P x (columns_w + columns_z + columns_q) x e
     per level l = 2 .. ell-1:
                 Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; three at
@@ -117,6 +117,8 @@ struct Shape(Writable):
         """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
         opened (three at level 1: W, Z, Q). Mirrors ProofWriter's order exactly."""
         var n = 4 + 4 + public_bytes + 3 * digest + self.accumulators() * p.h2() * p.e
+        if self.accumulators() > 0:
+            n += 2 * p.h2() * p.e
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
             n += digest + (3 if i == 0 else 1) * 4 + 9 * p.e

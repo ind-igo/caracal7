@@ -21,6 +21,7 @@ from caracal7.encode import pack_slot, pack_index
 from caracal7.open import slot_weight
 from caracal7.merkle import check_multiproof, distinct_sorted
 from caracal7.accumulate import ACC, acc_get16
+from caracal7.smallgrid import interp_cyclic
 from caracal7.tail import e_mul_f4, host_e, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 
@@ -51,6 +52,10 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var alpha = t.elements(1)
     var root_q = r.take(H.DIGEST)
     t.absorb(DS_TREE_Q, root_q)
+    var q3 = List[UInt8]()
+    if shape.accumulators() > 0:
+        q3 = r.take(2 * p.h2() * p.e)
+        t.absorb(DS_TREE_Q, q3)
     var z = t.elements(2)
 
     # openings -> beta, gamma
@@ -69,14 +74,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             raise Error("accumulator chain start is not 1")
         if _e[p](z2v, k * p.h2()) != one:
             raise Error("Z2(1) is not 1")
-        var n_end = gamma1
-        var d_end = gamma1
-        for j in range(acc_get16(shape.accs, k, 2)):
-            n_end[j] = f_add(n_end[j], _opening[p](openings, shape, 6, acc_get16(shape.accs, k, 6 + 2 * j))[0])
-        for j in range(acc_get16(shape.accs, k, 4)):
-            d_end[j] = f_add(d_end[j], _opening[p](openings, shape, 6, acc_get16(shape.accs, k, 22 + 2 * j))[0])
-        var lhs = ext_mul[4](ext_mul[4](_e[p](z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, 6, z_col)), n_end)
-        if lhs != d_end:
+        var lhs = ext_mul[4](ext_mul[4](_e[p](z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, 6, z_col)),
+                             _factor_at[p](openings, shape, 6, shape.accs, k, gamma1, False))
+        if lhs != _factor_at[p](openings, shape, 6, shape.accs, k, gamma1, True):
             raise Error("accumulator grand product is not 1")
 
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
@@ -89,6 +89,24 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         reads.append(E(0) if en.col_b == NONE else _opening[p](openings, shape, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
     var z1 = _e[p](z, 0)
     var z2 = _e[p](z, 1)
+
+    # step 3, the small grid (spec 7.4): R2(z2) = Q3(z2) (z2^h2 - 1), R2 from Z2 interpolated at z2 and
+    # omega2 z2, Q3 interpolated on G2, and the openings at (e1, z2) (point 3)
+    if shape.accumulators() > 0:
+        var e2 = ext_embed[4](ext_pow[1](d.omega2, p.h2() - 1))
+        var w2 = ext_embed[4](d.omega2)
+        var r2 = E(0)
+        for k in range(shape.accumulators()):
+            var za = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, z2)
+            var zb = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
+            var c = _coords_at[p](openings, shape, 3, acc_get16(shape.accs, k, 0))
+            var n_z = _factor_at[p](openings, shape, 3, shape.accs, k, gamma1, False)
+            var d_z = _factor_at[p](openings, shape, 3, shape.accs, k, gamma1, True)
+            var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
+            r2 = f_add(r2, ext_mul[4](ext_pow[4](_e[p](alpha, 0), k), term))
+        var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)
+        if r2 != ext_mul[4](q3z, f_sub(ext_pow[4](z2, p.h2()), one)):
+            raise Error("small grid identity fails at z2")
     var rz = residual_at(families, _e[p](alpha, 0), stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
     var z2h = ext_pow[4](z2, p.h2())
     var qa = _quotient_at[p](openings, shape, 0)
@@ -332,6 +350,16 @@ def _e[p: Params](l: List[UInt8], i: Int) -> E:
 
 def _opening[p: Params](openings: List[UInt8], shape: Shape, point: Int, column: Int) -> E:
     return _e[p](openings, point * shape.columns() + column)
+
+
+def _factor_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, accs: List[UInt8], k: Int, gamma: E, den: Bool) -> E:
+    """N or D of accumulator k at an opening point: gamma + sum_j b_j c_j(point) (accumulate.mojo)."""
+    var v = gamma
+    for j in range(acc_get16(accs, k, 4 if den else 2)):
+        var b = E(0)
+        b[j] = 1
+        v = f_add(v, ext_mul[4](b, _opening[p](openings, shape, point, acc_get16(accs, k, (22 if den else 6) + 2 * j))))
+    return v
 
 
 def _coords_at[p: Params](openings: List[UInt8], shape: Shape, point: Int, col0: Int) -> E:

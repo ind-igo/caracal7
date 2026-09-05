@@ -11,6 +11,7 @@ Buffers (bytes; slowest ... fastest), per accumulator:
     zscratch     (row, e)     prefix products of D, then 1 / D
     zval         (row, e)     Z(x) with Z(1, x2) = 1 and Z(next) = Z N / D along the chain (7.2)
     chain_prod   (x2, e)      Z(e1, x2) N(e1, x2) / D(e1, x2), the whole chain's product
+    n_end, d_end (x2, e)      N(e1, x2), D(e1, x2): the small grid's lines (smallgrid.mojo)
     z2           (x2, e)      Z2(1) = 1, Z2(omega2 x2) = Z2(x2) chain_prod(x2) (7.3, (W) for (P))
 
 ponytail: one thread per chain (h1 sequential E products, h2 threads) and one thread for Z2; the
@@ -75,7 +76,8 @@ def k_factors[p: Params](base: Pointer[UInt8, MutAnyOrigin], trace: Int64, acc: 
     base.unsafe_store[width=16](Int(den) + row * 16, d)
 
 
-def k_chain_scan[p: Params](base: Pointer[UInt8, MutAnyOrigin], num: Int64, den: Int64, scratch: Int64, zval: Int64, chain_prod: Int64):
+def k_chain_scan[p: Params](base: Pointer[UInt8, MutAnyOrigin], num: Int64, den: Int64, scratch: Int64, zval: Int64, chain_prod: Int64,
+                            n_end: Int64, d_end: Int64):
     """One thread per chain x2: batched inversion of D along the chain (prefix products, one inverse,
     backward pass), then Z(1, x2) = 1, Z(next) = Z N / D, and the chain's whole product."""
     comptime h1 = p.h1()
@@ -98,6 +100,8 @@ def k_chain_scan[p: Params](base: Pointer[UInt8, MutAnyOrigin], num: Int64, den:
         base.unsafe_store[width=16](Int(zval) + (row0 + i) * 16, z)
         z = ext_mul[4](z, ext_mul[4](_e(base, Int(num) + (row0 + i) * 16), _e(base, Int(scratch) + (row0 + i) * 16)))
     base.unsafe_store[width=16](Int(chain_prod) + x2 * 16, z)
+    base.unsafe_store[width=16](Int(n_end) + x2 * 16, _e(base, Int(num) + (row0 + h1 - 1) * 16))
+    base.unsafe_store[width=16](Int(d_end) + x2 * 16, _e(base, Int(den) + (row0 + h1 - 1) * 16))
 
 
 def k_z2[p: Params](base: Pointer[UInt8, MutAnyOrigin], chain_prod: Int64, z2: Int64):
@@ -111,13 +115,13 @@ def k_z2[p: Params](base: Pointer[UInt8, MutAnyOrigin], chain_prod: Int64, z2: I
 
 
 def accumulate[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], trace: Int, acc: Int, gamma: Int,
-                          num: Int, den: Int, scratch: Int, zval: Int, chain_prod: Int, z2: Int) raises:
-    """One accumulator: its descriptor at `acc`, Z into zval (row, e), Z2 into z2 (h2, e)."""
+                          num: Int, den: Int, scratch: Int, zval: Int, chain_prod: Int, z2: Int, n_end: Int, d_end: Int) raises:
+    """One accumulator: its descriptor at `acc`, Z into zval (row, e), Z2 into z2 (h2, e), the chain-end factors into n_end, d_end (h2, e)."""
     comptime N = p.N()
     ctx.enqueue_function[k_factors[p]](base, Int64(trace), Int64(acc), Int64(gamma), Int64(num), Int64(den),
                                        grid_dim=ceildiv(N, BLOCK), block_dim=BLOCK)
     ctx.enqueue_function[k_chain_scan[p]](base, Int64(num), Int64(den), Int64(scratch), Int64(zval), Int64(chain_prod),
-                                          grid_dim=ceildiv(p.h2(), 32), block_dim=32)
+                                          Int64(n_end), Int64(d_end), grid_dim=ceildiv(p.h2(), 32), block_dim=32)
     ctx.enqueue_function[k_z2[p]](base, Int64(chain_prod), Int64(z2), grid_dim=1, block_dim=1)
 
 
