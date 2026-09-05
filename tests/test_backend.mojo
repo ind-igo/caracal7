@@ -81,10 +81,10 @@ def test_f4() raises:
             for n in range(N):
                 var acc = F4(0)
                 for k in range(K):
-                    var x = h.unsafe_ptr().load[width=4](a + ((z * M + m) * K + k) * 4)
-                    var y = h.unsafe_ptr().load[width=4](b + ((z * K + k) * N + n) * 4)
+                    var x = h.unsafe_ptr().unsafe_load[width=4](a + ((z * M + m) * K + k) * 4)
+                    var y = h.unsafe_ptr().unsafe_load[width=4](b + ((z * K + k) * N + n) * 4)
                     acc = f_add(acc, ext_mul[2](x, y))
-                if acc != h.unsafe_ptr().load[width=4](c + ((z * M + m) * N + n) * 4):
+                if acc != h.unsafe_ptr().unsafe_load[width=4](c + ((z * M + m) * N + n) * 4):
                     bad += 1
     assert_equal(bad, 0)
 

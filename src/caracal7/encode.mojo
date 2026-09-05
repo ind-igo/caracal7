@@ -135,14 +135,14 @@ def k_to_stored[p: Params](base: Pointer[UInt8, MutAnyOrigin], coeff: Int64, sto
     var r2 = r // p.m1
     var acc = F2(0)
     for y2 in range(p.m2):
-        var s2 = base[Int(rho2) + (y2 * r2) % p.m2]
+        var s2 = base[unsafe_offset=Int(rho2) + (y2 * r2) % p.m2]
         for y1 in range(p.m1):
-            var s1 = base[Int(rho1) + (y1 * r1) % p.m1]
+            var s1 = base[unsafe_offset=Int(rho1) + (y1 * r1) % p.m1]
             var k1 = x1 + (1 << p.a1) * y1
             var k2 = x2 + (1 << p.a2) * y2
             var v = _ld[2](base, Int(coeff) + ((c * h2 + k2) * h1 + k1) * 2)
             acc = f_add(acc, f_mul(v, F2(f_mul(SIMD[DType.uint8, 1](s1), SIMD[DType.uint8, 1](s2))[0])))
-    base[Int(stored) + gid] = acc[coord]
+    base[unsafe_offset=Int(stored) + gid] = acc[coord]
 
 
 # ---- pack: four slots on the packing digit -> one F4 symbol ----
@@ -182,7 +182,7 @@ def k_pack[p: Params](base: Pointer[UInt8, MutAnyOrigin], stored: Int64, packed:
     var i = gid // Int(columns)
     var v = F4(0)
     comptime for j in range(4):
-        v[j] = base[Int(stored) + c * N + pack_slot[p](i, j)]
+        v[j] = base[unsafe_offset=Int(stored) + c * N + pack_slot[p](i, j)]
     _st(base, Int(packed) + gid * 4, v)
 
 

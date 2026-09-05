@@ -44,7 +44,7 @@ def e_mul_f4(v: E, w: F4) -> E:
         var s = ext_mul[2](v.slice[4, offset=4 * k](), w)
         comptime for c in range(4):
             out[4 * k + c] = s[c]
-    return out^
+    return out
 
 
 @always_inline

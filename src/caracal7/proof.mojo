@@ -18,7 +18,7 @@ Everything else has a size fixed by `Shape`, so the verifier can check the total
 """
 
 from std.math import log2
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
@@ -257,7 +257,7 @@ struct ProofWriter:
             var start = self.starts[i]
             var stop = start + self.lens[i]
             if self.multiproof[i]:
-                var n = Int(src[start]) | Int(src[start + 1]) << 8 | Int(src[start + 2]) << 16 | Int(src[start + 3]) << 24
+                var n = Int(src[unsafe_offset=start]) | Int(src[unsafe_offset=start + 1]) << 8 | Int(src[unsafe_offset=start + 2]) << 16 | Int(src[unsafe_offset=start + 3]) << 24
                 if n < 4 or n > self.lens[i]:
                     raise Error("multiproof header out of range")
                 stop = start + n        # n bytes: the header becomes the u32 prefix, then the body
@@ -273,12 +273,12 @@ struct ProofWriter:
                 var w = _U32Writer()
                 w.u32(n - 4)
                 for j in range(4):
-                    dst[at + j] = w.bytes[j]
+                    dst[unsafe_offset=at + j] = w.bytes[j]
                 at += 4
-                memcpy(dest=dst + at, src=src + starts[i] + 4, count=n - 4)
+                unsafe_memcpy(dest=dst.unsafe_offset(at), src=src.unsafe_offset(starts[i] + 4), count=n - 4)
                 at += n - 4
             else:
-                memcpy(dest=dst + at, src=src + starts[i], count=stops[i] - starts[i])
+                unsafe_memcpy(dest=dst.unsafe_offset(at), src=src.unsafe_offset(starts[i]), count=stops[i] - starts[i])
                 at += stops[i] - starts[i]
         return out^
 
