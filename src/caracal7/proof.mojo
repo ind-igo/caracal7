@@ -17,6 +17,7 @@ Everything else has a size fixed by `Shape`, so the verifier can check the total
 """
 
 from std.math import log2
+from std.memory import memcpy
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.params import Params
@@ -158,27 +159,52 @@ struct _U32Writer:
 
 
 struct ProofWriter:
-    """Collects the proof in order. Host values are copied in; device values are staged as async
-    copies out of the arena and assembled after the one synchronize at the end of `prove`, so the
-    prover never waits on a read-back mid-stream. A staged multiproof carries its byte count in its
-    first u32 (merkle.mojo) and is emitted length-prefixed and trimmed."""
+    """Collects the proof in order into one host staging pool allocated once per prover (design
+    rule 6). Host values are written into the pool directly; device values are staged as async
+    copies out of the arena into the pool and assembled after the one synchronize in `finish`, so
+    the prover never waits on a read-back mid-stream. A staged multiproof carries its byte count in
+    its first u32 (merkle.mojo) and is emitted length-prefixed and trimmed."""
     var ctx: DeviceContext
-    var bufs: List[HostBuffer[DType.uint8]]
+    var pool: HostBuffer[DType.uint8]
+    var pos: Int
+    var starts: List[Int]
+    var lens: List[Int]
     var multiproof: List[Bool]
 
-    def __init__(out self, ctx: DeviceContext):
+    def __init__(out self, ctx: DeviceContext, bytes: Int) raises:
         self.ctx = ctx
-        self.bufs = List[HostBuffer[DType.uint8]]()
+        self.pool = ctx.enqueue_create_host_buffer[DType.uint8](bytes)
+        ctx.synchronize()
+        self.pos = 0
+        self.starts = List[Int]()
+        self.lens = List[Int]()
         self.multiproof = List[Bool]()
+
+    def reset(mut self):
+        self.pos = 0
+        self.starts.clear()
+        self.lens.clear()
+        self.multiproof.clear()
+
+    def _take(mut self, bytes: Int) raises -> Int:
+        var start = self.pos
+        if start + bytes > len(self.pool):
+            raise Error("proof staging pool exhausted")
+        self.pos += bytes
+        return start
+
+    def scratch(mut self, bytes: Int) raises -> HostBuffer[DType.uint8]:
+        """A pool region that is not part of the proof (host bytes to upload)."""
+        return self.pool.create_sub_buffer[DType.uint8](self._take(bytes), bytes)
 
     def raw(mut self, src: List[UInt8]) raises:
         if len(src) == 0:
             return
-        var h = self.ctx.enqueue_create_host_buffer[DType.uint8](len(src))
-        self.ctx.synchronize()
+        var start = self._take(len(src))
         for i in range(len(src)):
-            h[i] = src[i]
-        self.bufs.append(h^)
+            self.pool[start + i] = src[i]
+        self.starts.append(start)
+        self.lens.append(len(src))
         self.multiproof.append(False)
 
     def u32(mut self, v: Int) raises:
@@ -191,28 +217,45 @@ struct ProofWriter:
         self.raw(src)
 
     def stage(mut self, arena: Arena, off: Int, bytes: Int, multiproof: Bool = False) raises:
-        var h = self.ctx.enqueue_create_host_buffer[DType.uint8](bytes)
-        arena.download(self.ctx, off, h)
-        self.bufs.append(h^)
+        var start = self._take(bytes)
+        arena.download(self.ctx, off, self.pool.create_sub_buffer[DType.uint8](start, bytes))
+        self.starts.append(start)
+        self.lens.append(bytes)
         self.multiproof.append(multiproof)
 
     def finish(mut self) raises -> List[UInt8]:
         self.ctx.synchronize()
-        var out = List[UInt8]()
-        for i in range(len(self.bufs)):
-            ref h = self.bufs[i]
-            var start = 0
-            var stop = len(h)
+        var src = self.pool.unsafe_ptr()
+        var starts = List[Int]()      # trimmed segments and their u32 prefixes
+        var stops = List[Int]()
+        var total = 0
+        for i in range(len(self.starts)):
+            var start = self.starts[i]
+            var stop = start + self.lens[i]
             if self.multiproof[i]:
-                stop = Int(h[0]) | Int(h[1]) << 8 | Int(h[2]) << 16 | Int(h[3]) << 24
-                if stop < 4 or stop > len(h):
+                var n = Int(src[start]) | Int(src[start + 1]) << 8 | Int(src[start + 2]) << 16 | Int(src[start + 3]) << 24
+                if n < 4 or n > self.lens[i]:
                     raise Error("multiproof header out of range")
-                start = 4
+                stop = start + n        # n bytes: the header becomes the u32 prefix, then the body
+            starts.append(start)
+            stops.append(stop)
+            total += stop - start
+        var out = List[UInt8](unsafe_uninit_length=total)
+        var dst = out.unsafe_ptr()
+        var at = 0
+        for i in range(len(starts)):
+            if self.multiproof[i]:
+                var n = stops[i] - starts[i]        # the body follows its own header; emit n - 4 then the body
                 var w = _U32Writer()
-                w.u32(stop - 4)
-                out.extend(w.bytes.copy())
-            for j in range(start, stop):
-                out.append(h[j])
+                w.u32(n - 4)
+                for j in range(4):
+                    dst[at + j] = w.bytes[j]
+                at += 4
+                memcpy(dest=dst + at, src=src + starts[i] + 4, count=n - 4)
+                at += n - 4
+            else:
+                memcpy(dest=dst + at, src=src + starts[i], count=stops[i] - starts[i])
+                at += stops[i] - starts[i]
         return out^
 
 

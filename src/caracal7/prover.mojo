@@ -143,6 +143,7 @@ struct Prover[p: Params, H: Hash]:
     var domains: Domains
     var profile_names: List[String]     # filled by prove(profile=True): stage label and ms, in order
     var profile_ms: List[Int]
+    var proof: ProofWriter          # host staging pool, sized once from the shape
 
     def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
         if len(families) != shape.entries * ENTRY:
@@ -154,6 +155,7 @@ struct Prover[p: Params, H: Hash]:
         self.domains = Domains.__init__[Self.p]()
         self.profile_names = List[String]()
         self.profile_ms = List[Int]()
+        self.proof = ProofWriter(ctx, proof_pool_bytes[Self.p, Self.H](self.shape))
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
         var pts = shift_points(self.families)
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
@@ -197,16 +199,15 @@ struct Prover[p: Params, H: Hash]:
         ref S = self.shape
         var row_w = 4 * Self.p.n_cw() * S.columns_w
         var row_q = 4 * Self.p.n_cw() * S.columns_q
-        var proof = ProofWriter(ctx)
+        self.proof.reset()
 
         # header and transcript prefix (spec 9.4, statement-layer 6 step 1)
-        proof.u32(Int(VERSION))
-        proof.prefixed(public_inputs)
+        self.proof.u32(Int(VERSION))
+        self.proof.prefixed(public_inputs)
         var prefix = prefix_bytes[Self.p, Self.H](S, public_inputs, self.families)
         if len(prefix) > PREFIX_MAX:
             raise Error("public inputs too large for the prefix region")
-        var prefix_host = ctx.enqueue_create_host_buffer[DType.uint8](len(prefix))
-        ctx.synchronize()
+        var prefix_host = self.proof.scratch(len(prefix))
         for i in range(len(prefix)):
             prefix_host[i] = prefix[i]
         self.arena.upload(ctx, L.prefix, prefix_host)
@@ -220,7 +221,7 @@ struct Prover[p: Params, H: Hash]:
         merkle[Self.p, Self.H](ctx, base, L.enc_w.code, row_w, Self.p.L(), L.tree_w)
         self._mark(ctx, profile, "merkle W", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
-        proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
+        self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.stage1, 4)             # beta_1, delta, gamma, alpha
         self._mark(ctx, profile, "transcript W", t0)
 
@@ -236,7 +237,7 @@ struct Prover[p: Params, H: Hash]:
         merkle[Self.p, Self.H](ctx, base, L.enc_q.code, row_q, Self.p.L(), L.tree_q)
         self._mark(ctx, profile, "merkle Q", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Q, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
-        proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
+        self.proof.stage(self.arena, root_offset[Self.H](L.tree_q, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.z, 2)                  # z = (z1, z2)
         self._mark(ctx, profile, "transcript Q", t0)
 
@@ -247,7 +248,7 @@ struct Prover[p: Params, H: Hash]:
         open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + S.columns_w * e, S.columns())
         self._mark(ctx, profile, "open", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
-        proof.stage(self.arena, L.openings, S.points * S.columns() * e)
+        self.proof.stage(self.arena, L.openings, S.points * S.columns() * e)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.beta_gamma, S.columns() + S.points)
         self._mark(ctx, profile, "transcript openings", t0)
 
@@ -269,8 +270,8 @@ struct Prover[p: Params, H: Hash]:
             merkle[Self.p, Self.H](ctx, base, tl.code, 8 * e, lvl.L, tl.tree)
             self._mark(ctx, profile, "tail merkle " + String(i), t0)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
-            proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
-            self._open_previous(ctx, i, T, proof)
+            self.proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
+            self._open_previous(ctx, i, T)
             self._mark(ctx, profile, "open previous " + String(i), t0)
             var count = self._prev_queries(i)
             var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
@@ -282,7 +283,7 @@ struct Prover[p: Params, H: Hash]:
                 expected_tail(ctx, base, L.positions, count, L.tail[i - 1].code, L.r, tl.v)
             self._mark(ctx, profile, "expected symbols " + String(i), t0)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
-            proof.stage(self.arena, tl.v, self._v_count(i) * e)
+            self.proof.stage(self.arena, tl.v, self._v_count(i) * e)
             squeeze_elements[Self.p, Self.H](ctx, base, T, L.batch, self._v_count(i) + 1)   # batching scalars
             self._mark(ctx, profile, "transcript v " + String(i), t0)
             tail_materialize[Self.p](ctx, base, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
@@ -291,7 +292,7 @@ struct Prover[p: Params, H: Hash]:
                 tail_round(ctx, base, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)
                 absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_ROUND, tl.rounds + d * 3 * e, 3 * e)
                 squeeze_elements[Self.p, Self.H](ctx, base, T, L.r + d * e, 1)          # r_d
-            proof.stage(self.arena, tl.rounds, 9 * e)
+            self.proof.stage(self.arena, tl.rounds, 9 * e)
             self._mark(ctx, profile, "rounds " + String(i), t0)
             tail_fold(ctx, base, y, lvl.rows, L.r, tl.y)
             tail_fold(ctx, base, tl.w_tilde, lvl.rows, L.r, tl.running)
@@ -302,11 +303,11 @@ struct Prover[p: Params, H: Hash]:
 
         # last: the clear vector, then open the last committed level
         absorb[Self.p, Self.H](ctx, base, T, DS_CLEAR, y, y_len * e)
-        proof.stage(self.arena, y, y_len * e)
+        self.proof.stage(self.arena, y, y_len * e)
         self._mark(ctx, profile, "transcript clear", t0)
-        self._open_previous(ctx, len(S.tail), T, proof)
+        self._open_previous(ctx, len(S.tail), T)
         self._mark(ctx, profile, "open last", t0)
-        var out = proof.finish()
+        var out = self.proof.finish()
         self._mark(ctx, profile, "finish", t0)
         return out^
 
@@ -316,7 +317,7 @@ struct Prover[p: Params, H: Hash]:
     def _v_count(self, i: Int) -> Int:
         return 4 * Self.p.n_cw() * Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
 
-    def _open_previous(self, ctx: DeviceContext, i: Int, T: TranscriptLayout, mut proof: ProofWriter) raises:
+    def _open_previous(mut self, ctx: DeviceContext, i: Int, T: TranscriptLayout) raises:
         """Sample S on the level before tail level i (level 1 when i == 0), gather its multiproof(s),
         and stage them. The stage region is reused: the copy out is enqueued before the next gather."""
         var base = self.arena.base()
@@ -326,16 +327,27 @@ struct Prover[p: Params, H: Hash]:
             squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, Self.p.queries(), Self.p.L())
             var bound = query_gather[Self.p, Self.H](ctx, base, L.enc_w.code, 4 * Self.p.n_cw() * S.columns_w, Self.p.L(),
                                                      L.tree_w, L.positions, Self.p.queries(), L.proof_stage)
-            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+            self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
             bound = query_gather[Self.p, Self.H](ctx, base, L.enc_q.code, 4 * Self.p.n_cw() * S.columns_q, Self.p.L(),
                                                  L.tree_q, L.positions, Self.p.queries(), L.proof_stage)
-            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+            self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
         else:
             var lvl = S.tail[i - 1]
             squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, lvl.queries, lvl.L)
             var bound = query_gather[Self.p, Self.H](ctx, base, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
                                                      L.positions, lvl.queries, L.proof_stage)
-            proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+            self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
+
+
+def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
+    """Host staging for one proof: the fixed bytes at the largest prefix, every multiproof region
+    bound, and the transcript prefix upload."""
+    var n = shape.fixed_bytes[p, H.DIGEST](PREFIX_MAX) + PREFIX_MAX
+    n += multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries())
+    n += multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries())
+    for lvl in shape.tail:
+        n += multiproof_region[H](8 * p.e, lvl.L, lvl.queries)
+    return n
 
 
 def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: List[UInt8]) raises:
