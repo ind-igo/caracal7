@@ -9,7 +9,8 @@ from caracal7.field import E, f_add, ext_mul, ext_inv, ext_one
 from caracal7.params import Params
 from caracal7.params import REFERENCE
 from caracal7.arena import Arena, Bump
-from caracal7.accumulate import ACC, acc_get16, accumulate
+from caracal7.accumulate import ACC, accumulate
+from caracal7.bytes import get_u16, list_e
 from caracal7.residual import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
 
 comptime p = REFERENCE
@@ -42,9 +43,9 @@ def _down(ctx: DeviceContext, arena: Arena, off: Int, n: Int) raises -> List[UIn
 def host_factor(accs: List[UInt8], k: Int, trace: List[UInt8], N: Int, row: Int, gamma: E, den: Bool) -> E:
     """N(row) or D(row) of accumulator k from a host trace (column, row)."""
     var v = gamma
-    var w = acc_get16(accs, k, 4 if den else 2)
+    var w = get_u16(accs, k * ACC + (4 if den else 2))
     for j in range(w):
-        v[j] = f_add(v[j], trace[acc_get16(accs, k, (22 if den else 6) + 2 * j) * N + row])
+        v[j] = f_add(v[j], trace[get_u16(accs, k * ACC + (22 if den else 6) + 2 * j) * N + row])
     return v
 
 
@@ -69,12 +70,6 @@ def host_accumulate[p: Params](accs: List[UInt8], k: Int, trace: List[UInt8], ga
         acc2 = ext_mul[4](acc2, acc)
     return (z^, z2^)
 
-
-def _e(l: List[UInt8], i: Int) -> E:
-    var v = E(0)
-    for t in range(16):
-        v[t] = l[i * 16 + t]
-    return v
 
 
 def test_accumulator_matches_host_and_satisfies_the_relations() raises:
@@ -124,26 +119,26 @@ def _check(accs: List[UInt8], k: Int) raises:
     want_z2 = got[1].copy()
     assert_true(z == want_z, "Z differs from the host definition")
     assert_true(z2[: h2 * 16] == want_z2, "Z2 differs from the host definition")
-    assert_true(_e(z2, h2) == ext_one[4](), "trailing Z2 element is not 1")
+    assert_true(list_e(z2, h2) == ext_one[4](), "trailing Z2 element is not 1")
     var one = E(0)
     one[0] = 1
     for x2 in range(h2):
-        assert_true(_e(z, x2 * h1) == one, "chain start is not 1")
+        assert_true(list_e(z, x2 * h1) == one, "chain start is not 1")
         for x1 in range(h1 - 1):
             var row = x2 * h1 + x1
-            var lhs = ext_mul[4](_e(z, row + 1), host_factor(accs, k, trace, N, row, gamma, True))
-            var rhs = ext_mul[4](_e(z, row), host_factor(accs, k, trace, N, row, gamma, False))
+            var lhs = ext_mul[4](list_e(z, row + 1), host_factor(accs, k, trace, N, row, gamma, True))
+            var rhs = ext_mul[4](list_e(z, row), host_factor(accs, k, trace, N, row, gamma, False))
             assert_true(lhs == rhs, "chain relation fails")
-    assert_true(_e(z2, 0) == one, "Z2(1) is not 1")
+    assert_true(list_e(z2, 0) == one, "Z2(1) is not 1")
     for x2 in range(h2 - 1):
-        assert_true(_e(z2, x2 + 1) == ext_mul[4](_e(z2, x2), _e(prod, x2)), "Z2 recurrence fails")
-    assert_true(ext_mul[4](_e(z2, h2 - 1), _e(prod, h2 - 1)) == one, "grand product is not 1: c8 is not a permutation of c0")
-    assert_true(_e(z, N - 1) != one, "vacuous")
+        assert_true(list_e(z2, x2 + 1) == ext_mul[4](list_e(z2, x2), list_e(prod, x2)), "Z2 recurrence fails")
+    assert_true(ext_mul[4](list_e(z2, h2 - 1), list_e(prod, h2 - 1)) == one, "grand product is not 1: c8 is not a permutation of c0")
+    assert_true(list_e(z, N - 1) != one, "vacuous")
     var nend = _down(ctx, arena, o_nend, h2 * 16)
     var dend = _down(ctx, arena, o_dend, h2 * 16)
     for x2 in range(h2):
-        assert_true(_e(nend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, False), "chain-end N")
-        assert_true(_e(dend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, True), "chain-end D")
+        assert_true(list_e(nend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, False), "chain-end N")
+        assert_true(list_e(dend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, True), "chain-end D")
 
 
 def main() raises:

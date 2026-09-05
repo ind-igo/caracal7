@@ -9,6 +9,7 @@ from caracal7.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed
 from caracal7.params import REFERENCE
 from caracal7.tables import Domains, TableLayout, build_tables
 from caracal7.arena import Arena, Bump
+from caracal7.bytes import list_e
 from caracal7.smallgrid import small_grid_accumulator, small_grid_values, interp_cyclic
 
 comptime p = REFERENCE
@@ -32,12 +33,6 @@ def _host(ctx: DeviceContext, l: List[UInt8]) raises -> HostBuffer[DType.uint8]:
     return h^
 
 
-def _e(l: List[UInt8], i: Int) -> E:
-    var v = E(0)
-    for t in range(16):
-        v[t] = l[i * 16 + t]
-    return v
-
 
 def _coeffs(vals: List[UInt8], off: Int, w2_inv: F2) -> List[E]:
     """Inverse DFT on H2 by the definition: c_k = h2^-1 sum_t v_t omega2^(-t k)."""
@@ -49,7 +44,7 @@ def _coeffs(vals: List[UInt8], off: Int, w2_inv: F2) -> List[E]:
     for k in range(h2):
         var acc = E(0)
         for t in range(h2):
-            acc = f_add(acc, ext_mul[4](_e(vals, off + t), ext_embed[4](ext_pow[1](w2_inv, (t * k) % h2))))
+            acc = f_add(acc, ext_mul[4](list_e(vals, off + t), ext_embed[4](ext_pow[1](w2_inv, (t * k) % h2))))
         out.append(ext_mul[4](acc, inv))
     return out^
 
@@ -138,13 +133,13 @@ def test_q3_matches_host_division_and_interpolation() raises:
         r[m] = f_sub(lo, ext_mul[4](e2e, hi))
     var one = E(0)
     one[0] = 1
-    var scale = f_add(one, _e(alpha, 0))
+    var scale = f_add(one, list_e(alpha, 0))
     var q = List[E](length=2 * h2, fill=E(0))
     for k in range(2 * h2):
         q[k] = ext_mul[4](scale, f_add(r[k + h2], r[k + 2 * h2]))
     for j in [0, 1, 2, 7, 2 * h2 - 1]:
         var pt = ext_embed[4](ext_pow[1](d.g2, j))
-        assert_true(_e(q3, j) == _horner(q, pt), "Q3 on G2 differs from the host quotient")
+        assert_true(list_e(q3, j) == _horner(q, pt), "Q3 on G2 differs from the host quotient")
     # interpolation: a random point against Horner on the coefficients
     var zr = E(0)
     for t in range(16):

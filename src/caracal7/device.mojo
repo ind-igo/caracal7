@@ -1,4 +1,4 @@
-"""Device-side helpers shared by every kernel module: the flat thread index and the loads of the
+"""TEMPORARY shim during the bytes.mojo migration; deleted when the last module imports bytes instead.
 byte layouts (one buffer type, docs/design.md rule 2)."""
 
 from std.gpu import thread_idx, block_idx, block_dim

@@ -28,64 +28,65 @@ from caracal7.tables import TableLayout
 from caracal7.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
 
 comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
-from caracal7.device import gid, load_e
+from caracal7.bytes import Base, Buf
+from std.gpu import global_idx
 
 
-def lane_dft[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
+def lane_dft[p: Params](ctx: DeviceContext, base: Base, src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
     """dst[j] = sum_i v[i] table[j, i] in E, j < n, i < k: v[i] at src + i stride, table (n, k, 2) F2, dst (n, e)."""
     launch_gemm_f2[BACKEND, DFT_TILE, Strided, 1](ctx, base, strided(
         a=src, sa_m=2, sa_k=stride, b=table, sb_k=2, sb_hi=k * 2, sb_lo=0,
         c=dst, sc_m=2, sc_hi=p.e, sc_lo=0), p.e // 2, n, k)
 
 
-def k_polymul(base: Pointer[UInt8, MutAnyOrigin], a: Int64, na: Int32, b: Int64, nb: Int32, dst: Int64):
+def k_polymul(base: Base, a: Buf[16], na: Int32, b: Buf[16], nb: Int32, dst: Buf[16]):
     """dst[k] = sum_i a[i] b[k - i], k < na + nb - 1."""
-    var k = gid()
+    var k = global_idx.x
     if k >= Int(na) + Int(nb) - 1:
         return
     var acc = E(0)
     var lo = max(0, k - Int(nb) + 1)
     var hi = min(k, Int(na) - 1)
     for i in range(lo, hi + 1):
-        acc = f_add(acc, ext_mul[4](load_e(base, Int(a) + i * 16), load_e(base, Int(b) + (k - i) * 16)))
-    base.unsafe_store[width=16](Int(dst) + k * 16, acc)
+        acc = f_add(acc, ext_mul[4](a.load(base, i), b.load(base, k - i)))
+    dst.store(base, k, acc)
 
 
 @always_inline
-def _s[p: Params](base: Pointer[UInt8, MutAnyOrigin], p1: Int, p2: Int, m: Int) -> E:
+def _s[p: Params](base: Base, p1: Buf[16], p2: Buf[16], m: Int) -> E:
     """Coefficient m of p1 - p2, p1 of 2 h2 - 1 and p2 of 3 h2 - 2 coefficients, zero past them."""
     comptime h2 = p.h2()
     var v = E(0)
     if m < 2 * h2 - 1:
-        v = load_e(base, p1 + m * 16)
+        v = p1.load(base, m)
     if m < 3 * h2 - 2:
-        v = f_sub(v, load_e(base, p2 + m * 16))
+        v = f_sub(v, p2.load(base, m))
     return v
 
 
 @always_inline
-def _r[p: Params](base: Pointer[UInt8, MutAnyOrigin], p1: Int, p2: Int, e2: E, m: Int) -> E:
+def _r[p: Params](base: Base, p1: Buf[16], p2: Buf[16], e2: E, m: Int) -> E:
     """Coefficient m of (X2 - e2)(p1 - p2)."""
     return f_sub(_s[p](base, p1, p2, m - 1), ext_mul[4](e2, _s[p](base, p1, p2, m)))
 
 
-def k_q3[p: Params](base: Pointer[UInt8, MutAnyOrigin], p1: Int64, p2: Int64, e2a: UInt8, e2b: UInt8,
-                    alpha: Int64, power: Int32, dst: Int64, accumulate: Int32):
+def k_q3[p: Params](base: Base, p1: Buf[16], p2: Buf[16], e2a: UInt8, e2b: UInt8,
+                    alpha: Buf[16], power: Int32, dst: Buf[16], accumulate: Int32):
     """q_k = alpha^power (r_{k + h2} + r_{k + 2 h2}), r = (X2 - e2)(p1 - p2); k < 2 h2. Adds into dst
     when `accumulate` is nonzero."""
     comptime h2 = p.h2()
-    var k = gid()
+    var k = global_idx.x
     if k >= 2 * h2:
         return
     var e2 = ext_embed[4](F2(e2a, e2b))
-    var q = ext_mul[4](ext_pow[4](load_e(base, Int(alpha)), Int(power)),
-                       f_add(_r[p](base, Int(p1), Int(p2), e2, k + h2), _r[p](base, Int(p1), Int(p2), e2, k + 2 * h2)))
+    var q = ext_mul[4](ext_pow[4](alpha.load(base, 0), Int(power)),
+                       f_add(_r[p](base, p1, p2, e2, k + h2), _r[p](base, p1, p2, e2, k + 2 * h2)))
     if accumulate != 0:
-        q = f_add(q, load_e(base, Int(dst) + k * 16))
-    base.unsafe_store[width=16](Int(dst) + k * 16, q)
+        q = f_add(q, dst.load(base, k))
+    dst.store(base, k, q)
 
 
-def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], tab: TableLayout,
+def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Base, tab: TableLayout,
                                       z2: Int, z_end: Int, z_end_stride: Int, n_end: Int, d_end: Int,
                                       lines: Int, pac: Int, p1: Int, p2: Int, alpha: Int, power: Int, e2: F2,
                                       q3c: Int, first: Bool) raises:
@@ -102,14 +103,14 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, base: Pointer[UInt8, M
     var c = lines + 2 * h2 * 16
     var n = lines + 3 * h2 * 16
     var d = lines + 4 * h2 * 16
-    ctx.enqueue_function[k_polymul](base, Int64(b), Int32(h2), Int64(d), Int32(h2), Int64(p1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_polymul](base, Int64(a), Int32(h2), Int64(c), Int32(h2), Int64(pac), grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_polymul](base, Int64(pac), Int32(2 * h2 - 1), Int64(n), Int32(h2), Int64(p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
-    ctx.enqueue_function[k_q3[p]](base, Int64(p1), Int64(p2), e2[0], e2[1], Int64(alpha), Int32(power), Int64(q3c), Int32(0 if first else 1),
+    ctx.enqueue_function[k_polymul](base, Buf[16](b), Int32(h2), Buf[16](d), Int32(h2), Buf[16](p1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](base, Buf[16](a), Int32(h2), Buf[16](c), Int32(h2), Buf[16](pac), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_polymul](base, Buf[16](pac), Int32(2 * h2 - 1), Buf[16](n), Int32(h2), Buf[16](p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
+    ctx.enqueue_function[k_q3[p]](base, Buf[16](p1), Buf[16](p2), e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](q3c), Int32(0 if first else 1),
                                   grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
-def small_grid_values[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], tab: TableLayout, q3c: Int, q3: Int) raises:
+def small_grid_values[p: Params](ctx: DeviceContext, base: Base, tab: TableLayout, q3c: Int, q3: Int) raises:
     """Q3 on G2 from its coefficients: the 2 h2-point DFT."""
     lane_dft[p](ctx, base, q3c, 16, tab.base + tab.wfwd2, 2 * p.h2(), 2 * p.h2(), q3)
 
