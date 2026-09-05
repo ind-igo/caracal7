@@ -235,10 +235,10 @@ def residual_at(fam: List[UInt8], alpha: E, chals: List[UInt8], z1: E, z2: E, e1
     return acc
 
 
-def synthetic_families(columns_w: Int = 9, with_accumulator: Bool = True) raises -> Families:
-    """Eight families over nine columns, satisfied by `synthetic_trace`, plus one permutation
-    accumulator (c8 is a permutation of c0 across the grid) whose coordinate columns start the Z
-    tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
+def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True) raises -> Families:
+    """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation
+    accumulators (c8, c9 are c0, c1 under one permutation of the grid; records of width 1 and 2)
+    whose coordinate columns start the Z tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
     a within-chain shift, a cyclic shift, an axis-2 shift, a challenge and basis coefficient, a
     quadratic axis-1 transition, and the accumulator."""
     var f = Families()
@@ -261,15 +261,16 @@ def synthetic_families(columns_w: Int = 9, with_accumulator: Bool = True) raises
     f.add(7, 126, 0, col_b=5, mult=1)
     if with_accumulator:
         f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
+        f.accumulator(9, columns_w + 16, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
     return f^
 
 
-comptime SYNTHETIC_COLUMNS = 9
+comptime SYNTHETIC_COLUMNS = 10
 comptime SYNTHETIC_PERM = 17                            # c8[i] = c0[(17 i + 5) mod N]: coprime to every grid N
 
 
 def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
-    """Nine columns (column, x2, x1) satisfying `synthetic_families`."""
+    """Ten columns (column, x2, x1) satisfying `synthetic_families`."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
@@ -292,6 +293,7 @@ def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
             t[6 * N + i] = t[x2 * h1 + (x1 + 3) % h1]                                              # c6 = c0(omega1^3 x1)
             t[7 * N + i] = t[(x2 - 1) * h1 + x1] if x2 > 0 else UInt8((i * 11) % 127)              # c7(omega2 x2) = c0(x2)
             t[8 * N + i] = t[(SYNTHETIC_PERM * i + 5) % N]                                             # c8 = c0 permuted
+            t[9 * N + i] = t[N + (SYNTHETIC_PERM * i + 5) % N]                                         # c9 = c1 under the same permutation
     return t^
 
 

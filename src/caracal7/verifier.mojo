@@ -44,10 +44,12 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var stage1 = t.elements(3)                      # beta, delta, gamma
 
     # step 2: Z root and Z2 -> alpha; Q root -> z
-    var root_z = r.take(H.DIGEST)
-    t.absorb(DS_TREE_Z, root_z)
-    var z2v = r.take(shape.accumulators() * p.h2() * p.e)
-    if shape.accumulators() > 0:
+    var root_z = List[UInt8]()
+    var z2v = List[UInt8]()
+    if shape.accumulators() > 0:                       # no Z tree without accumulators
+        root_z = r.take(H.DIGEST)
+        t.absorb(DS_TREE_Z, root_z)
+        z2v = r.take(shape.accumulators() * p.h2() * p.e)
         t.absorb(DS_TREE_Z, z2v)
     var alpha = t.elements(1)
     var root_q = r.take(H.DIGEST)
@@ -227,8 +229,10 @@ def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript
         var row_q = 4 * shape.columns_q
         var mp_w = r.prefixed()
         var rows_w = check_multiproof[H](root_w, p.L(), row_w, positions, mp_w)
-        var mp_z = r.prefixed()
-        var rows_z = check_multiproof[H](root_z, p.L(), row_z, positions, mp_z)
+        var rows_z = List[UInt8]()
+        if row_z > 0:
+            var mp_z = r.prefixed()
+            rows_z = check_multiproof[H](root_z, p.L(), row_z, positions, mp_z)
         var mp_q = r.prefixed()
         var rows_q = check_multiproof[H](root_q, p.L(), row_q, positions, mp_q)
         return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows_w^, rows_z=rows_z^, rows_q=rows_q^,

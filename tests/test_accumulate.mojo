@@ -43,9 +43,14 @@ def _e(l: List[UInt8], i: Int) -> E:
 
 
 def test_accumulator_matches_host_and_satisfies_the_relations() raises:
-    var ctx = DeviceContext()
     var f = synthetic_families()
-    assert_equal(len(f.accs), ACC)
+    assert_equal(len(f.accs), 2 * ACC)
+    for k in range(2):
+        _check(f.accs, k)
+
+
+def _check(accs: List[UInt8], k: Int) raises:
+    var ctx = DeviceContext()
     var trace = synthetic_trace[p](1)
     var gamma = E(0)
     for t in range(16):
@@ -64,7 +69,10 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
     var o_dend = bump.alloc(h2 * 16)
     var arena = Arena(ctx, bump.used)
     arena.upload(ctx, o_trace, _host(ctx, trace))
-    arena.upload(ctx, o_acc, _host(ctx, f.accs))
+    var one_acc = List[UInt8](capacity=ACC)
+    for i in range(ACC):
+        one_acc.append(accs[k * ACC + i])
+    arena.upload(ctx, o_acc, _host(ctx, one_acc))
     var gl = List[UInt8](capacity=16)
     for t in range(16):
         gl.append(gamma[t])
@@ -76,7 +84,7 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
 
     var want_z: List[UInt8]
     var want_z2: List[UInt8]
-    var got = host_accumulate[p](f.accs, 0, trace, gamma)
+    var got = host_accumulate[p](accs, k, trace, gamma)
     want_z = got[0].copy()
     want_z2 = got[1].copy()
     assert_true(z == want_z, "Z differs from the host definition")
@@ -87,8 +95,8 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
         assert_true(_e(z, x2 * h1) == one, "chain start is not 1")
         for x1 in range(h1 - 1):
             var row = x2 * h1 + x1
-            var lhs = ext_mul[4](_e(z, row + 1), host_factor(f.accs, 0, trace, N, row, gamma, True))
-            var rhs = ext_mul[4](_e(z, row), host_factor(f.accs, 0, trace, N, row, gamma, False))
+            var lhs = ext_mul[4](_e(z, row + 1), host_factor(accs, k, trace, N, row, gamma, True))
+            var rhs = ext_mul[4](_e(z, row), host_factor(accs, k, trace, N, row, gamma, False))
             assert_true(lhs == rhs, "chain relation fails")
     assert_true(_e(z2, 0) == one, "Z2(1) is not 1")
     for x2 in range(h2 - 1):
@@ -98,8 +106,8 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
     var nend = _down(ctx, arena, o_nend, h2 * 16)
     var dend = _down(ctx, arena, o_dend, h2 * 16)
     for x2 in range(h2):
-        assert_true(_e(nend, x2) == host_factor(f.accs, 0, trace, N, x2 * h1 + h1 - 1, gamma, False), "chain-end N")
-        assert_true(_e(dend, x2) == host_factor(f.accs, 0, trace, N, x2 * h1 + h1 - 1, gamma, True), "chain-end D")
+        assert_true(_e(nend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, False), "chain-end N")
+        assert_true(_e(dend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, gamma, True), "chain-end D")
 
 
 def main() raises:

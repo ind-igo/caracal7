@@ -20,7 +20,7 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
     assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
     var shape = Shape.__init__[p](53, synthetic_families(53).bytes, synthetic_families(53).accs)
     assert_equal(shape.clear_length, p.N())
-    assert_equal(shape.columns(), 53 + 16 + 48)
+    assert_equal(shape.columns(), 53 + 32 + 48)
 
 
 def test_tail_schedule_folds_a_larger_grid() raises:
@@ -64,7 +64,7 @@ def test_layout_plans_the_arena() raises:
     for off in [L.tree_w, L.tree_q, L.families, L.shifts, L.ltmp, L.lde, L.residual, L.quotient, L.w_z, L.openings, L.fold_y, L.positions, L.proof_stage,
                 L.prefix, L.stage1, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
-    print("arena for 53 + 16 + 48 columns:", L.bytes // (1 << 20), "MiB")
+    print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
 
 def test_prove_and_verify() raises:
@@ -105,6 +105,38 @@ def test_prove_and_verify() raises:
         except e:
             stopped = String(e)
         assert_true(stopped.startswith(tamper[1]), stopped)
+
+
+def test_prove_and_verify_without_accumulators() raises:
+    """No Z tree: a statement with no accumulator (Keccak-128 by the statement layer) carries no Z root,
+    no Z2, no Q3, and opens two trees."""
+    var ctx = DeviceContext()
+    var f = synthetic_families(with_accumulator=False)
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
+    assert_equal(shape.columns_z, 0)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
+    load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
+    var proof = prover.prove(ctx, List[UInt8]())
+    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes))
+
+
+def test_invalid_permutation_is_rejected() raises:
+    """An honest prover on a witness whose sorted copy is not a permutation: every commitment and
+    challenge is fresh, and the grand product fails."""
+    var ctx = DeviceContext()
+    var f = synthetic_families()
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
+    var trace = synthetic_trace[p](1)
+    trace[8 * p.N() + 7] = UInt8((Int(trace[8 * p.N() + 7]) + 1) % 127)
+    load_trace[p, Blake3](ctx, prover, trace)
+    var proof = prover.prove(ctx, List[UInt8]())
+    var stopped = String("")
+    try:
+        _ = verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "accumulator grand product is not 1")
 
 
 def test_prove_and_verify_with_tail() raises:

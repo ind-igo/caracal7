@@ -104,11 +104,18 @@ struct Shape(Writable):
         self.points = len(shift_points(families)) // 4
         self.entries = len(families) // ENTRY
         self.accs = accs.copy()
+        for k in range(len(accs) // ACC):
+            if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
+                raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
     def accumulators(self) -> Int:
         return len(self.accs) // ACC
+
+    def trees(self) -> Int:
+        """Trees opened at level 1: W and Q, plus Z when there are accumulators."""
+        return 3 if self.columns_z > 0 else 2
 
     def columns(self) -> Int:
         return self.columns_w + self.columns_z + self.columns_q
@@ -116,13 +123,13 @@ struct Shape(Writable):
     def fixed_bytes[p: Params, digest: Int](self, public_bytes: Int) -> Int:
         """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
         opened (three at level 1: W, Z, Q). Mirrors ProofWriter's order exactly."""
-        var n = 4 + 4 + public_bytes + 3 * digest + self.accumulators() * p.h2() * p.e
-        if self.accumulators() > 0:
-            n += 2 * p.h2() * p.e
+        var n = 4 + 4 + public_bytes + 2 * digest
+        if self.accumulators() > 0:                    # Z root, Z2, Q3 exist only with accumulators
+            n += digest + self.accumulators() * p.h2() * p.e + 2 * p.h2() * p.e
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
-            n += digest + (3 if i == 0 else 1) * 4 + 9 * p.e
-        n += self.clear_length * p.e + (3 if len(self.tail) == 0 else 1) * 4
+            n += digest + (self.trees() if i == 0 else 1) * 4 + 9 * p.e
+        n += self.clear_length * p.e + (self.trees() if len(self.tail) == 0 else 1) * 4
         return n
 
     def write_to(self, mut w: Some[Writer]):

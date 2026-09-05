@@ -270,9 +270,8 @@ struct Prover[p: Params, H: Hash]:
             self._mark(ctx, profile, "encode Z", t0)
             merkle[Self.p, Self.H](ctx, base, L.enc_z.code, row_z, Self.p.L(), L.tree_z)
             self._mark(ctx, profile, "merkle Z", t0)
-        absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
-        self.proof.stage(self.arena, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
-        if S.columns_z > 0:
+            absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
+            self.proof.stage(self.arena, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
             absorb[Self.p, Self.H](ctx, base, T, DS_TREE_Z, L.z2, S.accumulators() * Self.p.h2() * e)
             self.proof.stage(self.arena, L.z2, S.accumulators() * Self.p.h2() * e)
         squeeze_elements[Self.p, Self.H](ctx, base, T, L.alpha, 1)
@@ -394,6 +393,8 @@ struct Prover[p: Params, H: Hash]:
         if i == 0:
             squeeze_positions[Self.p, Self.H](ctx, base, T, L.positions, Self.p.queries(), Self.p.L())
             for tree in [(L.enc_w.code, S.columns_w, L.tree_w), (L.enc_z.code, S.columns_z, L.tree_z), (L.enc_q.code, S.columns_q, L.tree_q)]:
+                if tree[1] == 0:
+                    continue                                    # no Z tree without accumulators
                 var bound = query_gather[Self.p, Self.H](ctx, base, tree[0], 4 * Self.p.n_cw() * tree[1], Self.p.L(),
                                                          tree[2], L.positions, Self.p.queries(), L.proof_stage)
                 self.proof.stage(self.arena, L.proof_stage, bound, multiproof=True)
@@ -410,7 +411,8 @@ def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
     bound, and the transcript prefix upload."""
     var n = shape.fixed_bytes[p, H.DIGEST](PREFIX_MAX) + PREFIX_MAX
     n += multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries())
-    n += multiproof_region[H](4 * p.n_cw() * shape.columns_z, p.L(), p.queries())
+    if shape.columns_z > 0:
+        n += multiproof_region[H](4 * p.n_cw() * shape.columns_z, p.L(), p.queries())
     n += multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries())
     for lvl in shape.tail:
         n += multiproof_region[H](8 * p.e, lvl.L, lvl.queries)
