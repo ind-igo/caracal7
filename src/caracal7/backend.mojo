@@ -88,6 +88,7 @@ struct Operands(TrivialRegisterPassable, DevicePassable):
     var sb_hi: Int64
     var sb_lo: Int64
     var sb_z: Int64
+    var sb_zd: Int64             # B's batch index is z % sb_zd when > 0 (split-K: B depends on the chunk only)
     var c: Int64
     var sc_m: Int64
     var sc_hi: Int64
@@ -151,6 +152,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var brow = Int(block_idx.y) * BM
     var bcol = Int(block_idx.x) * BN
     var z = Int(block_idx.z)
+    var zb = z % Int(o.sb_zd) if o.sb_zd > 0 else z
     var Mi = Int(M)
     var Ni = Int(N)
     var Ki = Int(K)
@@ -178,7 +180,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var n = bcol + idx % BN
             var v = F2(0)
             if n < Ni and kt * BK + kk < Ki:
-                v = L.load(base, o, kt * BK + kk, n // D, n % D, z)
+                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
             Bs0.ptr.unsafe_store(kk * BN + idx % BN, v[0])
             Bs1.ptr.unsafe_store(kk * BN + idx % BN, v[1])
         barrier()
@@ -219,9 +221,9 @@ def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
 
 
 def strided(a: Int, sa_m: Int, sa_k: Int, b: Int, sb_k: Int, sb_hi: Int, sb_lo: Int,
-            c: Int, sc_m: Int, sc_hi: Int, sc_lo: Int, sa_z: Int = 0, sb_z: Int = 0, sc_z: Int = 0) -> Operands:
+            c: Int, sc_m: Int, sc_hi: Int, sc_lo: Int, sa_z: Int = 0, sb_z: Int = 0, sc_z: Int = 0, sb_zd: Int = 0) -> Operands:
     """Operands for the Strided loader, in Int."""
     return Operands(a=Int64(a), sa_m=Int64(sa_m), sa_k=Int64(sa_k), sa_z=Int64(sa_z),
-                    b=Int64(b), sb_k=Int64(sb_k), sb_hi=Int64(sb_hi), sb_lo=Int64(sb_lo), sb_z=Int64(sb_z),
+                    b=Int64(b), sb_k=Int64(sb_k), sb_hi=Int64(sb_hi), sb_lo=Int64(sb_lo), sb_z=Int64(sb_z), sb_zd=Int64(sb_zd),
                     c=Int64(c), sc_m=Int64(sc_m), sc_hi=Int64(sc_hi), sc_lo=Int64(sc_lo), sc_z=Int64(sc_z),
                     aux0=0, aux1=0, aux2=0)

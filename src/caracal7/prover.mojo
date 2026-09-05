@@ -18,8 +18,8 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.hash import Hash
 from caracal7.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region
 from caracal7.residual import lde, residual, quotient, quotient_elems, shift_points, ENTRY, POINT
-from caracal7.open import build_queries, open, fold
-from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, expected_symbols
+from caracal7.open import build_queries, open, open_splits, fold
+from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, expected_level1, expected_tail
 from caracal7.tail import tail_materialize, tail_round, tail_fold
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
@@ -68,6 +68,7 @@ struct ProverLayout:
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
     var w_z: Int                    # (P, slot, e)          evaluation queries
     var openings: Int               # (P, column, e)
+    var open_partial: Int           # (P, splits, column, e) split-K partials of `open`
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message
     var running0: Int               # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
     var dom1: Int                   # DOM_BYTES             the level-1 domain
@@ -104,6 +105,7 @@ struct ProverLayout:
         self.quotient = bump.alloc(quotient_elems[p]() * p.e)
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
+        self.open_partial = bump.alloc(shape.points * open_splits[p]() * max(shape.columns_w, shape.columns_q) * p.e)
         self.fold_y = bump.alloc(N * p.e)
         self.running0 = bump.alloc(N * p.e)
         self.dom1 = bump.alloc(DOM_BYTES)
@@ -241,8 +243,8 @@ struct Prover[p: Params, H: Hash]:
         # 11. openings at the P points
         build_queries[Self.p](ctx, base, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
         self._mark(ctx, profile, "build_queries", t0)
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.openings, S.columns())
-        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.openings + S.columns_w * e, S.columns())
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.open_partial, L.openings, S.columns())
+        open[Self.p](ctx, base, L.w_z, S.points, L.enc_q.stored, S.columns_q, L.open_partial, L.openings + S.columns_w * e, S.columns())
         self._mark(ctx, profile, "open", t0)
         absorb[Self.p, Self.H](ctx, base, T, DS_OPENINGS, L.openings, S.points * S.columns() * e)
         proof.stage(self.arena, L.openings, S.points * S.columns() * e)
@@ -274,7 +276,10 @@ struct Prover[p: Params, H: Hash]:
             var prev_dom = L.dom1 if i == 0 else L.tail[i - 1].dom
             var prev_L0 = Self.p.L0 if i == 0 else S.tail[i - 1].L // S.tail[i - 1].cosets
             points(ctx, base, L.positions, count, prev_dom, prev_L0, L.pts)
-            expected_symbols[Self.p](ctx, base, i == 0, y, y_len, L.pts, count, tl.v)
+            if i == 0:
+                expected_level1(ctx, base, L.positions, count, L.enc_w.code, S.columns_w, L.enc_q.code, S.columns_q, L.beta_gamma, tl.v)
+            else:
+                expected_tail(ctx, base, L.positions, count, L.tail[i - 1].code, L.r, tl.v)
             self._mark(ctx, profile, "expected symbols " + String(i), t0)
             absorb[Self.p, Self.H](ctx, base, T, DS_TAIL_V, tl.v, self._v_count(i) * e)
             proof.stage(self.arena, tl.v, self._v_count(i) * e)

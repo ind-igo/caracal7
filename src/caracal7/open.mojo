@@ -121,15 +121,44 @@ def build_queries[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrig
                             grid_dim=ceildiv(points * p.N(), BLOCK), block_dim=BLOCK)
 
 
+comptime OPEN_SPLITS = 64   # K chunks of one opening GEMM; the grid is P x splits blocks instead of P
+
+
+def open_splits[p: Params]() -> Int:
+    """The largest power of two <= OPEN_SPLITS dividing N, so every chunk has the same length."""
+    var s = OPEN_SPLITS
+    while p.N() % s != 0:
+        s //= 2
+    return s
+
+
+def k_sum_splits(base: Pointer[UInt8, MutAnyOrigin], src: Int64, splits: Int32, elems: Int32, dst: Int64, dst_stride: Int32, total: Int32):
+    """dst[o * dst_stride + i] = sum_s src[(o * splits + s) * elems + i] over F, for o * elems + i < total."""
+    var gid = Int(block_idx.x * block_dim.x + thread_idx.x)
+    if gid >= Int(total):
+        return
+    var o = gid // Int(elems)
+    var i = gid % Int(elems)
+    var acc: UInt32 = 0
+    for k in range(Int(splits)):
+        acc += UInt32(base[unsafe_offset=Int(src) + (o * Int(splits) + k) * Int(elems) + i])
+    base[unsafe_offset=Int(dst) + o * Int(dst_stride) + i] = UInt8(acc % 127)
+
+
 def open[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],
-                    w_z: Int, points: Int, stored: Int, columns: Int, dst: Int, row_columns: Int) raises:
-    """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`."""
+                    w_z: Int, points: Int, stored: Int, columns: Int, partial: Int, dst: Int, row_columns: Int) raises:
+    """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`.
+    Split-K: block (p, s) reduces slots [s K, (s + 1) K) into `partial` (p, s, c, e), then one sum."""
     comptime N = p.N()
     comptime e = p.e
-    # ponytail: K = N slots per output with one block per point; split K when open shows in the profile
+    var splits = open_splits[p]()
+    var K = N // splits
     launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, base, strided(
-        a=w_z, sa_m=2, sa_k=e, sa_z=N * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0,
-        c=dst, sc_m=2, sc_hi=e, sc_lo=0, sc_z=row_columns * e), e // 2, columns, N, batch=points)
+        a=w_z, sa_m=2, sa_k=e, sa_z=K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K, sb_zd=splits,
+        c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e), e // 2, columns, K, batch=points * splits)
+    var total = points * columns * e
+    ctx.enqueue_function[k_sum_splits](base, Int64(partial), Int32(splits), Int32(columns * e), Int64(dst), Int32(row_columns * e), Int32(total),
+                                       grid_dim=ceildiv(total, BLOCK), block_dim=BLOCK)
 
 
 def fold[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin],

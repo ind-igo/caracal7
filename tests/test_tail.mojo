@@ -1,17 +1,17 @@
-"""Tail kernels against the host formulas, reference profile: leaf points, expected symbols against
-the host encoders, the materialized query against the batched claim (the identity the sumcheck
+"""Tail kernels against the host formulas, reference profile: leaf points, expected symbols from
+committed rows against the host encoder of the folded message, the materialized query against the batched claim (the identity the sumcheck
 proves), the three rounds against the verifier's checks, and the fold."""
 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.field import F4, E, f_add, ext_mul
-from caracal7.params import REFERENCE
-from caracal7.tables import RsDomain
-from caracal7.arena import Arena, Bump
-from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, expected_symbols, tail_materialize, tail_round, tail_fold
-from caracal7.tail import host_e, tail_encode_at, fold8_host, quadratic_at
+from caracal7.field import F4, E, f_add, f_mul, ext_mul
 from caracal7.verifier import encode_at
+from caracal7.params import REFERENCE
+from caracal7.tables import RsDomain, RsTables, build_rs_tables
+from caracal7.arena import Arena, Bump
+from caracal7.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, expected_level1, expected_tail, tail_encode, tail_materialize, tail_round, tail_fold
+from caracal7.tail import host_e, tail_encode_at, fold8_host, quadratic_at
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -19,6 +19,9 @@ comptime ROWS = N // 8
 comptime Q = 16
 comptime L0_TAIL = 4608
 comptime M_TAIL = 4
+comptime CW = 5              # level-1 rows for the expected-symbol identity: CW + CQ F4 columns per row
+comptime CQ = 3
+comptime ROWS1 = 64
 
 
 def _rand(n: Int, seed: Int, below: Int) -> List[UInt8]:
@@ -79,6 +82,12 @@ def test_tail_kernels() raises:
         pos_list.append(s % p.L())
         pos2_list.append((s >> 3) % (L0_TAIL * M_TAIL))
     var batch2 = _rand((1 + Q) * 16, 5, 127)
+    var code_w = _rand(ROWS1 * CW * 4, 6, 127)
+    var code_q = _rand(ROWS1 * CQ * 4, 7, 127)
+    var beta = _rand((CW + CQ) * 16, 8, 127)
+    var pos1_list = List[Int]()
+    for q in range(Q):
+        pos1_list.append((pos_list[q] * 31 + q) % ROWS1)
 
     var bump = Bump()
     var o_y = bump.alloc(N * 16)
@@ -100,7 +109,20 @@ def test_tail_kernels() raises:
     var o_wnext = bump.alloc(ROWS * 16)
     var o_batch2 = bump.alloc((1 + Q) * 16)
     var o_w2 = bump.alloc(ROWS * 16)
+    var o_code_w = bump.alloc(ROWS1 * CW * 4)
+    var o_code_q = bump.alloc(ROWS1 * CQ * 4)
+    var o_beta = bump.alloc((CW + CQ) * 16)
+    var o_pos1 = bump.alloc(Q * 4)
+    var rs = RsTables(bump.alloc(0), L0_TAIL, M_TAIL, ROWS)
+    _ = bump.alloc(rs.bytes)
+    var o_etmp = bump.alloc(L0_TAIL * 32 * 4)
+    var o_code = bump.alloc(M_TAIL * L0_TAIL * 32 * 4)
     var arena = Arena(ctx, bump.used)
+    arena.upload(ctx, rs.base, build_rs_tables(ctx, rs, dom2, ROWS))
+    _up(ctx, arena, o_code_w, code_w)
+    _up(ctx, arena, o_code_q, code_q)
+    _up(ctx, arena, o_beta, beta)
+    _up(ctx, arena, o_pos1, _u32s(pos1_list))
 
     _up(ctx, arena, o_y, y)
     _up(ctx, arena, o_run, running)
@@ -113,9 +135,10 @@ def test_tail_kernels() raises:
     _up(ctx, arena, o_batch2, batch2)
     var base = arena.base()
 
-    # level-1 functionals on y
+    # level-1 functionals on y; v from committed rows (random rows: the row identity, test_open has the alphabet rule)
     points(ctx, base, o_pos, Q, o_dom1, p.L0, o_pts)
-    expected_symbols[p](ctx, base, True, o_y, 0, o_pts, Q, o_v)
+    expected_level1(ctx, base, o_pos1, Q, o_code_w, CW, o_code_q, CQ, o_beta, o_v)
+    tail_encode(ctx, base, o_y, ROWS, L0_TAIL, M_TAIL, o_etmp, o_code, rs)   # y as a tail level: Mat(y) (ROWS, 8, e)
     tail_materialize[p](ctx, base, True, o_run, o_batch, o_pts, Q, N, o_w)
     for d in range(3):
         tail_round(ctx, base, o_w, o_y, N, d, o_r, o_partial, o_rounds + d * 3 * 16)
@@ -123,7 +146,7 @@ def test_tail_kernels() raises:
     tail_fold(ctx, base, o_w, ROWS, o_r, o_wnext)
     # tail-level functionals on y_next
     points(ctx, base, o_pos2, Q, o_dom2, L0_TAIL, o_pts2)
-    expected_symbols[p](ctx, base, False, o_ynext, ROWS, o_pts2, Q, o_v2)
+    expected_tail(ctx, base, o_pos2, Q, o_code, o_r, o_v2)   # Enc(fold(y))(pt) from the rows of Enc(y) and r
     tail_materialize[p](ctx, base, False, o_wnext, o_batch2, o_pts2, Q, ROWS, o_w2)
 
     var pts = _down(ctx, arena, o_pts, Q * 4)
@@ -139,13 +162,19 @@ def test_tail_kernels() raises:
     for q in range(Q):
         var pt = F4(pts[4 * q], pts[4 * q + 1], pts[4 * q + 2], pts[4 * q + 3])
         assert_true(pt == dom1.point(pos_list[q]), "point mismatch")
-        var enc = encode_at[p](y, pt)
+        var s1 = pos1_list[q]
         for tau in range(4):
-            assert_true(host_e(v, 4 * q + tau) == enc[tau], "expected symbol mismatch (level 1)")
-    # the batched claim: <y, w~> = batch_0 <y, running> + sum_q batch_q v_q
+            var want = E(0)
+            for c in range(CW + CQ):
+                var sym = code_w[(s1 * CW + c) * 4 + tau] if c < CW else code_q[(s1 * CQ + c - CW) * 4 + tau]
+                want = f_add(want, f_mul(host_e(beta, c), E(sym)))
+            assert_true(host_e(v, 4 * q + tau) == want, "expected symbol mismatch (level 1)")
+    # the batched claim: <y, w~> = batch_0 <y, running> + sum_q batch_q g_q(y), g_q the level-1 functionals at pt_q
     var claim = ext_mul[4](host_e(batch, 0), _inner(y, running, N))
-    for k in range(4 * Q):
-        claim = f_add(claim, ext_mul[4](host_e(batch, 1 + k), host_e(v, k)))
+    for q in range(Q):
+        var enc = encode_at[p](y, F4(pts[4 * q], pts[4 * q + 1], pts[4 * q + 2], pts[4 * q + 3]))
+        for tau in range(4):
+            claim = f_add(claim, ext_mul[4](host_e(batch, 1 + 4 * q + tau), enc[tau]))
     assert_true(_inner(y, w, N) == claim, "materialized query does not carry the batched claim")
     # sumcheck: s_d(0) + s_d(1) = previous, ending at <fold(y), fold(w~)>
     var prev = claim

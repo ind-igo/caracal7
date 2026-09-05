@@ -18,7 +18,7 @@ from max.gpu.host import DeviceContext
 from caracal7.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.params import Params
 from caracal7.tables import RsTables, RsDomain
-from caracal7.encode import rs_encode_on, pack_slot, pack_index
+from caracal7.encode import rs_encode_on, pack_index
 
 comptime BLOCK = 256
 comptime ROUND_THREADS = 1024      # partial sums of one sumcheck round
@@ -114,39 +114,34 @@ def k_running0[p: Params](base: Pointer[UInt8, MutAnyOrigin], w_z: Int64, gamma:
     base.unsafe_store[width=16](Int(dst) + slot * 16, acc)
 
 
-def k_expected_level1[p: Params](base: Pointer[UInt8, MutAnyOrigin], y: Int64, pts: Int64, count: Int32, v: Int64):
-    """v[4 q + tau] = coord_tau(Enc(y)(pt_q)) in E (x) F4: sum_i (sum_j y[slot(i, j)] b_j) pt^i."""
-    comptime N = p.N()
-    var q = _gid()
-    if q >= Int(count):
+def k_expected_level1(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32, code_w: Int64, columns_w: Int32,
+                      code_q: Int64, columns_q: Int32, beta: Int64, v: Int64):
+    """v[4 q + tau] = coord_tau(Enc(y)(pt_q)) = sum_c beta_c X[s_q, c][tau]: the encoder is linear, so the
+    symbol of the folded message is the beta-combination of the committed rows (the verifier's check)."""
+    var gid = _gid()
+    if gid >= 4 * Int(count):
         return
-    var pt = _f4(base, Int(pts) + 4 * q)
-    var acc = InlineArray[E, 4](fill=E(0))
-    var pw = F4(1, 0, 0, 0)
-    for i in range(N // 4):
-        comptime for j in range(4):
-            var bj = F4(0)
-            bj[j] = 1
-            var m = ext_mul[2](bj, pw)
-            var yv = _e(base, Int(y) + pack_slot[p](i, j) * 16)
-            comptime for tau in range(4):
-                acc[tau] = f_add(acc[tau], f_mul(yv, E(m[tau])))
-        pw = ext_mul[2](pw, pt)
-    comptime for tau in range(4):
-        base.unsafe_store[width=16](Int(v) + (4 * q + tau) * 16, acc[tau])
-
-
-def k_expected_tail(base: Pointer[UInt8, MutAnyOrigin], y: Int64, rows: Int32, pts: Int64, count: Int32, v: Int64):
-    """v[q] = Enc(y)(pt_q) = sum_row y[row] pt^row, E-linear."""
-    var q = _gid()
-    if q >= Int(count):
-        return
-    var pt = _f4(base, Int(pts) + 4 * q)
+    var q = gid // 4
+    var tau = gid % 4
+    var s = _u32(base, Int(positions) + 4 * q)
     var acc = E(0)
-    var pw = F4(1, 0, 0, 0)
-    for row in range(Int(rows)):
-        acc = f_add(acc, e_mul_f4(_e(base, Int(y) + row * 16), pw))
-        pw = ext_mul[2](pw, pt)
+    for c in range(Int(columns_w)):
+        acc = f_add(acc, f_mul(_e(base, Int(beta) + c * 16), E(base[unsafe_offset=Int(code_w) + (s * Int(columns_w) + c) * 4 + tau])))
+    for c in range(Int(columns_q)):
+        acc = f_add(acc, f_mul(_e(base, Int(beta) + (Int(columns_w) + c) * 16), E(base[unsafe_offset=Int(code_q) + (s * Int(columns_q) + c) * 4 + tau])))
+    base.unsafe_store[width=16](Int(v) + gid * 16, acc)
+
+
+def k_expected_tail(base: Pointer[UInt8, MutAnyOrigin], positions: Int64, count: Int32, code: Int64, r: Int64, v: Int64):
+    """v[q] = Enc(fold(y))(pt_q) = sum_a rbar[a] X[s_q, a] over the 8 committed E symbols of the row."""
+    var q = _gid()
+    if q >= Int(count):
+        return
+    var s = _u32(base, Int(positions) + 4 * q)
+    var rr = _r3(base, Int(r))
+    var acc = E(0)
+    for a in range(8):
+        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), _e(base, Int(code) + (s * 8 + a) * 16)))
     base.unsafe_store[width=16](Int(v) + q * 16, acc)
 
 
@@ -263,15 +258,18 @@ def running0[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], 
                                         grid_dim=_grid(p.N()), block_dim=BLOCK)
 
 
-def expected_symbols[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], level1: Bool,
-                                y: Int, rows: Int, pts: Int, count: Int, v: Int) raises:
-    """v for the `count` opened positions of the previous level (4 per position when it is level 1)."""
-    if level1:
-        ctx.enqueue_function[k_expected_level1[p]](base, Int64(y), Int64(pts), Int32(count), Int64(v),
-                                                   grid_dim=_grid(count), block_dim=BLOCK)
-    else:
-        ctx.enqueue_function[k_expected_tail](base, Int64(y), Int32(rows), Int64(pts), Int32(count), Int64(v),
-                                              grid_dim=_grid(count), block_dim=BLOCK)
+def expected_level1(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: Int, count: Int,
+                    code_w: Int, columns_w: Int, code_q: Int, columns_q: Int, beta: Int, v: Int) raises:
+    """v (4 per opened level-1 position) from the committed rows of both trees and beta."""
+    ctx.enqueue_function[k_expected_level1](base, Int64(positions), Int32(count), Int64(code_w), Int32(columns_w),
+                                            Int64(code_q), Int32(columns_q), Int64(beta), Int64(v),
+                                            grid_dim=_grid(4 * count), block_dim=BLOCK)
+
+
+def expected_tail(ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], positions: Int, count: Int, code: Int, r: Int, v: Int) raises:
+    """v (1 per opened tail position) from the committed rows and the r of that level."""
+    ctx.enqueue_function[k_expected_tail](base, Int64(positions), Int32(count), Int64(code), Int64(r), Int64(v),
+                                          grid_dim=_grid(count), block_dim=BLOCK)
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, base: Pointer[UInt8, MutAnyOrigin], level1: Bool,
