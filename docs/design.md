@@ -124,7 +124,8 @@ src/caracal7/
     tail.mojo         tail_encode, materialize, round, fold, and the verifier's host mirrors
   relations/        the Caracal IR and its arguments; __init__ re-exports the prover, verifier, and proof surface
     ir.mojo           family entries, opening points, kappa, the host residual
-    accumulate.mojo   the Z stage: factors, batched inversion, chain scan, Z2
+    accumulate.mojo   the Z stage: factors per descriptor kind, batched inversion, chain scan, Z2
+    sort.mojo         the lookup's sorted copy: counting sort over the advice index (milestone-3-lookup.md)
     residual.mojo     lde, residual, quotient
     smallgrid.mojo    R2 and Q3 in coefficient form; the verifier's cyclic interpolation
     synthetic.mojo    the synthetic instance the tests and benches run

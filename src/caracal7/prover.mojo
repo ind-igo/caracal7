@@ -20,7 +20,7 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, shift_points, accumulate, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.relations import ENTRY, POINT, ACC, CHALS, KIND_LOOKUP, shift_points, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
 from caracal7.core.bytes import Buf
 from caracal7.core.backend import BACKEND
 
@@ -73,6 +73,9 @@ struct ProverLayout:
     var z2: Int                     # (accumulator, x2, e) + e  Z2 in the clear; one trailing 1 (accumulate.k_z2)
     var n_end: Int                  # (accumulator, x2, e)  N(e1, x2), D(e1, x2)
     var d_end: Int
+    var idx: Int                    # (lookup, row, u32)    advice indices, one list per lookup descriptor in order (sort.mojo)
+    var bins: Int                   # (max K + 1, u32)
+    var cursor: Int                 # (max K, u32)
     var sg: Int                     # small-grid scratch: lines (5, h2, e), pac (2 h2, e), p1 (2 h2, e), p2 (3 h2, e), q3c (2 h2, e)
     var q3: Int                     # (2 h2, e)             Q3 on G2 in the clear
     var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
@@ -90,7 +93,7 @@ struct ProverLayout:
     var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
     var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
     # challenges, one region each so nothing is overwritten before its consumer runs
-    var stage1: Int                 # (3, e)                beta, delta, gamma
+    var stage1: Int                 # (CHALS, e)            beta, delta, gamma, 1 + beta, (1 + beta) delta
     var alpha: Int                  # (1, e)
     var z: Int                      # (2, e)
     var beta_gamma: Int             # (columns + P, e)      beta per column, gamma per point
@@ -124,6 +127,9 @@ struct ProverLayout:
         self.z2 = bump.alloc((shape.accumulators() * p.h2() + 1) * p.e)
         self.n_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
         self.d_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
+        self.idx = bump.alloc(shape.lookups() * N * 4)
+        self.bins = bump.alloc((shape.max_table_rows() + 1) * 4)
+        self.cursor = bump.alloc(shape.max_table_rows() * 4)
         self.sg = bump.alloc(14 * p.h2() * p.e)
         self.q3 = bump.alloc(2 * p.h2() * p.e)
         self.ltmp = bump.alloc(max(shape.columns_w, shape.columns_z) * p.h2() * 2 * p.h1() * 2)
@@ -147,7 +153,7 @@ struct ProverLayout:
             max_v = max(max_v, lvl.queries)
         self.proof_stage = bump.alloc(stage)
         self.prefix = bump.alloc(PREFIX_MAX)
-        self.stage1 = bump.alloc(3 * p.e)
+        self.stage1 = bump.alloc(CHALS * p.e)
         self.alpha = bump.alloc(p.e)
         self.z = bump.alloc(2 * p.e)
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
@@ -246,6 +252,15 @@ struct Prover[p: Params, H: Hash]:
         absorb[Self.p, Self.H](ctx, self.arena, T, DS_PREFIX, L.prefix, len(prefix))
         self._mark(ctx, profile, "prefix", t0)
 
+        # 2. the sorted copies (spec 6.3): the lookup descriptors' s columns are witness columns, filled before W is committed
+        var li = 0
+        for k in range(S.accumulators()):
+            if Int(S.accs[k * ACC + 38]) == KIND_LOOKUP:
+                counting_sort[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.idx + li * N * 4, L.bins, L.cursor, S.table_rows(k))
+                li += 1
+        if li > 0:
+            self._mark(ctx, profile, "sort", t0)
+
         # 3. commit W -> stage-1 challenges
         encode[Self.p](ctx, self.arena, L.enc_w, L.tables)
         self._mark(ctx, profile, "encode W", t0)
@@ -254,11 +269,12 @@ struct Prover[p: Params, H: Hash]:
         absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.stage1, 3)             # beta, delta, gamma
+        derive_chals(ctx, self.arena, L.stage1)
         self._mark(ctx, profile, "transcript W", t0)
 
         # 4-7. the Z stage and commit Z with Z2 -> alpha
         for k in range(S.accumulators()):
-            accumulate[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.stage1 + 2 * e, L.num, L.den, L.zscratch,
+            accumulate[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.stage1, L.num, L.den, L.zscratch,
                                L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e, L.n_end + k * Self.p.h2() * e, L.d_end + k * Self.p.h2() * e)
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
@@ -433,3 +449,10 @@ def load_trace[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H],
     for i in range(n):
         prover.trace_host[i] = trace[i]
     prover.arena.upload(ctx, prover.layout.enc_w.trace, prover.trace_host)
+
+
+def load_advice[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], advice: Span[UInt8, _]) raises:
+    """Upload the advice indices: one u32 per row per lookup descriptor, in descriptor order (sort.mojo)."""
+    if len(advice) != prover.shape.lookups() * p.N() * 4:
+        raise Error("advice has the wrong size")
+    _upload(ctx, prover.arena, prover.layout.idx, advice)

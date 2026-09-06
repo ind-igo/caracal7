@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, ACC, shift_points
+from caracal7.relations import ENTRY, ACC, KIND_LOOKUP, shift_points
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, host_base
 
@@ -90,11 +90,15 @@ struct Shape(Writable):
     var points: Int             # P opening points
     var entries: Int            # family table entries (residual.mojo)
     var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
+    var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (milestone-3-lookup.md)
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
-    def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8]()) raises:
-        """P and the entry count come from the family table (residual.mojo)."""
+    def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8](),
+                            tables: List[List[UInt8]] = List[List[UInt8]]()) raises:
+        """P and the entry count come from the family table (residual.mojo). A lookup descriptor names its
+        table by index; the table's row width is the record width.
+        TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
         if len(families) % ENTRY != 0 or len(accs) % ACC != 0:
             raise Error("family or accumulator table is not whole entries")
@@ -104,6 +108,7 @@ struct Shape(Writable):
         self.points = len(shift_points(families)) // 4
         self.entries = len(families) // ENTRY
         self.accs = accs.copy()
+        self.tables = tables.copy()
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
@@ -112,11 +117,33 @@ struct Shape(Writable):
                 var w = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8 if j < 8 else Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
                 if (j % 8) < w and (Int(accs[at]) | Int(accs[at + 1]) << 8) >= columns_w:
                     raise Error("accumulator record columns must be witness columns")
+            if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
+                var w = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
+                var t = Int(accs[k * ACC + 39])
+                if t >= len(tables) or len(tables[t]) == 0 or len(tables[t]) % w != 0 or w != (Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8):
+                    raise Error("lookup descriptor needs a table of its record width")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
     def accumulators(self) -> Int:
         return len(self.accs) // ACC
+
+    def lookups(self) -> Int:
+        var n = 0
+        for k in range(self.accumulators()):
+            n += 1 if Int(self.accs[k * ACC + 38]) == KIND_LOOKUP else 0
+        return n
+
+    def table_rows(self, k: Int) -> Int:
+        """K of the table lookup descriptor k reads."""
+        return len(self.tables[Int(self.accs[k * ACC + 39])]) // (Int(self.accs[k * ACC + 2]) | Int(self.accs[k * ACC + 3]) << 8)
+
+    def max_table_rows(self) -> Int:
+        var m = 0
+        for k in range(self.accumulators()):
+            if Int(self.accs[k * ACC + 38]) == KIND_LOOKUP:
+                m = max(m, self.table_rows(k))
+        return m
 
     def trees(self) -> Int:
         """Trees opened at level 1: W and Q, plus Z when there are accumulators."""
@@ -164,6 +191,10 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(public_inputs.copy())
     append_u32(bytes, len(shape.accs))
     bytes.extend(shape.accs.copy())
+    append_u32(bytes, len(shape.tables))
+    for t in shape.tables:
+        append_u32(bytes, len(t))
+        bytes.extend(t.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest^)

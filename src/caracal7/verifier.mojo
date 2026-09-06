@@ -17,7 +17,7 @@ from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TR
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain
 from caracal7.pcs import pack_slot, pack_index, slot_weight, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
-from caracal7.relations import ENTRY, NONE, ACC, entry, shift_points, point_index, point_coord, residual_at, interp_cyclic
+from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, entry, derived_chals, lookup_constant, shift_points, point_index, point_coord, residual_at, interp_cyclic
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -38,6 +38,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var root_w = r.take(H.DIGEST)
     t.absorb(DS_TREE_W, root_w)
     var stage1 = t.elements(3)                      # beta, delta, gamma
+    derived_chals(stage1)
 
     # step 2: Z root and Z2 -> alpha; Q root -> z
     var root_z = List[UInt8]()
@@ -65,7 +66,6 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     # (1, z2) (point 2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2)
     # (point 6). The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
-    var gamma1 = list_e(stage1, 2)
     for k in range(shape.accumulators()):
         var z_col = get_u16(shape.accs, k * ACC)
         if _coords_at[p](openings, shape, 2, z_col) != one:
@@ -73,9 +73,15 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         if list_e(z2v, k * p.h2()) != one:
             raise Error("Z2(1) is not 1")
         var lhs = ext_mul[4](ext_mul[4](list_e(z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, 6, z_col)),
-                             _factor_at[p](openings, shape, 6, shape.accs, k, gamma1, False))
-        if lhs != _factor_at[p](openings, shape, 6, shape.accs, k, gamma1, True):
+                             _factor_at[p](openings, shape, 6, 6, shape.accs, k, stage1, False))
+        if Int(shape.accs[k * ACC + 38]) == KIND_LOOKUP:
+            # 6.3: the last row has no pair factor, so the product closes on the table constant
+            var w = get_u16(shape.accs, k * ACC + 2)
+            if lhs != lookup_constant(shape.tables[Int(shape.accs[k * ACC + 39])], w, stage1):
+                raise Error("lookup product is not the table constant")
+        elif lhs != _factor_at[p](openings, shape, 6, 6, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
+        # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
 
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     var d = Domains.__init__[p]()
@@ -98,8 +104,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             var za = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, z2)
             var zb = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
             var c = _coords_at[p](openings, shape, 3, get_u16(shape.accs, k * ACC))
-            var n_z = _factor_at[p](openings, shape, 3, shape.accs, k, gamma1, False)
-            var d_z = _factor_at[p](openings, shape, 3, shape.accs, k, gamma1, True)
+            var n_z = _factor_at[p](openings, shape, 3, 4, shape.accs, k, stage1, False)
+            var d_z = _factor_at[p](openings, shape, 3, 4, shape.accs, k, stage1, True)
             var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
             r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), k), term))
         var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)
@@ -346,14 +352,27 @@ def _opening[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, colu
     return list_e(openings, point * shape.columns() + column)
 
 
-def _factor_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, accs: Span[UInt8, _], k: Int, gamma: E, den: Bool) -> E:
-    """N or D of accumulator k at an opening point: gamma + sum_j b_j c_j(point) (accumulate.mojo)."""
-    var v = gamma
+def _fp_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, accs: Span[UInt8, _], k: Int, den: Bool) -> E:
+    """fp of the num or den record of accumulator k at an opening point: sum_j b_j c_j(point)."""
+    var v = E(0)
     for j in range(get_u16(accs, k * ACC + (4 if den else 2))):
         var b = E(0)
         b[j] = 1
         v = f_add(v, ext_mul[4](b, _opening[p](openings, shape, point, get_u16(accs, k * ACC + (22 if den else 6) + 2 * j))))
     return v
+
+
+def _factor_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, next: Int, accs: Span[UInt8, _], k: Int,
+                          chals: Span[UInt8, _], den: Bool) -> E:
+    """N or D of accumulator k at an opening point by its kind (accumulate.mojo); `next` is the point one row
+    on, which a lookup's D reads: (1, omega2 z2) for (e1, z2).
+    TODO(memory): the KIND_MEMORY factor pair of spec 6.4 goes here."""
+    var fp = _fp_at[p](openings, shape, point, accs, k, den)
+    if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
+        if den:
+            return f_add(f_add(list_e(chals, 4), fp), ext_mul[4](list_e(chals, 0), _fp_at[p](openings, shape, next, accs, k, True)))
+        return ext_mul[4](list_e(chals, 3), f_add(list_e(chals, 1), fp))
+    return f_add(list_e(chals, 2), fp)
 
 
 def _coords_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, col0: Int) -> E:

@@ -15,8 +15,9 @@ Buffers (bytes; slowest ... fastest): lines (5, h2, e) coefficients a, b, c, n, 
 p1 (2 h2, e); p2 (3 h2, e); q3c (2 h2, e) the Q3 coefficients summed over accumulators; q3 (2 h2, e)
 its values on G2 in generator order, the proof's clear vector.
 
-ponytail: chain-end families are the permutation pair (W) only; lookup and memory chain-end rules
-(6.3, 6.4) add terms to R2 here when they exist.
+The lookup (6.3) needs no term of its own: its chain-end D_end(x2) is the factor kernel's cyclic
+row + 1 read (accumulate.mojo), so its line is the same (W) pair.
+TODO(memory): the memory chain-end rule of 6.4 adds a term to R2 here when a profile has memory.
 """
 
 from std.math import ceildiv

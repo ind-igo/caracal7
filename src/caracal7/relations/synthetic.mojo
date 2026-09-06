@@ -4,8 +4,9 @@ over ten columns, two permutation accumulators, and a trace that satisfies them.
 from caracal7.core.field import f_add, f_mul
 from caracal7.core.params import Params
 from caracal7.relations.ir import Families, NONE, NO_BASIS, FIX_ONE, FIX_E
+from caracal7.core.bytes import append_u32
 
-def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True) raises -> Families:
+def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True, with_lookup: Bool = False) raises -> Families:
     """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation
     accumulators (c8, c9 are c0, c1 under one permutation of the grid; records of width 1 and 2)
     whose coordinate columns start the Z tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
@@ -32,19 +33,53 @@ def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True) raise
     if with_accumulator:
         f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
         f.accumulator(9, columns_w + 16, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
+    if with_lookup:                                        # (c10, c11) in `synthetic_table`; the prover sorts them into (c12, c13)
+        f.lookup(10, columns_w + (32 if with_accumulator else 0), [10, 11], [12, 13], 0)
     return f^
+
+
+comptime SYNTHETIC_LOOKUP_COLUMNS = 14
+comptime SYNTHETIC_TABLE_ROWS = 64
+
+
+def synthetic_table() -> List[UInt8]:
+    """Table 0 of the lookup instance: row j is (j, 3 j + 1 mod 127)."""
+    var t = List[UInt8](capacity=2 * SYNTHETIC_TABLE_ROWS)
+    for j in range(SYNTHETIC_TABLE_ROWS):
+        t.append(UInt8(j))
+        t.append(UInt8((3 * j + 1) % 127))
+    return t^
+
+
+def synthetic_lookup_index(i: Int) -> Int:
+    """The table row record i holds: rows 0 .. K - 1 cover the table (the dummy rule), the rest are spread."""
+    return i if i < SYNTHETIC_TABLE_ROWS else ((i * 2654435761) >> 7) % SYNTHETIC_TABLE_ROWS
+
+
+def synthetic_advice[p: Params]() -> List[UInt8]:
+    """The advice index list of the lookup instance (sort.mojo), u32 per row."""
+    var a = List[UInt8](capacity=4 * p.N())
+    for i in range(p.N()):
+        append_u32(a, synthetic_lookup_index(i))
+    return a^
 
 
 comptime SYNTHETIC_COLUMNS = 10
 comptime SYNTHETIC_PERM = 17                            # c8[i] = c0[(17 i + 5) mod N]: coprime to every grid N
 
 
-def synthetic_trace[p: Params](seed: Int) -> List[UInt8]:
-    """Ten columns (column, x2, x1) satisfying `synthetic_families`."""
+def synthetic_trace[p: Params](seed: Int, with_lookup: Bool = False) -> List[UInt8]:
+    """Ten columns (column, x2, x1) satisfying `synthetic_families`; with the lookup, fourteen: the records in
+    c10, c11 and the sorted copy's columns c12, c13 left zero for the prover."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
-    var t = List[UInt8](length=SYNTHETIC_COLUMNS * N, fill=0)
+    var t = List[UInt8](length=(SYNTHETIC_LOOKUP_COLUMNS if with_lookup else SYNTHETIC_COLUMNS) * N, fill=0)
+    if with_lookup:
+        var table = synthetic_table()
+        for i in range(N):
+            t[10 * N + i] = table[2 * synthetic_lookup_index(i)]
+            t[11 * N + i] = table[2 * synthetic_lookup_index(i) + 1]
     var s = seed
     for i in range(N):
         s = (s * 1103515245 + 12345) & 0x7FFFFFFF

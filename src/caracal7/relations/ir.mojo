@@ -6,7 +6,7 @@ verifier reads; the kernels in residual.mojo consume the same bytes.
 Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
 col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
 mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32);
-chal u8 [32] (0 none, 1 beta, 2 delta, 3 gamma: a stage-1 challenge factor); basis, basis2 u8 [33, 35)
+chal u8 [32] (0 none, else the CHALS element chal - 1: beta, delta, gamma, 1 + beta, (1 + beta) delta); basis, basis2 u8 [33, 35)
 (t < e: the factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l):
 a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t * b_t2, one entry
 per (family, read).
@@ -20,11 +20,16 @@ ponytail: collapsing shared reads into one kappa (statement-layer 5) is the comp
 real family list exists; the kernel does not care.
 """
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
-from caracal7.relations.accumulate import ACC, ACC_W_MAX
-from caracal7.core.bytes import get_u16, set_u16
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one, ext_inv
+from caracal7.core.bytes import get_u16, set_u16, list_e
 
 comptime ENTRY = 48
+comptime CHALS = 5      # the stage-1 challenge elements: beta, delta, gamma sampled, then 1 + beta, (1 + beta) delta derived
+comptime ACC = 40       # accumulator descriptor bytes (accumulate.mojo)
+comptime ACC_W_MAX = 8
+comptime KIND_PERM = 0
+comptime KIND_LOOKUP = 1
+# TODO(memory): KIND_MEMORY = 2 when spec 6.4 lands.
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -103,6 +108,30 @@ struct Families:
             self.add(family, 126, z_col + t, mult=1, chal=3, basis=t)
             for j in range(len(num)):
                 self.add(family, 126, z_col + t, col_b=num[j], mult=1, basis=t, basis2=j)
+        self._descriptor(z_col, num, den, KIND_PERM, 0)
+
+    def lookup(mut self, family: Int, z_col: Int, f: List[Int], s: List[Int], table: Int) raises:
+        """A lookup accumulator (spec 6.3) of records f against table `table` (Shape.tables), s the sorted
+        copy the prover fills (sort.mojo). N = (1 + beta) (delta + fp(f)), D = (1 + beta) delta + fp(s) +
+        beta fp(s)(omega1 x1): the transition (X1 - e1) (Z(next) D - Z N) is e (2 + 3 w) entries."""
+        if len(f) != len(s) or len(f) == 0 or len(f) > ACC_W_MAX:
+            raise Error("lookup record width")
+        for t in range(16):
+            self.add(family, 1, z_col + t, k1_a=1, mult=1, chal=5, basis=t)
+            for j in range(len(s)):
+                self.add(family, 1, z_col + t, k1_a=1, col_b=s[j], mult=1, basis=t, basis2=j)
+                self.add(family, 1, z_col + t, k1_a=1, col_b=s[j], k1_b=1, mult=1, chal=1, basis=t, basis2=j)
+            self.add(family, 126, z_col + t, mult=1, chal=5, basis=t)
+            for j in range(len(f)):
+                self.add(family, 126, z_col + t, col_b=f[j], mult=1, chal=4, basis=t, basis2=j)
+        self._descriptor(z_col, f, s, KIND_LOOKUP, table)
+
+    # TODO(memory): `memory(family, z_col, addr, ts, value)` for spec 6.4: the sort key is (addr, ts), the
+    # adjacency families (same address: value carried and timestamp increasing; new address: initial value)
+    # are residual entries over the sorted columns, and the descriptor is KIND_MEMORY. Waits for a
+    # profile with memory (configuration.md 3).
+
+    def _descriptor(mut self, z_col: Int, num: List[Int], den: List[Int], kind: Int, table: Int):
         var a = List[UInt8](length=ACC, fill=0)
         set_u16(a, 0, z_col)
         set_u16(a, 2, len(num))
@@ -111,6 +140,8 @@ struct Families:
             set_u16(a, 6 + 2 * j, num[j])
         for j in range(len(den)):
             set_u16(a, 22 + 2 * j, den[j])
+        a[38] = UInt8(kind)
+        a[39] = UInt8(table)
         self.accs.extend(a^)
 
     def add(mut self, family: Int, coef: Int, col_a: Int, k1_a: Int = 0, k2_a: Int = 0,
@@ -164,8 +195,51 @@ def entry(fam: Span[UInt8, _], k: Int) -> Entry:
                  chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
 
 
+def derived_chals(mut chals: List[UInt8]):
+    """Host side of accumulate.k_derive_chals: append 1 + beta and (1 + beta) delta to the three sampled elements."""
+    var ob = f_add(list_e(chals, 0), ext_one[4]())
+    var obd = ext_mul[4](ob, list_e(chals, 1))
+    for t in range(16):
+        chals.append(ob[t])
+    for t in range(16):
+        chals.append(obd[t])
+
+
+def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises -> E:
+    """C_T of spec 6.3 for a (K, w) byte table: prod_j (1 + beta) (delta + fp(t_j)) over
+    prod_{j < K - 1} ((1 + beta) delta + fp(t_j) + beta fp(t_{j + 1})). A zero factor is rejected, and so is
+    a table without two distinct consecutive entries: with no cross term the identity is met by f = (t, u, ..,
+    u) against s = (u, .., u) for any u, so a lookup is only sound when the table has a break."""
+    var beta = list_e(chals, 0)
+    var delta = list_e(chals, 1)
+    var ob = list_e(chals, 3)
+    var obd = list_e(chals, 4)
+    var k = len(table) // w
+    var num = ext_one[4]()
+    var den = ext_one[4]()
+    var has_break = False
+    for j in range(k):
+        var fp = E(0)
+        for i in range(w):
+            fp[i] = table[j * w + i]
+        num = ext_mul[4](num, ext_mul[4](ob, f_add(delta, fp)))
+        if j + 1 < k:
+            var fp1 = E(0)
+            for i in range(w):
+                fp1[i] = table[(j + 1) * w + i]
+            var pair = f_add(f_add(obd, fp), ext_mul[4](beta, fp1))
+            if pair == E(0):
+                raise Error("lookup table constant has a zero factor")
+            if fp1 != fp:
+                has_break = True
+            den = ext_mul[4](den, pair)
+    if not has_break:
+        raise Error("lookup table needs two distinct entries")
+    return ext_mul[4](num, ext_inv[4](den))
+
+
 def kappa_of(en: Entry, alpha: E, chals: Span[UInt8, _]) -> E:
-    """coef * alpha^family * chal * b_t; chals holds the stage-1 challenges (beta, delta, gamma) as e bytes each."""
+    """coef * alpha^family * chal * b_t; chals holds the CHALS stage-1 elements as e bytes each."""
     var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
     if en.chal != 0:
         var c = E(0)

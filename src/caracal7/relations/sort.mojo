@@ -35,10 +35,14 @@ def _counter(base: Base, b: Buf[4], i: Int) -> MutPointer[Int32, MutAnyOrigin]:
     return b.ptr(base, i).unsafe_bitcast[Int32]()
 
 
-def k_histogram(base: Base, idx: Buf[4], bins: Buf[4], n: Int32):
+def k_histogram(base: Base, idx: Buf[4], bins: Buf[4], n: Int32, k: Int32):
+    """One thread per row. An index outside the table is dropped, not written: the frontend's advice is
+    untrusted input, and a dropped record leaves a sorted copy the verifier rejects."""
     var i = global_idx.x
     if i < Int(n):
-        _ = Atomic.fetch_add(_counter(base, bins, u32(base, idx.at(i))), Int32(1))
+        var j = u32(base, idx.at(i))
+        if j < Int(k):
+            _ = Atomic.fetch_add(_counter(base, bins, j), Int32(1))
 
 
 def k_scan(base: Base, bins: Buf[4], cursor: Buf[4], k: Int32):
@@ -52,13 +56,16 @@ def k_scan(base: Base, bins: Buf[4], cursor: Buf[4], k: Int32):
     put_u32(base, bins.at(Int(k)), total)
 
 
-def k_scatter[p: Params](base: Base, trace: Buf[1], acc: Buf[1], idx: Buf[4], cursor: Buf[4]):
+def k_scatter[p: Params](base: Base, trace: Buf[1], acc: Buf[1], idx: Buf[4], cursor: Buf[4], k: Int32):
     """One thread per row: copy the record at row i to the next slot of its bin, in the s columns."""
     comptime N = p.N()
     var i = global_idx.x
     if i >= N:
         return
-    var slot = Int(Atomic.fetch_add(_counter(base, cursor, u32(base, idx.at(i))), Int32(1)))
+    var j = u32(base, idx.at(i))
+    if j >= Int(k):
+        return
+    var slot = Int(Atomic.fetch_add(_counter(base, cursor, j), Int32(1)))
     var w = u16(base, acc.at(2))
     for j in range(w):
         trace.store(base, u16(base, acc.at(22 + 2 * j)) * N + slot, trace.load(base, u16(base, acc.at(6 + 2 * j)) * N + i))
@@ -69,7 +76,7 @@ def counting_sort[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: 
     comptime N = p.N()
     comptime B = BACKEND.block
     ctx.enqueue_memset(arena.buf.create_sub_buffer[DType.uint8](bins, 4 * (k + 1)), 0)
-    ctx.enqueue_function[k_histogram](arena.buf, Buf[4](idx), Buf[4](bins), Int32(N), grid_dim=ceildiv(N, B), block_dim=B)
+    ctx.enqueue_function[k_histogram](arena.buf, Buf[4](idx), Buf[4](bins), Int32(N), Int32(k), grid_dim=ceildiv(N, B), block_dim=B)
     ctx.enqueue_function[k_scan](arena.buf, Buf[4](bins), Buf[4](cursor), Int32(k), grid_dim=1, block_dim=1)
-    ctx.enqueue_function[k_scatter[p]](arena.buf, Buf[1](trace), Buf[1](acc), Buf[4](idx), Buf[4](cursor),
+    ctx.enqueue_function[k_scatter[p]](arena.buf, Buf[1](trace), Buf[1](acc), Buf[4](idx), Buf[4](cursor), Int32(k),
                                        grid_dim=ceildiv(N, B), block_dim=B)

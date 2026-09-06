@@ -10,7 +10,8 @@ from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace
 from caracal7.verifier import verify
-from caracal7.relations.synthetic import synthetic_families, synthetic_trace, SYNTHETIC_COLUMNS
+from caracal7.relations.synthetic import synthetic_families, synthetic_trace, synthetic_table, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
+from caracal7.prover import load_advice
 
 comptime p = REFERENCE
 
@@ -138,6 +139,45 @@ def test_invalid_permutation_is_rejected() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "accumulator grand product is not 1")
+
+
+def _lookup_case(ctx: DeviceContext, var trace: List[UInt8], var advice: List[UInt8]) raises -> String:
+    """Prove the lookup instance on `trace` with `advice` and verify; the verifier's error, or empty."""
+    var f = synthetic_families(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True)
+    var tables: List[List[UInt8]] = [synthetic_table()]
+    var shape = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, tables)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, tables), f.bytes.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_advice[p, Blake3](ctx, prover, advice)
+    var proof = prover.prove(ctx, List[UInt8]())
+    try:
+        _ = verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes)
+    except e:
+        return String(e)
+    return String("")
+
+
+def test_prove_and_verify_with_lookup() raises:
+    """The lookup instance verifies; a record outside the table fails the table constant; advice that
+    puts two records in the wrong bins fails it too (the sorted copy is out of table order)."""
+    var ctx = DeviceContext()
+    assert_equal(_lookup_case(ctx, synthetic_trace[p](1, with_lookup=True), synthetic_advice[p]()), "")
+    var bad = synthetic_trace[p](1, with_lookup=True)
+    bad[11 * p.N() + 100] = UInt8((Int(bad[11 * p.N() + 100]) + 1) % 127)
+    assert_equal(_lookup_case(ctx, bad^, synthetic_advice[p]()), "lookup product is not the table constant")
+    var swapped = synthetic_advice[p]()
+    var t = swapped[4 * 100]
+    swapped[4 * 100] = swapped[4 * 101]
+    swapped[4 * 101] = t
+    assert_equal(_lookup_case(ctx, synthetic_trace[p](1, with_lookup=True), swapped^), "lookup product is not the table constant")
+    var f = synthetic_families(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True)
+    var short: List[List[UInt8]] = [List[UInt8](length=3, fill=0)]
+    var stopped = String("")
+    try:
+        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, short)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "lookup descriptor needs a table of its record width")
 
 
 def test_prove_and_verify_with_tail() raises:
