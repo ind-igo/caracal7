@@ -178,6 +178,13 @@ def test_prove_and_verify_with_lookup() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup descriptor needs a table of its record width")
+    var noncanonical: List[List[UInt8]] = [[0, 127]]
+    stopped = ""
+    try:
+        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, noncanonical)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "lookup table bytes must be canonical field elements (< 127)")
 
 
 def test_prove_and_verify_with_tail() raises:

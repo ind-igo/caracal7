@@ -124,6 +124,9 @@ struct Shape(Writable):
                 var t = Int(accs[k * ACC + 39])
                 if w_num != w_den or t >= len(tables) or len(tables[t]) == 0 or len(tables[t]) % w_num != 0:
                     raise Error("lookup descriptor needs a table of its record width")
+                for b in tables[t]:                    # the verifier compares raw bytes for the break rule; [0,127] must not pass as [0,0]
+                    if Int(b) >= 127:
+                        raise Error("lookup table bytes must be canonical field elements (< 127)")
                 for i in range(w_num):                 # the sort reads f and writes s in one pass
                     for j in range(w_num):
                         if accs[k * ACC + 6 + 2 * i] == accs[k * ACC + 22 + 2 * j] and accs[k * ACC + 7 + 2 * i] == accs[k * ACC + 23 + 2 * j]:
