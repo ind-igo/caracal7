@@ -52,3 +52,33 @@ The dummy rule (every table tuple appears at least once among filler rows) is tr
 ## Memory, deferred
 
 Spec 6.4 needs: a stable multi-pass radix sort on `(addr, ts)` keys in place of the counting sort; descriptor kind 2 with the address, timestamp, and value columns; the adjacency families (same address: value carried, timestamp increasing; new address: initial value) as residual entries; the timestamp counter; boundary rule 6 in the verifier; an arena region for the radix passes. Each slot in the code is marked `TODO(memory)`.
+
+## Merged chains, deferred
+
+Several lookups (or permutations) can share one Z chain at degree 2. The transition
+`Z(next) D = Z N` bounds the degree in witness columns; the challenges are constants. A product
+of k factors that are linear in delta is a polynomial in delta whose coefficients are symmetric
+functions of the fingerprints:
+
+    (delta + a)(delta + b) = delta^2 + delta (a + b) + a b
+
+For width-1 records `a b` is an F-valued helper column with its own degree-2 family `c = a b`, so
+the merged N is linear in witness and helper columns with derived challenge elements (delta^2,
+delta, 1) as coefficients, like `1 + beta` today. The denominator merges the same way with the
+shifted reads: for two width-1 lookups the four products of s1, s2 at rows i and i + 1 need three
+helpers (one is the shift of another). Width w records make the helpers bilinear: w^2 byte products
+under the coordinate basis, 2w - 1 under a gamma-power basis. Three lookups need the elementary
+symmetric functions (about k^2 / 2 helpers), so two or three per chain is the useful range. The
+lookups need not share a table; the boundary constant is the product of the table constants.
+
+Per chain removed: 16 committed E coordinate columns, their encode, LDE and openings, one scan
+and one Z2 term. Added: a few F helper columns computed pointwise (one thread per row, the
+best-shaped work in the prover) and a few more challenge-weighted terms in the residual. The
+residual MAC count does not fall; the commit, LDE and opening costs do. Soundness is the same
+factorization argument over the merged multisets, with the helpers bound by their families.
+
+Work: a `lookup_merged` builder form, the extra derived elements in CHALS, the factor kernel
+reading helpers, the verifier's merged factor branch, and a test with shifted helper reads (the
+part most likely to bite). Belongs after the statement builder, which is where helper columns and
+their families are emitted, and needs a workload with more than one lookup (ECDSA or memory;
+Keccak has none) to measure.
