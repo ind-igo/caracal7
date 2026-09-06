@@ -20,7 +20,7 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, CHALS, KIND_LOOKUP, shift_points, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.relations import ENTRY, POINT, ACC, CHALS, KIND_LOOKUP, shift_points, expand_blocks, block_bytes, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
 from caracal7.core.bytes import Buf
 from caracal7.core.backend import BACKEND
 
@@ -78,8 +78,9 @@ struct ProverLayout:
     var cursor: Int                 # (max K, u32)
     var sg: Int                     # small-grid scratch: lines (5, h2, e), pac (2 h2, e), p1 (2 h2, e), p2 (3 h2, e), q3c (2 h2, e)
     var q3: Int                     # (2 h2, e)             Q3 on G2 in the clear
+    var pub_coeff: Int              # (public column, k2, k1, 2)   public blocks expanded to full coefficient tables (load_public)
     var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
-    var lde: Int                    # (column, G2, G1, 2)   witness then accumulator columns on the residual grid
+    var lde: Int                    # (column, G2, G1, 2)   witness, accumulator, then public columns on the residual grid
     var residual: Int               # (G2, G1, e)
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
     var w_z: Int                    # (P, slot, e)          evaluation queries
@@ -132,8 +133,9 @@ struct ProverLayout:
         self.cursor = bump.alloc(shape.max_table_rows() * 4)
         self.sg = bump.alloc(14 * p.h2() * p.e)
         self.q3 = bump.alloc(2 * p.h2() * p.e)
-        self.ltmp = bump.alloc(max(shape.columns_w, shape.columns_z) * p.h2() * 2 * p.h1() * 2)
-        self.lde = bump.alloc((shape.columns_w + shape.columns_z) * G * 2)
+        self.pub_coeff = bump.alloc(shape.columns_p * N * 2)
+        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * p.h2() * 2 * p.h1() * 2)
+        self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * G * 2)
         self.residual = bump.alloc(G * p.e)
         self.quotient = bump.alloc(quotient_elems[p]() * p.e)
         self.w_z = bump.alloc(shape.points * N * p.e)
@@ -192,7 +194,7 @@ struct Prover[p: Params, H: Hash]:
         self.proof = ProofWriter(ctx, proof_pool_bytes[Self.p, Self.H](self.shape))
         self.trace_host = ctx.enqueue_create_host_buffer[DType.uint8](self.shape.columns_w * Self.p.N())
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
-        var pts = shift_points(self.families)
+        var pts = shift_points(self.families, self.shape.restrictions)
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
         var ph = ctx.enqueue_create_host_buffer[DType.uint8](len(pts))
         ctx.synchronize()
@@ -306,6 +308,8 @@ struct Prover[p: Params, H: Hash]:
         lde[Self.p](ctx, self.arena, L.enc_w.coeff, S.columns_w, L.tables, L.ltmp, L.lde)
         if S.columns_z > 0:
             lde[Self.p](ctx, self.arena, L.enc_z.coeff, S.columns_z, L.tables, L.ltmp, L.lde + S.columns_w * 4 * N * 2)
+        if S.columns_p > 0:
+            lde[Self.p](ctx, self.arena, L.pub_coeff, S.columns_p, L.tables, L.ltmp, L.lde + (S.columns_w + S.columns_z) * 4 * N * 2)
         self._mark(ctx, profile, "lde", t0)
         residual[Self.p](ctx, self.arena, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual)
         self._mark(ctx, profile, "residual", t0)
@@ -456,3 +460,11 @@ def load_advice[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H]
     if len(advice) != prover.shape.lookups() * p.N() * 4:
         raise Error("advice has the wrong size")
     _upload(ctx, prover.arena, prover.layout.idx, advice)
+
+
+def load_public[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], blocks: Span[UInt8, _]) raises:
+    """Upload the public blocks: (d2, h1, 2) F2 coefficients per public column in order (docs/public-columns.md),
+    expanded to the full coefficient layout the LDE reads."""
+    if len(blocks) != block_bytes(prover.shape.publics, p.h1()):
+        raise Error("public blocks have the wrong size")
+    _upload(ctx, prover.arena, prover.layout.pub_coeff, expand_blocks(prover.shape.publics, blocks, p.h1(), p.h2()))

@@ -11,8 +11,8 @@ from caracal7.core.params import REFERENCE
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
-from caracal7.relations.ir import ENTRY, NONE, entry, residual_at
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_block, expand_blocks
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_families, synthetic_trace, synthetic_publics, synthetic_public_block, synthetic_public_value, interpolate_grid
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 from caracal7.core.bytes import list_e
 
@@ -37,18 +37,22 @@ struct Run:
     var chals: List[UInt8]
     var d: Domains
 
-    def __init__(out self) raises:
+    def __init__(out self, with_public: Bool = False) raises:
+        """With the public column: eleven witness columns (c10 = c0 pub) and the public block as column 11 on G."""
         var ctx = DeviceContext()
         self.d = Domains.__init__[p]()
-        var f = synthetic_families(with_accumulator=False)
+        var cw = SYNTHETIC_PUBLIC_COLUMNS if with_public else C
+        var cp = 1 if with_public else 0
+        var f = synthetic_families(cw, with_accumulator=False, with_public=with_public)
         self.fam = f.bytes.copy()
         var bump = Bump()
-        var enc = EncLayout.__init__[p](bump, C)
+        var enc = EncLayout.__init__[p](bump, cw)
         var tab = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(tab.bytes)
         var families = bump.alloc(f.count * ENTRY)
-        var ltmp = bump.alloc(C * h2 * G1 * 2)
-        var lde_buf = bump.alloc(C * G * 2)
+        var ltmp = bump.alloc(cw * h2 * G1 * 2)
+        var lde_buf = bump.alloc((cw + cp) * G * 2)
+        var pub_buf = bump.alloc(cp * N * 2)
         var res_buf = bump.alloc(G * p.e)
         var scratch = bump.alloc(quotient_elems[p]() * p.e)
         var stored = bump.alloc(3 * p.e * N)
@@ -56,7 +60,11 @@ struct Run:
         var chals = bump.alloc(3 * p.e)
         var arena = Arena(ctx, bump.used)
         arena.upload(ctx, tab.base, build_tables[p](ctx, tab, self.d))
-        arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1)))
+        arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1, with_public=with_public)))
+        var pub_coeff = List[UInt8]()
+        if with_public:
+            pub_coeff = expand_blocks(synthetic_publics[p](), synthetic_public_block[p](), h1, h2)
+            arena.upload(ctx, pub_buf, _host(ctx, pub_coeff))
         arena.upload(ctx, families, _host(ctx, f.bytes))
         self.alpha = E(0)
         for i in range(p.e):
@@ -72,12 +80,14 @@ struct Run:
         arena.upload(ctx, chals, _host(ctx, self.chals))
 
         to_packed[p](ctx, arena, enc, tab)
-        lde[p](ctx, arena, enc.coeff, C, tab, ltmp, lde_buf)
+        lde[p](ctx, arena, enc.coeff, cw, tab, ltmp, lde_buf)
+        if with_public:
+            lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + cw * G * 2)
         residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
         quotient[p](ctx, arena, res_buf, tab, scratch, stored)
 
-        var ch = ctx.enqueue_create_host_buffer[DType.uint8](C * N * 2)
-        var lh = ctx.enqueue_create_host_buffer[DType.uint8](C * G * 2)
+        var ch = ctx.enqueue_create_host_buffer[DType.uint8](cw * N * 2)
+        var lh = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * G * 2)
         var rh = ctx.enqueue_create_host_buffer[DType.uint8](G * p.e)
         var qh = ctx.enqueue_create_host_buffer[DType.uint8](quotient_elems[p]() * p.e)
         var sh = ctx.enqueue_create_host_buffer[DType.uint8](3 * p.e * N)
@@ -88,6 +98,7 @@ struct Run:
         arena.download(ctx, stored, sh)
         ctx.synchronize()
         self.coeff = _to_list(ch)
+        self.coeff.extend(pub_coeff^)                  # the public column's coefficients follow the witness ones: col_at works by index
         self.lde = _to_list(lh)
         self.res = _to_list(rh)
         self.scratch = _to_list(qh)
@@ -162,7 +173,10 @@ def test_lde_matches_direct_evaluation() raises:
 
 
 def test_residual_vanishes_on_h_and_matches_host_on_g() raises:
-    var r = Run()
+    _check_on_g(Run())
+
+
+def _check_on_g(r: Run) raises:
     var e1: F2
     var e2: F2
     e1, e2 = r.gates()
@@ -193,7 +207,10 @@ def test_residual_vanishes_on_h_and_matches_host_on_g() raises:
 
 
 def test_deep_identity_at_random_z() raises:
-    var r = Run()
+    _check_deep(Run())
+
+
+def _check_deep(r: Run) raises:
     var e1: F2
     var e2: F2
     e1, e2 = r.gates()
@@ -229,6 +246,31 @@ def test_deep_identity_at_random_z() raises:
             top += Int(r.scratch[q1coef + ((G2 - 1) * h1 + k1) * p.e + i])
             top += Int(r.scratch[q2coef + ((h2 - 1) * h1 + k1) * p.e + i])
     assert_equal(top, 0)
+
+
+def test_public_column_reads_match_host() raises:
+    """The public block through the LDE is the column the host evaluates: the residual vanishes on H with
+    the public read, the DEEP identity holds, and `eval_block` (the verifier's evaluation) agrees with the
+    dense Horner. The periodic public function has no coefficients off the rows k2 = m j."""
+    var r = Run(with_public=True)
+    _check_on_g(r)
+    _check_deep(r)
+    var z1 = _random_e(5)
+    var z2 = _random_e(6)
+    var block = synthetic_public_block[p]()
+    var got = eval_block(block, 0, SYNTHETIC_PUBLIC_M, h2 // SYNTHETIC_PUBLIC_M, h1, z1, z2)
+    assert_true(got == r.col_at(SYNTHETIC_PUBLIC_COLUMNS, z1, z2), "eval_block differs from the dense Horner")
+    var vals = List[UInt8](capacity=N)
+    for x2 in range(h2):
+        for x1 in range(h1):
+            vals.append(synthetic_public_value[p](x1, x2))
+    var full = interpolate_grid[p](vals)
+    var off_rows = 0
+    for k2 in range(h2):
+        if k2 % SYNTHETIC_PUBLIC_M != 0:
+            for t in range(h1 * 2):
+                off_rows += Int(full[k2 * h1 * 2 + t])
+    assert_equal(off_rows, 0)
 
 
 def test_quotient_trace_is_values_on_h() raises:

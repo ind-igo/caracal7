@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, ACC, ACC_W_MAX, KIND_LOOKUP, shift_points
+from caracal7.relations import ENTRY, NONE, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, FIX_ONE, FIX_E, entry, shift_points, block_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, host_base
 
@@ -91,24 +91,53 @@ struct Shape(Writable):
     var entries: Int            # family table entries (residual.mojo)
     var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
     var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (milestone-3-lookup.md)
+    var columns_p: Int          # public columns: on the LDE buffer after W and Z, never committed (docs/public-columns.md)
+    var publics: List[UInt8]    # (m, d2) per public column (PUB bytes each), part of the artifact
+    var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
     def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8](),
-                            tables: List[List[UInt8]] = List[List[UInt8]]()) raises:
+                            tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
+                            restrictions: List[UInt8] = List[UInt8]()) raises:
         """P and the entry count come from the family table (residual.mojo). A lookup descriptor names its
         table by index; the table's row width is the record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0:
-            raise Error("family or accumulator table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0:
+            raise Error("family, accumulator, public or restriction table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
-        self.points = len(shift_points(families)) // 4
+        self.columns_p = len(publics) // PUB
+        self.points = len(shift_points(families, restrictions)) // 4
         self.entries = len(families) // ENTRY
         self.accs = accs.copy()
         self.tables = tables.copy()
+        self.publics = publics.copy()
+        self.restrictions = restrictions.copy()
+        var opened = self.columns_w + self.columns_z
+        for i in range(self.columns_p):
+            var m = Int(publics[i * PUB]) | Int(publics[i * PUB + 1]) << 8
+            var d2 = Int(publics[i * PUB + 2]) | Int(publics[i * PUB + 3]) << 8
+            if m == 0 or d2 == 0 or m * (d2 - 1) >= p.h2():
+                raise Error("public block does not fit the grid: need m >= 1, d2 >= 1, m (d2 - 1) < h2")
+        for i in range(len(restrictions) // RES):
+            var col = Int(restrictions[i * RES]) | Int(restrictions[i * RES + 1]) << 8
+            var coord = Int(restrictions[i * RES + 2]) | Int(restrictions[i * RES + 3]) << 8
+            var count = Int(restrictions[i * RES + 4]) | Int(restrictions[i * RES + 5]) << 8
+            if col >= opened or (coord != FIX_ONE and coord != FIX_E) or count == 0 or count > p.h1():
+                raise Error("restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
+        for k in range(self.entries):
+            var en = entry(families, k)
+            var pub_a = en.col_a >= opened
+            var pub_b = en.col_b != NONE and en.col_b >= opened
+            if en.col_a >= opened + self.columns_p or (en.col_b != NONE and en.col_b >= opened + self.columns_p):
+                raise Error("family entry reads a column past the public columns")
+            if en.dj1_a >= 2 * p.h1() or en.dj2_a >= 2 * p.h2() or (en.col_b != NONE and (en.dj1_b >= 2 * p.h1() or en.dj2_b >= 2 * p.h2())):
+                raise Error("family entry shift is outside the residual grid")
+            if pub_a and pub_b:
+                raise Error("a quadratic entry may read at most one public column")
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
@@ -154,6 +183,13 @@ struct Shape(Writable):
                 m = max(m, self.table_rows(k))
         return m
 
+    def public_bytes[p: Params](self) -> Int:
+        """Host bytes of the public data both sides derive: the blocks, then the restriction polynomials."""
+        var n = block_bytes(self.publics, p.h1())
+        for i in range(len(self.restrictions) // RES):
+            n += (Int(self.restrictions[i * RES + 4]) | Int(self.restrictions[i * RES + 5]) << 8) * 2
+        return n
+
     def trees(self) -> Int:
         """Trees opened at level 1: W and Q, plus Z when there are accumulators."""
         return 3 if self.columns_z > 0 else 2
@@ -174,7 +210,7 @@ struct Shape(Writable):
         return n
 
     def write_to(self, mut w: Some[Writer]):
-        w.write("Shape(columns=", self.columns_w, "+", self.columns_z, "+", self.columns_q, ", P=", self.points,
+        w.write("Shape(columns=", self.columns_w, "+", self.columns_z, "+", self.columns_q, ", public=", self.columns_p, ", P=", self.points,
                 ", tail levels=", len(self.tail), ", clear=", self.clear_length, ")")
 
 
@@ -200,6 +236,10 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(public_inputs.copy())
     append_u32(bytes, len(shape.accs))
     bytes.extend(shape.accs.copy())
+    append_u32(bytes, len(shape.publics))
+    bytes.extend(shape.publics.copy())
+    append_u32(bytes, len(shape.restrictions))
+    bytes.extend(shape.restrictions.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())

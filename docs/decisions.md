@@ -269,3 +269,16 @@ Six review observations, kept here so the builder and the next accumulator kinds
 ## Segmented chain scan (2026-09-06)
 
 The one-thread-per-chain scan ceiling is lifted (the "left as is" of the architecture pass above). `k_chain_scan` ran h2 threads, each walking h1 rows three times through dependent E multiplications: 128 threads and about 1,150 dependent products on the wide grid, 252 and 4,000 on the client grid. The total arithmetic was small; the cost was latency. Now `k_seg_scan` runs one thread per segment of `seg_len(h1)` rows (16, 8, or 4, the largest that divides h1; `check()` gives a1 >= 2): batched inversion of D inside the segment, q = N / D, the segment's exclusive prefix into zval, its total into scratch at the segment's last row. `k_chain_scan` is one thread per chain over the h1 / S totals, writing each segment's exclusive prefix to its first row of scratch, then chain_prod, n_end, d_end. `k_seg_fixup` multiplies each row by its segment prefix. No new buffer: the first and last row of a segment are distinct for S >= 2. The proof and the verifier are unchanged. A zero D now zeroes its segment's Z instead of the whole chain's; the chain product is still 0 and the proof still fails. M1 Pro warm: accumulate 83 -> 17 ms on wide + lookup (three chains), 11 ms on wide; whole proof 624 -> 566 ms wide + lookup, 527 -> 503 ms wide, 117 -> 106 ms reference + lookup. Opus and Codex audits: no correctness findings; the single-segment case (h1 = S) has no profile and no test.
+
+## Public columns and restrictions (2026-09-07)
+
+Implemented per `docs/public-columns.md` (its Status section has the pieces). Decisions taken while
+building: the verifier's public reads live in a small `_PublicReads` struct with plain fields (Shape
+is move-only, so the helper copies the few lists it needs, not the shape); the restriction line is
+added by `shift_points` from the restriction records so every caller derives the same point list
+(the builder plan will turn this into Shape taking the list); public blocks are expanded to full
+(k2, k1) coefficient tables on the host (`expand_blocks`) so the LDE call is the witness one with a
+different source, which keeps the "no kernel changes" claim; `Shape` also rejects an entry that reads
+past the last public column, which was previously unchecked for witness columns too. Host
+interpolation (`interpolate_line`, `interpolate_grid`) sits in synthetic.mojo as the frontend's
+first tool for deriving blocks and restriction polynomials from values.

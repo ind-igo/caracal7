@@ -2,7 +2,7 @@
 
 Grid G = G1 x G2, G_l = <g_l> of order 2 h_l; point j is g_l^j, even j is H_l, odd j the coset.
 Buffers (bytes; slowest ... fastest):
-    lde       (column, j2, j1, 2)      F2 values of every witness column on G
+    lde       (column, j2, j1, 2)      F2 values on G: witness, Z coordinate, then public columns (one index space)
     ltmp      (column, k2, j1, 2)      after the axis-1 forward DFT
     families  (entry, ENTRY)           the compiled family list, kappa folded in after alpha
     residual  (j2, j1, e)              R = sum_j alpha^j R_j on G

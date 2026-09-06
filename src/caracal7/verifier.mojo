@@ -17,13 +17,20 @@ from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TR
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain
 from caracal7.pcs import pack_slot, pack_index, slot_weight, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
-from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, entry, derived_chals, lookup_constant, shift_points, point_index, point_coord, residual_at, interp_cyclic
+from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, entry, derived_chals, lookup_constant, shift_points, point_index, point_coord, residual_at, interp_cyclic, eval_block, eval_line, block_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
-def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8]) raises -> Bool:
-    if len(families) != shape.entries * ENTRY or len(shift_points(families)) != shape.points * 4:
+def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
+                               public: List[UInt8] = List[UInt8]()) raises -> Bool:
+    """`public` is the data both sides derive from the public inputs (docs/public-columns.md): the blocks of
+    every public column, then the polynomial of every restriction; the verifier never hashes it.
+    ponytail: soundness rests on the caller deriving `public` from `public_inputs` (which the prefix hashes);
+    nothing here checks that. The statement builder is where the derivation becomes code on both sides."""
+    if len(families) != shape.entries * ENTRY or len(shift_points(families, shape.restrictions)) != shape.points * 4:
         raise Error("family table does not match the shape")
+    if len(public) != shape.public_bytes[p]():
+        raise Error("public data has the wrong size")
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
 
@@ -85,14 +92,15 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
 
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     var d = Domains.__init__[p]()
-    var pts = shift_points(families)
+    var pts = shift_points(families, shape.restrictions)
+    var z1 = list_e(z, 0)
+    var z2 = list_e(z, 1)
+    var preads = _PublicReads[p](shape, public, pts, z1, z2, d)
     var reads = List[E]()
     for k in range(shape.entries):
         var en = entry(families, k)
-        reads.append(_opening[p](openings, shape, point_index(pts, en.dj1_a, en.dj2_a), en.col_a))
-        reads.append(E(0) if en.col_b == NONE else _opening[p](openings, shape, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
-    var z1 = list_e(z, 0)
-    var z2 = list_e(z, 1)
+        reads.append(preads.read(openings, point_index(pts, en.dj1_a, en.dj2_a), en.col_a))
+        reads.append(E(0) if en.col_b == NONE else preads.read(openings, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
 
     # step 3, the small grid (spec 7.4): R2(z2) = Q3(z2) (z2^h2 - 1), R2 from Z2 interpolated at z2 and
     # omega2 z2, Q3 interpolated on G2, and the openings at (e1, z2) (point 3)
@@ -120,6 +128,16 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
                     ext_mul[4](q2, f_sub(z2h, one)))
     if rz != rhs:
         raise Error("residual identity fails at z")
+
+    # restrictions (docs/public-columns.md): the opening of the column on its line equals the public polynomial at z1
+    var res_off = block_bytes(shape.publics, p.h1())
+    for i in range(len(shape.restrictions) // RES):
+        var col = get_u16(shape.restrictions, i * RES)
+        var coord = get_u16(shape.restrictions, i * RES + 2)
+        var count = get_u16(shape.restrictions, i * RES + 4)
+        if _opening[p](openings, shape, point_index(pts, 0, coord), col) != eval_line(public, res_off, count, z1):
+            raise Error("restriction fails")
+        res_off += count * 2
 
     # step 7: the tail. The running claim starts as <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}.
     comptime assert p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
@@ -350,6 +368,52 @@ def encode_at[p: Params](y: Span[UInt8, _], pt: F4) -> InlineArray[E, 4]:
 
 def _opening[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, column: Int) -> E:
     return list_e(openings, point * shape.columns() + column)
+
+
+struct _PublicReads[p: Params]:
+    """Reads for residual_at: an opening for a committed column, the block evaluated at the point for a
+    public column (index at or past columns_w + columns_z), cached per (column, point)."""
+    var base: Int               # columns_w + columns_z: the first public index
+    var columns: Int            # shape.columns(), the openings stride
+    var points: Int
+    var publics: List[UInt8]
+    var public: List[UInt8]
+    var pts: List[UInt8]
+    var z1: E
+    var z2: E
+    var g1: F2
+    var g2: F2
+    var cache: List[E]
+    var valid: List[Bool]
+
+    def __init__(out self, shape: Shape, public: List[UInt8], pts: List[UInt8], z1: E, z2: E, d: Domains):
+        self.base = shape.columns_w + shape.columns_z
+        self.columns = shape.columns()
+        self.points = shape.points
+        self.publics = shape.publics.copy()
+        self.public = public.copy()
+        self.pts = pts.copy()
+        self.z1 = z1
+        self.z2 = z2
+        self.g1 = d.g1
+        self.g2 = d.g2
+        self.cache = List[E](length=shape.columns_p * shape.points, fill=E(0))
+        self.valid = List[Bool](length=shape.columns_p * shape.points, fill=False)
+
+    def read(mut self, openings: Span[UInt8, _], point: Int, column: Int) -> E:
+        if column < self.base:
+            return list_e(openings, point * self.columns + column)
+        var i = column - self.base
+        var slot = i * self.points + point
+        if not self.valid[slot]:
+            var off = 0
+            for j in range(i):
+                off += get_u16(self.publics, j * PUB + 2) * Self.p.h1() * 2
+            var x1 = point_coord(self.z1, get_u16(self.pts, point * 4), self.g1, Self.p.h1())
+            var x2 = point_coord(self.z2, get_u16(self.pts, point * 4 + 2), self.g2, Self.p.h2())
+            self.cache[slot] = eval_block(self.public, off, get_u16(self.publics, i * PUB), get_u16(self.publics, i * PUB + 2), Self.p.h1(), x1, x2)
+            self.valid[slot] = True
+        return self.cache[slot]
 
 
 def _fp_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, accs: Span[UInt8, _], k: Int, den: Bool) -> E:

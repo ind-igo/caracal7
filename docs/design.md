@@ -48,7 +48,7 @@ Every buffer is a `DeviceBuffer[UInt8]` with a documented shape. Shapes are (slo
 | `num`, `den`, `zval` | (row, e) | the Z stage per accumulator: N, D, then Z; `zval` is split into e coordinate columns as the Z tree's trace (accumulate.mojo) |
 | `z2` | (accumulator, x2, e) + e | Z2 in the clear; one trailing 1 so the shifted line Z2(omega2 X2) is the same buffer one element on |
 | `q3` | (2 h2, e) | Q3 on G2 in the clear (smallgrid.mojo) |
-| `lde` | (column, G2, G1, 2) | evaluations on the residual grid G: witness columns, then the accumulator coordinate columns (F-valued, so 2 coordinates each) |
+| `lde` | (column, G2, G1, 2) | evaluations on the residual grid G: witness columns, then the accumulator coordinate columns (F-valued, so 2 coordinates each), then the public columns (never committed; `docs/public-columns.md`) |
 | `residual` | (G2, G1, e) | batched residual, E-valued |
 | `w_tilde` | (slot, e) | the batched query of the current level, reused per level |
 | `round_msgs` | (level, 3, 3, e) | sumcheck messages |

@@ -8,10 +8,10 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import REFERENCE, Params
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
-from caracal7.prover import Prover, ProverLayout, load_trace
+from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from caracal7.verifier import verify
-from caracal7.relations.synthetic import synthetic_families, synthetic_trace, synthetic_table, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
-from caracal7.prover import load_advice
+from caracal7.relations import shift_points
+from caracal7.relations.synthetic import synthetic_families, synthetic_trace, synthetic_table, synthetic_advice, synthetic_publics, synthetic_public_block, synthetic_restriction, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime p = REFERENCE
 
@@ -185,6 +185,56 @@ def test_prove_and_verify_with_lookup() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup table bytes must be canonical field elements (< 127)")
+
+
+def _public_case(ctx: DeviceContext, proof: List[UInt8], shape: Shape, families: List[UInt8], public: List[UInt8]) raises -> String:
+    var fam = families.copy()
+    try:
+        _ = verify[p, Blake3](proof.copy(), shape, List[UInt8](), fam, public)
+    except e:
+        return String(e)
+    return String("")
+
+
+def test_prove_and_verify_with_public_column_and_restriction() raises:
+    """One public column (c10 = c0 pub) and one restriction (c1 on the last chain equals its interpolant):
+    accept; a changed public coefficient fails the residual identity; a changed restriction polynomial
+    fails the restriction check. The restriction adds the point (z1, e2)."""
+    var ctx = DeviceContext()
+    var f = synthetic_families(SYNTHETIC_PUBLIC_COLUMNS, with_public=True)
+    var trace = synthetic_trace[p](1, with_public=True)
+    var pubs = synthetic_publics[p]()
+    var block = synthetic_public_block[p]()
+    var rp = synthetic_restriction[p](trace)
+    var res = rp[0].copy()
+    var poly = rp[1].copy()
+    var shape = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), pubs, res)
+    assert_equal(shape.points, len(shift_points(f.bytes)) // 4 + 1)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), pubs, res), f.bytes.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_public[p, Blake3](ctx, prover, block)
+    var proof = prover.prove(ctx, List[UInt8]())
+    var public = block.copy()
+    public.extend(poly.copy())
+    assert_equal(_public_case(ctx, proof, shape, f.bytes, public), "")
+    var bad = public.copy()
+    bad[5] = (bad[5] + 1) % 127
+    assert_equal(_public_case(ctx, proof, shape, f.bytes, bad), "residual identity fails at z")
+    var bad2 = public.copy()
+    bad2[len(block) + 2] = (bad2[len(block) + 2] + 1) % 127
+    assert_equal(_public_case(ctx, proof, shape, f.bytes, bad2), "restriction fails")
+    var short = public.copy()
+    _ = short.pop()
+    assert_equal(_public_case(ctx, proof, shape, f.bytes, short), "public data has the wrong size")
+    var stopped = String("")
+    try:
+        var bad_pub = List[UInt8](length=4, fill=0)
+        bad_pub[0] = 8            # m = 8, d2 = h2 / 4: 8 (h2 / 4 - 1) >= h2
+        bad_pub[2] = UInt8(p.h2() // 4)
+        _ = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), bad_pub, res)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "public block does not fit the grid: need m >= 1, d2 >= 1, m (d2 - 1) < h2")
 
 
 def test_prove_and_verify_with_tail() raises:

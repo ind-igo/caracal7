@@ -37,18 +37,27 @@ comptime FIX_E = 65535      # a point coordinate fixed at e_l
 
 
 comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
+comptime PUB = 4        # public column spec (docs/public-columns.md): m u16, d2 u16; the block is (d2, h1) F2 coefficients, row j of X2^(m j)
+comptime RES = 6        # restriction: column u16, axis-2 coordinate u16 (FIX_ONE or FIX_E), coefficient count u16 (the line has degree < count); opened at (z1, coordinate)
 
 
-def shift_points(fam: Span[UInt8, _]) -> List[UInt8]:
+def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8]()) -> List[UInt8]:
     """The opening points as (dj1, dj2) pairs: the seven of spec section 3 in its order (z, the shifted
     point, (1, z2), (e1, z2), (1, omega2 z2), (1, 1), (e1, e2)), then every other distinct read shift of
-    the family table in first-seen order."""
+    the family table in first-seen order, then the lines (z1, coordinate) the restrictions open."""
     var pts = List[UInt8]()
     for pt in [(0, 0), (2, 0), (FIX_ONE, 0), (FIX_E, 0), (FIX_ONE, 2), (FIX_ONE, FIX_ONE), (FIX_E, FIX_E)]:
         var n = len(pts)
         pts.extend(List[UInt8](length=POINT, fill=0))
         set_u16(pts, n, pt[0])
         set_u16(pts, n + 2, pt[1])
+    for i in range(len(restrictions) // RES):
+        var coord = get_u16(restrictions, i * RES + 2)
+        if point_index(pts, 0, coord) < 0:
+            var n = len(pts)
+            pts.extend(List[UInt8](length=POINT, fill=0))
+            set_u16(pts, n, 0)
+            set_u16(pts, n + 2, coord)
     for k in range(len(fam) // ENTRY):
         var en = entry(fam, k)
         for side in range(2):
@@ -274,3 +283,51 @@ def residual_at(fam: Span[UInt8, _], alpha: E, chals: Span[UInt8, _], z1: E, z2:
             v = ext_mul[4](v, g2)
         acc = f_add(acc, ext_mul[4](kappa_of(en, alpha, chals), v))
     return acc
+
+
+def eval_block(coeffs: Span[UInt8, _], off: Int, m: Int, d2: Int, h1: Int, x1: E, x2: E) -> E:
+    """A public block at a point: sum_j X2^(m j) sum_k1 c[j, k1] X1^k1, Horner in X1 then in X2^m
+    (docs/public-columns.md). coeffs holds (d2, h1, 2) F2 bytes from `off`.
+    ponytail: dense, d2 h1 E products per (column, point) (~40 ms host for Keccak-2048); the factored
+    form (a block as a product of two smaller blocks) is a PublicSpec variant when verifier time matters."""
+    var x2m = ext_pow[4](x2, m)
+    var acc = E(0)
+    for j in range(d2 - 1, -1, -1):
+        var inner = E(0)
+        for k1 in range(h1 - 1, -1, -1):
+            var at = off + (j * h1 + k1) * 2
+            inner = f_add(ext_mul[4](inner, x1), ext_embed[4](F2(coeffs[at], coeffs[at + 1])))
+        acc = f_add(ext_mul[4](acc, x2m), inner)
+    return acc
+
+
+def eval_line(coeffs: Span[UInt8, _], off: Int, count: Int, x1: E) -> E:
+    """A restriction line (`count` F2 coefficients from `off`, degree < count) at x1, Horner."""
+    var acc = E(0)
+    for k in range(count - 1, -1, -1):
+        acc = f_add(ext_mul[4](acc, x1), ext_embed[4](F2(coeffs[off + 2 * k], coeffs[off + 2 * k + 1])))
+    return acc
+
+
+def block_bytes(publics: Span[UInt8, _], h1: Int) -> Int:
+    """Host bytes of every public block: sum d2 h1 2."""
+    var n = 0
+    for i in range(len(publics) // PUB):
+        n += get_u16(publics, i * PUB + 2) * h1 * 2
+    return n
+
+
+def expand_blocks(publics: Span[UInt8, _], blocks: Span[UInt8, _], h1: Int, h2: Int) -> List[UInt8]:
+    """The blocks as full (column, k2, k1, 2) coefficient tables, the layout `lde` reads: row j of
+    block i at k2 = m j, the other rows zero."""
+    var out = List[UInt8](length=(len(publics) // PUB) * h2 * h1 * 2, fill=0)
+    var src = 0
+    for i in range(len(publics) // PUB):
+        var m = get_u16(publics, i * PUB)
+        var d2 = get_u16(publics, i * PUB + 2)
+        for j in range(d2):
+            var dst = (i * h2 + m * j) * h1 * 2
+            for t in range(h1 * 2):
+                out[dst + t] = blocks[src + t]
+            src += h1 * 2
+    return out^

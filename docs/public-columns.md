@@ -98,6 +98,21 @@ Shape and layout ~60 lines; verifier evaluation and restriction ~80; prover uplo
 call ~30; synthetic and tests ~120; the size of the second lookup commit. Order: Shape and the
 LDE call with the residual test; the verifier and the prover test; the synthetic restriction.
 
+## Status (2026-09-07)
+
+Implemented as planned, no kernel changes. `PUB` and `RES` records in ir.mojo; `Shape` takes
+`publics` and `restrictions`, validates the degree rule and the column ranges, and puts both in
+the prefix; `shift_points` adds the restriction line; the prover has `pub_coeff` and
+`load_public` (blocks expanded to full coefficient tables through `expand_blocks`) and a third
+`lde` call; the verifier takes `public` (blocks, then restriction polynomials), evaluates public
+reads with `eval_block` cached per (column, point), and checks each restriction with `eval_line`.
+The synthetic instance has a public column periodic along axis 2 (m = 4, d2 = h2 / 4) and a
+restriction of c1 to its last-chain interpolant; the host interpolation helpers live in
+synthetic.mojo until the builder owns them. Tests: test_residual (public read on G, DEEP identity,
+`eval_block` against the dense Horner, the off-row coefficients are zero) and test_prover (accept;
+a changed coefficient fails the residual identity; a changed polynomial fails the restriction;
+wrong size; a block past the degree rule is rejected by Shape).
+
 ## Not in this doc
 
 Public factors in the wiring grand product (ECDSA constants), and the wiring itself. Row groups
