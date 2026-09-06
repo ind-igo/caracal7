@@ -1,0 +1,177 @@
+"""The statement builder: the synthetic instance rebuilt by name compiles to the same bytes, every check has
+a failing case, and a padded trace with a bit, a limb, and a restriction proves and verifies."""
+
+from std.testing import assert_equal, assert_true, TestSuite
+from max.gpu.host import DeviceContext
+
+from caracal7.core.params import REFERENCE
+from caracal7.core.hash import Blake3
+from caracal7.prover import Prover, load_trace, load_advice
+from caracal7.verifier import verify
+from caracal7.relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
+from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line
+from caracal7.relations.ir import Families
+from caracal7.relations.synthetic import synthetic_statement, synthetic_table, SYNTHETIC_PUBLIC_M
+
+comptime p = REFERENCE
+
+
+def _hand_written(columns_w: Int = 10, with_accumulator: Bool = True, with_lookup: Bool = False, with_public: Bool = False) raises -> Families:
+    """The oracle: synthetic_statement written as Families calls. Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation
+    accumulators (c8, c9 are c0, c1 under one permutation of the grid; records of width 1 and 2)
+    whose coordinate columns start the Z tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
+    a within-chain shift, a cyclic shift, an axis-2 shift, a challenge and basis coefficient, a
+    quadratic axis-1 transition, and the accumulator."""
+    if with_lookup and with_public:
+        raise Error("the synthetic instance has no lookup + public combination (both use c10)")
+    var f = Families()
+    f.add(0, 1, 2)                                   # c2 - c0 c1
+    f.add(0, 126, 0, col_b=1)
+    f.add(1, 1, 3)                                   # c3 - c0 - c1
+    f.add(1, 126, 0)
+    f.add(1, 126, 1)
+    f.add(2, 1, 4, k1_a=1, mult=1)                   # (X1 - e1) (c4(next) - c0)
+    f.add(2, 126, 0, mult=1)
+    f.add(3, 1, 5, col_b=5)                          # c5^2 - c5
+    f.add(3, 126, 5)
+    f.add(4, 1, 6)                                   # c6 - c0(omega1^3 x1): cyclic within the chain
+    f.add(4, 126, 0, k1_a=3)
+    f.add(5, 1, 7, k2_a=1, mult=2)                   # (X2 - e2) (c7(x1, omega2 x2) - c0)
+    f.add(5, 126, 0, mult=2)
+    f.add(6, 1, 2, chal=3, basis=3)                  # gamma b_3 (c2 - c0 c1): a challenge-expression coefficient
+    f.add(6, 126, 0, col_b=1, chal=3, basis=3)
+    f.add(7, 1, 4, k1_a=1, col_b=5, mult=1)          # (X1 - e1) c5 (c4(next) - c0): quadratic with the axis-1 gate
+    f.add(7, 126, 0, col_b=5, mult=1)
+    if with_accumulator:
+        f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
+        f.accumulator(9, columns_w + 16, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
+    if with_lookup:                                        # (c10, c11) in `synthetic_table`; the prover sorts them into (c12, c13)
+        f.lookup(10, columns_w + (32 if with_accumulator else 0), [10, 11], [12, 13], 0)
+    if with_public:                                        # c_{w-1} - c0 pub: the public column is the first past W and Z
+        f.add(10, 1, columns_w - 1)
+        f.add(10, 126, 0, col_b=columns_w + (32 if with_accumulator else 0))
+    return f^
+
+
+def test_synthetic_rebuilt_by_name_is_byte_equal() raises:
+    for lookup in [False, True]:
+        var c = synthetic_statement(with_lookup=lookup).compile[p]()
+        var f = _hand_written(14 if lookup else 10, with_lookup=lookup)
+        assert_equal(c.families, f.bytes)
+        assert_equal(c.shape.accs, f.accs)
+        assert_equal(c.shape.columns_w, 14 if lookup else 10)
+        assert_equal(c.layout.col("c9"), 9)
+    var c = synthetic_statement(with_public=True).compile[p]()
+    var f = _hand_written(11, with_public=True)
+    assert_equal(c.families, f.bytes)
+    assert_equal(c.shape.columns_p, 1)
+    assert_equal(len(c.shape.restrictions), RES)
+    var f0 = synthetic_statement(53, with_accumulator=False).compile[p]()       # filler columns are bits with their certificate
+    assert_equal(f0.shape.columns_w, 53)
+    assert_equal(f0.shape.entries, 17 + 2 * 45)                                   # c8, c9 are bits without accumulators
+
+
+def _fails(var st: Statement) -> String:
+    try:
+        _ = st.compile[p]()
+    except e:
+        return String(e)
+    return String("")
+
+
+def test_every_check_has_a_failing_case() raises:
+    var st = synthetic_statement()
+    st.col("idle")
+    assert_equal(_fails(st^), "column is read by nothing and constrained by nothing: idle")
+    st = synthetic_statement()
+    st.family("bad", [Term(1, st.read("c2"), st.read("c3"))], GATE_2)
+    assert_equal(_fails(st^), "axis-2 gated entries must be linear (spec 8 degree bound)")
+    st = synthetic_statement()
+    st.family("bad", [Term(1, st.read("c2", k2=1)), Term(-1, st.read("c3"))], GATE_1)
+    assert_equal(_fails(st^), "a next-chain read (k2 = 1) needs a linear family with the axis-2 gate: bad")
+    st = synthetic_statement()
+    st.family("bad", [Term(1, st.read("c2", k1=p.h1())), Term(-1, st.read("c3"))])
+    assert_equal(_fails(st^), "read shift: k1 in [0, h1), k2 in {0, 1}")
+    st = synthetic_statement()
+    st.family("bad", [Term(1, st.read("nope"))])
+    assert_equal(_fails(st^), "unknown column nope")
+    st = synthetic_statement()
+    st.restrict("c1", FIX_E, p.h1() + 1)
+    assert_equal(_fails(st^), "restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
+    st = synthetic_statement()
+    st.family("bad", [Term(1, st.read("c2"), chal=9)])
+    assert_equal(_fails(st^), "family entry names a challenge element past the derivation table")
+    st = synthetic_statement()
+    st.acc("z2", KIND_PERM, ["c0"], ["z0"])
+    assert_equal(_fails(st^), "unknown witness column z0")
+    st = synthetic_statement()
+    st.acc("z2", KIND_LOOKUP, ["c0", "c1"], ["c0", "c9"], table=st.table(synthetic_table(), 2))
+    assert_equal(_fails(st^), "lookup record and sorted columns must be distinct")
+    st = synthetic_statement(with_public=True)
+    st.family("bad", [Term(1, st.read("pub"), st.read("pub"))])
+    assert_equal(_fails(st^), "a quadratic entry may read at most one public column")
+    var stopped = String("")
+    st = synthetic_statement()
+    try:
+        st.col("c0")
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "name in use: c0")
+    try:
+        _ = st.derived(CHAL_MUL, 5, 1)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "challenge derivation row must add or multiply earlier elements")
+    var el = st.derived(CHAL_ADD, 2, CHAL_ONE)
+    assert_equal(el, 5)
+
+
+def test_padded_trace_proves_and_verifies() raises:
+    """A group of a bit, a limb, and a product y = b x, live on all but the last two chains; the builder pads
+    the rest, emits the Booleanity family and the range lookup, and the prover accepts the trace. A restriction
+    pins x on the first chain to its interpolant."""
+    comptime N = p.N()
+    comptime h1 = p.h1()
+    var st = Statement()
+    st.col("b", BIT, group="g")
+    st.col("x", BYTE, group="g")
+    st.col("y", BYTE, group="g")
+    st.col("l", LIMB6, group="g")
+    st.family("prod", [Term(1, st.read("y")), Term(-1, st.read("b"), st.read("x"))])
+    st.restrict("x", FIX_ONE, h1)
+    var c = st.compile[p]()
+    assert_equal(c.layout.columns_w(), 5)
+    assert_equal(c.layout.col("l.sorted"), 4)
+    assert_equal(c.shape.accumulators(), 1)
+    assert_equal(c.shape.entries, 2 + 2 + 16 * (2 + 3))
+    var live = N - 2 * h1
+    var trace = List[UInt8](length=5 * N, fill=0)
+    var s = 7
+    for i in range(N):                                   # every row filled; padding must overwrite the idle ones
+        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+        trace[i] = UInt8((s >> 20) & 1)
+        trace[N + i] = UInt8((s >> 8) % 127)
+        trace[2 * N + i] = trace[i] * trace[N + i]
+        trace[3 * N + i] = UInt8((s >> 13) % 64)
+    pad_trace[p](c.layout, trace, "g", live)
+    for i in range(live, N):
+        assert_equal(trace[i] + trace[N + i] + trace[2 * N + i], 0)
+        assert_equal(trace[3 * N + i], UInt8(i % 64))
+        assert_equal(trace[4 * N + i], 0)                 # the sorted column is left to the prover
+    var ctx = DeviceContext()
+    var prover = Prover[p, Blake3](ctx, st.compile[p]().take_shape(), c.families.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_advice[p, Blake3](ctx, prover, advice[p](c.layout, trace))
+    var proof = prover.prove(ctx, List[UInt8]())
+    var line = restriction_line[p](c.layout, trace, 0)
+    assert_true(verify[p, Blake3](proof.copy(), c.shape, List[UInt8](), c.families, line))
+    var stopped = String("")
+    try:
+        pad_trace[p](c.layout, trace, "h", live)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "unknown group h")
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

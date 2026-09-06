@@ -13,7 +13,7 @@ from caracal7.relations.accumulate import ACC, accumulate, derive_chals
 from caracal7.relations.ir import Families, CHAL, CHAL_MUL, KIND_LOOKUP, lookup_constant, derived_chals, standard_chals, chal_count
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
 
 comptime p = REFERENCE
 comptime N = p.N()
@@ -110,12 +110,12 @@ def test_derivation_table_matches_host() raises:
 
 
 def test_accumulator_matches_host_and_satisfies_the_relations() raises:
-    var f = synthetic_families()
-    assert_equal(len(f.accs), 2 * ACC)
+    var c = synthetic_statement().compile[p]()
+    assert_equal(len(c.shape.accs), 2 * ACC)
     var ctx = DeviceContext()
     var trace = synthetic_trace[p](1)
     for k in range(2):
-        var got = _run(ctx, f.accs, k, trace.copy(), SYNTHETIC_COLUMNS, List[UInt8](), 0)
+        var got = _run(ctx, c.shape.accs, k, trace.copy(), SYNTHETIC_COLUMNS, List[UInt8](), 0)
         assert_true(got[1] == got[2], "grand product is not 1: c8 is not a permutation of c0")   # lhs = D(e1, e2)
 
 

@@ -305,3 +305,28 @@ re-checks the family table it is given against the shape's list and challenge co
 table, not necessarily this one); the table is capped at 251 rows and `Families.add` rejects a
 challenge index over 255. Every list and table invariant lives in `Shape.__init__` only: a Shape
 deserializer, when one exists, must run the same checks.
+
+## Statement builder (2026-09-07)
+
+Steps 2 and 3 of `docs/statement-builder.md`. `relations/statement.mojo` holds `Statement` (columns, accumulators,
+public columns, restrictions, reads, families, derivation rows by name), `compile[p]` (resolve, check, emit
+through `Families`, derive the point list, build the `Shape`), `Layout` (names, kinds, groups, and the descriptor
+and table bytes the trace helpers read; prover-side only, not hashed), and the helpers `pad_trace`, `advice`,
+`public_block`, `restriction_line`. Decisions taken while building: kinds emit certificates instead of checking
+for them (a BIT column's Booleanity family and a LIMB6 column's [64] lookup are appended after the user's
+families, so hand-written families keep their indices); the padding rule is derived from the descriptors (table
+row for a lookup record column, zero elsewhere) so `group` is a label, not a pad spec; a family's index is its
+position among `family` and `acc` calls, which renumbered the synthetic public family from 11 to 10; `d2 = 0`
+and `count = 0` mean the full block and the full line so a statement is grid-independent and compiles under any
+`Params`; `Compiled.take_shape()` consumes the result because `Shape` is move-only and the Prover owns one; the
+unconstrained-column check is "read by nothing and constrained by nothing", so a wider synthetic layout declares
+its filler columns as bits. Host interpolation moved from synthetic.mojo into the builder. One lookup per LIMB6
+column is a `ponytail:` ceiling (16 Z columns each) until ECDSA's limb count is measured.
+Audit (Opus and Codex) fixes: `c8`, `c9` are bits in the accumulator-free synthetic instance (else unconstrained);
+generated `.sorted` names pass the uniqueness check; `table()` takes the row width and rejects duplicate rows
+(the advice picks a row by value) and tables without a break; `pub` needs `m >= 1` and u16 dimensions,
+`restrict` a u16 count, the family index is a u16, `Term.basis` a coordinate of E; `pad_trace` reads the width
+from the record's own descriptor, skips sorted columns, and bounds `live_rows`; `advice` checks the trace size.
+Not done: `compile` cannot prove that a frontend's own families are neutral under the filler (a family tying
+a lookup record column to a zero-padded column fails on idle rows); that stays the frontend's job, documented
+on `pad_trace`.

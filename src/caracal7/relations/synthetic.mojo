@@ -1,47 +1,46 @@
 """The synthetic instance the tests and benches run before a real frontend exists: eight families
 over ten columns, two permutation accumulators, and a trace that satisfies them."""
 
-from caracal7.core.field import F2, f_add, f_mul, f_pow, ext_mul, ext_pow
+from caracal7.core.field import F2, f_add, f_mul
 from caracal7.core.params import Params
-from caracal7.core.tables import Domains
-from caracal7.relations.ir import Families, NONE, NO_BASIS, FIX_ONE, FIX_E, PUB, RES
+from caracal7.relations.ir import FIX_E, KIND_PERM, KIND_LOOKUP, PUB
+from caracal7.relations.statement import Statement, Term, BIT, BYTE, GATE_1, GATE_2, public_block
 from caracal7.core.bytes import append_u32, set_u16
 
-def synthetic_families(columns_w: Int = 10, with_accumulator: Bool = True, with_lookup: Bool = False, with_public: Bool = False) raises -> Families:
-    """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation
-    accumulators (c8, c9 are c0, c1 under one permutation of the grid; records of width 1 and 2)
-    whose coordinate columns start the Z tree at global index columns_w. The families cover a linear entry, a quadratic entry, both gates,
-    a within-chain shift, a cyclic shift, an axis-2 shift, a challenge and basis coefficient, a
-    quadratic axis-1 transition, and the accumulator."""
+def synthetic_statement(columns_w: Int = 10, with_accumulator: Bool = True, with_lookup: Bool = False, with_public: Bool = False) raises -> Statement:
+    """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation accumulators
+    (c8, c9 are c0, c1 under one permutation of the grid; records of width 1 and 2). The families cover a
+    linear entry, a quadratic entry, both gates, a within-chain shift, a cyclic shift, an axis-2 shift, a
+    challenge and basis coefficient, a quadratic axis-1 transition, and the accumulator. With the lookup,
+    (c10, c11) against `synthetic_table` sorted into (c12, c13); with the public column, c10 = c0 pub and c1
+    restricted on the last chain to its own line. Columns past the instance are bits (constrained by their
+    certificate) so a wider layout can be planned."""
     if with_lookup and with_public:
         raise Error("the synthetic instance has no lookup + public combination (both use c10)")
-    var f = Families()
-    f.add(0, 1, 2)                                   # c2 - c0 c1
-    f.add(0, 126, 0, col_b=1)
-    f.add(1, 1, 3)                                   # c3 - c0 - c1
-    f.add(1, 126, 0)
-    f.add(1, 126, 1)
-    f.add(2, 1, 4, k1_a=1, mult=1)                   # (X1 - e1) (c4(next) - c0)
-    f.add(2, 126, 0, mult=1)
-    f.add(3, 1, 5, col_b=5)                          # c5^2 - c5
-    f.add(3, 126, 5)
-    f.add(4, 1, 6)                                   # c6 - c0(omega1^3 x1): cyclic within the chain
-    f.add(4, 126, 0, k1_a=3)
-    f.add(5, 1, 7, k2_a=1, mult=2)                   # (X2 - e2) (c7(x1, omega2 x2) - c0)
-    f.add(5, 126, 0, mult=2)
-    f.add(6, 1, 2, chal=3, basis=3)                  # gamma b_3 (c2 - c0 c1): a challenge-expression coefficient
-    f.add(6, 126, 0, col_b=1, chal=3, basis=3)
-    f.add(7, 1, 4, k1_a=1, col_b=5, mult=1)          # (X1 - e1) c5 (c4(next) - c0): quadratic with the axis-1 gate
-    f.add(7, 126, 0, col_b=5, mult=1)
+    var st = Statement()
+    var base = SYNTHETIC_LOOKUP_COLUMNS if with_lookup else (SYNTHETIC_PUBLIC_COLUMNS if with_public else SYNTHETIC_COLUMNS)
+    for i in range(base):
+        st.col("c" + String(i), BYTE if with_accumulator or i < 8 or i > 9 else BIT)   # c8, c9 exist for the accumulators; bits (zero) without them
+    for i in range(base, columns_w):
+        st.col("c" + String(i), BIT)
+    st.family("mul", [Term(1, st.read("c2")), Term(-1, st.read("c0"), st.read("c1"))])                     # c2 - c0 c1
+    st.family("add", [Term(1, st.read("c3")), Term(-1, st.read("c0")), Term(-1, st.read("c1"))])          # c3 - c0 - c1
+    st.family("next", [Term(1, st.read("c4", k1=1)), Term(-1, st.read("c0"))], GATE_1)                    # (X1 - e1) (c4(next) - c0)
+    st.family("bool", [Term(1, st.read("c5"), st.read("c5")), Term(-1, st.read("c5"))])                    # c5^2 - c5, written out (c5 is BYTE)
+    st.family("cyc", [Term(1, st.read("c6")), Term(-1, st.read("c0", k1=3))])                             # c6 - c0(omega1^3 x1)
+    st.family("chain", [Term(1, st.read("c7", k2=1)), Term(-1, st.read("c0"))], GATE_2)                   # (X2 - e2) (c7(x1, omega2 x2) - c0)
+    st.family("chal", [Term(1, st.read("c2"), chal=2, basis=3), Term(-1, st.read("c0"), st.read("c1"), chal=2, basis=3)])   # gamma b_3 (c2 - c0 c1)
+    st.family("quad", [Term(1, st.read("c4", k1=1), st.read("c5")), Term(-1, st.read("c0"), st.read("c5"))], GATE_1)       # (X1 - e1) c5 (c4(next) - c0)
     if with_accumulator:
-        f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
-        f.accumulator(9, columns_w + 16, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
-    if with_lookup:                                        # (c10, c11) in `synthetic_table`; the prover sorts them into (c12, c13)
-        f.lookup(10, columns_w + (32 if with_accumulator else 0), [10, 11], [12, 13], 0)
-    if with_public:                                        # c_{w-1} - c0 pub: the public column is the first past W and Z
-        f.add(11, 1, columns_w - 1)
-        f.add(11, 126, 0, col_b=columns_w + (32 if with_accumulator else 0))
-    return f^
+        st.acc("z0", KIND_PERM, ["c0"], ["c8"])                       # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
+        st.acc("z1", KIND_PERM, ["c0", "c1"], ["c8", "c9"])           # width-2 records: the basis products b_t b_j
+    if with_lookup:
+        st.acc("z2", KIND_LOOKUP, ["c10", "c11"], ["c12", "c13"], table=st.table(synthetic_table(), 2))
+    if with_public:
+        st.pub("pub", SYNTHETIC_PUBLIC_M)                            # d2 = h2 / 4: the column is periodic along axis 2
+        st.family("public", [Term(1, st.read("c10")), Term(-1, st.read("c0"), st.read("pub"))])
+        st.restrict("c1", FIX_E)
+    return st^
 
 
 comptime SYNTHETIC_PUBLIC_COLUMNS = 11                  # ten plus c10 = c0 pub
@@ -62,77 +61,14 @@ def synthetic_publics[p: Params]() -> List[UInt8]:
 
 
 def synthetic_public_block[p: Params]() raises -> List[UInt8]:
-    """The block (d2, h1, 2) of the public column: the interpolant of its values on H, rows k2 = m j
-    (the periodic function has no other rows; `interpolate_grid` computes them and they are zero)."""
+    """The block (d2, h1, 2) of the public column from its values on H."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     var vals = List[UInt8](length=p.N(), fill=0)
     for x2 in range(h2):
         for x1 in range(h1):
             vals[x2 * h1 + x1] = synthetic_public_value[p](x1, x2)
-    var full = interpolate_grid[p](vals)
-    var d2 = h2 // SYNTHETIC_PUBLIC_M
-    var block = List[UInt8](capacity=d2 * h1 * 2)
-    for j in range(d2):
-        for t in range(h1 * 2):
-            block.append(full[(SYNTHETIC_PUBLIC_M * j * h1) * 2 + t])
-    return block^
-
-
-def synthetic_restriction[p: Params](trace: List[UInt8]) raises -> Tuple[List[UInt8], List[UInt8]]:
-    """Restrict c1 on the last chain (X2 = e2) to its own interpolant: the RES record (count h1) and the h1
-    F2 coefficients of that line."""
-    comptime h1 = p.h1()
-    var r = List[UInt8](length=RES, fill=0)
-    set_u16(r, 0, 1)
-    set_u16(r, 2, FIX_E)
-    set_u16(r, 4, h1)
-    var line = List[UInt8](capacity=h1)
-    for x1 in range(h1):
-        line.append(trace[p.N() + (p.h2() - 1) * h1 + x1])
-    var d = Domains.__init__[p]()
-    return (r^, interpolate_line(line, d.omega1, h1))
-
-
-def interpolate_line(vals: List[UInt8], omega: F2, h: Int) raises -> List[UInt8]:
-    """h F values on <omega> -> h F2 monomial coefficients (2 bytes each): c_k = h^-1 sum_x v(x) omega^(-k x)."""
-    var inv_h = f_pow(SIMD[DType.uint8, 1](UInt8(h % 127)), 125)
-    var out = List[UInt8](capacity=h * 2)
-    for k in range(h):
-        var acc = F2(0)
-        for x in range(h):
-            acc = f_add(acc, ext_mul[1](F2(vals[x], 0), ext_pow[1](omega, (h - (k * x) % h) % h)))
-        var c = ext_mul[1](acc, F2(inv_h[0], 0))
-        out.append(c[0])
-        out.append(c[1])
-    return out^
-
-
-def interpolate_grid[p: Params](vals: List[UInt8]) raises -> List[UInt8]:
-    """N F values (x2, x1) on H -> (k2, k1, 2) F2 coefficients, axis 1 then axis 2 (host, O(N (h1 + h2)))."""
-    comptime h1 = p.h1()
-    comptime h2 = p.h2()
-    var d = Domains.__init__[p]()
-    var inv_h2 = f_pow(SIMD[DType.uint8, 1](UInt8(h2 % 127)), 125)
-    var ctmp = List[UInt8](length=p.N() * 2, fill=0)       # (x2, k1, 2)
-    for x2 in range(h2):
-        var line = List[UInt8](capacity=h1)
-        for x1 in range(h1):
-            line.append(vals[x2 * h1 + x1])
-        var c = interpolate_line(line, d.omega1, h1)
-        for t in range(h1 * 2):
-            ctmp[x2 * h1 * 2 + t] = c[t]
-    var out = List[UInt8](length=p.N() * 2, fill=0)         # (k2, k1, 2)
-    for k1 in range(h1):
-        for k2 in range(h2):
-            var acc = F2(0)
-            for x2 in range(h2):
-                acc = f_add(acc, ext_mul[1](F2(ctmp[(x2 * h1 + k1) * 2], ctmp[(x2 * h1 + k1) * 2 + 1]),
-                                            ext_pow[1](d.omega2, (h2 - (k2 * x2) % h2) % h2)))
-            var c = ext_mul[1](acc, F2(inv_h2[0], 0))
-            out[(k2 * h1 + k1) * 2] = c[0]
-            out[(k2 * h1 + k1) * 2 + 1] = c[1]
-    return out^
+    return public_block[p](vals, SYNTHETIC_PUBLIC_M, h2 // SYNTHETIC_PUBLIC_M)
 
 
 comptime SYNTHETIC_LOOKUP_COLUMNS = 14
@@ -165,8 +101,8 @@ comptime SYNTHETIC_COLUMNS = 10
 comptime SYNTHETIC_PERM = 17                            # c8[i] = c0[(17 i + 5) mod N]: coprime to every grid N
 
 
-def synthetic_trace[p: Params](seed: Int, with_lookup: Bool = False, with_public: Bool = False) -> List[UInt8]:
-    """Ten columns (column, x2, x1) satisfying `synthetic_families`; with the lookup, fourteen: the records in
+def synthetic_trace[p: Params](seed: Int, with_lookup: Bool = False, with_public: Bool = False, with_accumulator: Bool = True) -> List[UInt8]:
+    """Ten columns (column, x2, x1) satisfying `synthetic_statement`; with the lookup, fourteen: the records in
     c10, c11 and the sorted copy's columns c12, c13 left zero for the prover; with the public column (not
     with the lookup), eleven: c10 = c0 pub."""
     comptime h1 = p.h1()
@@ -195,8 +131,9 @@ def synthetic_trace[p: Params](seed: Int, with_lookup: Bool = False, with_public
             t[4 * N + i] = t[x2 * h1 + (x1 + h1 - 1) % h1] if x1 > 0 else UInt8((i * 7) % 127)     # c4(omega1 x1) = c0(x1)
             t[6 * N + i] = t[x2 * h1 + (x1 + 3) % h1]                                              # c6 = c0(omega1^3 x1)
             t[7 * N + i] = t[(x2 - 1) * h1 + x1] if x2 > 0 else UInt8((i * 11) % 127)              # c7(omega2 x2) = c0(x2)
-            t[8 * N + i] = t[(SYNTHETIC_PERM * i + 5) % N]                                             # c8 = c0 permuted
-            t[9 * N + i] = t[N + (SYNTHETIC_PERM * i + 5) % N]                                         # c9 = c1 under the same permutation
+            if with_accumulator:
+                t[8 * N + i] = t[(SYNTHETIC_PERM * i + 5) % N]                                         # c8 = c0 permuted
+                t[9 * N + i] = t[N + (SYNTHETIC_PERM * i + 5) % N]                                     # c9 = c1 under the same permutation
             if with_public:
                 t[10 * N + i] = f_mul(c0, SIMD[DType.uint8, 1](synthetic_public_value[p](x1, x2)))[0]
     return t^

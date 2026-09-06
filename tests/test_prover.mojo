@@ -12,7 +12,8 @@ from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_
 from caracal7.verifier import verify
 from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE
 from caracal7.core.bytes import set_u16
-from caracal7.relations.synthetic import synthetic_families, synthetic_trace, synthetic_table, synthetic_advice, synthetic_publics, synthetic_public_block, synthetic_restriction, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
+from caracal7.relations.statement import restriction_line
+from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_block, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime p = REFERENCE
 
@@ -20,7 +21,7 @@ comptime p = REFERENCE
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var s = tail_schedule[p]()
     assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
-    var shape = Shape.__init__[p](53, synthetic_families(53).bytes, synthetic_families(53).accs)
+    var shape = synthetic_statement(53).compile[p]().take_shape()
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 32 + 48)
 
@@ -38,7 +39,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].L, 18432)
     assert_equal(s[1].cosets, 4)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
-    var shape = Shape.__init__[big](357, synthetic_families(357).bytes, synthetic_families(357).accs)
+    var shape = synthetic_statement(357).compile[big]().take_shape()
     assert_equal(shape.clear_length, 576)
 
 
@@ -53,12 +54,12 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var shape = Shape.__init__[narrow](43, synthetic_families(43).bytes, synthetic_families(43).accs)
+    var shape = synthetic_statement(43).compile[narrow]().take_shape()
     assert_equal(shape.clear_length, 3969)
 
 
 def test_layout_plans_the_arena() raises:
-    var shape = Shape.__init__[p](53, synthetic_families(53).bytes, synthetic_families(53).accs)
+    var shape = synthetic_statement(53).compile[p]().take_shape()
     var L = ProverLayout.__init__[p, Blake3](shape)
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
@@ -74,16 +75,16 @@ def test_prove_and_verify() raises:
     """The reference profile has no committed tail level, so the level-1 stages are the whole proof:
     it verifies end to end, and one flipped byte in each region fails the check that owns it."""
     var ctx = DeviceContext()
-    var f = synthetic_families()
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
+    var c = synthetic_statement().compile[p]()
+    var shape = synthetic_statement().compile[p]().take_shape()
     assert_equal(shape.points, 8)                 # z, the four boundary points, then the reads (omega1 z1, z2), (omega1^3 z1, z2), (z1, omega2 z2)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
+    var prover = Prover[p, Blake3](ctx, synthetic_statement().compile[p]().take_shape(), c.families.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())
     var fixed = shape.fixed_bytes[p, 32](0)
     assert_true(len(proof) > fixed, "proof shorter than its fixed part")
     print("proof bytes:", len(proof), " fixed:", fixed)
-    assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
+    assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), c.families))
     var q3_bytes = 8 + 3 * 32 + shape.accumulators() * p.h2() * p.e
     var openings = q3_bytes + 2 * p.h2() * p.e
     var clear = openings + shape.points * shape.columns() * p.e
@@ -104,7 +105,7 @@ def test_prove_and_verify() raises:
         bad[tamper[0]] ^= 1
         var stopped = String("")
         try:
-            _ = verify[p, Blake3](bad^, shape, List[UInt8](), f.bytes)
+            _ = verify[p, Blake3](bad^, shape, List[UInt8](), c.families)
         except e:
             stopped = String(e)
         assert_true(stopped.startswith(tamper[1]), stopped)
@@ -114,30 +115,30 @@ def test_prove_and_verify_without_accumulators() raises:
     """No Z tree: a statement with no accumulator (Keccak-128 by the statement layer) carries no Z root,
     no Z2, no Q3, and opens two trees."""
     var ctx = DeviceContext()
-    var f = synthetic_families(with_accumulator=False)
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
+    var c = synthetic_statement(with_accumulator=False).compile[p]()
+    var shape = synthetic_statement(with_accumulator=False).compile[p]().take_shape()
     assert_equal(shape.columns_z, 0)
     assert_equal(shape.points, 4)                 # z and the three reads: no boundary points without accumulators
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
-    load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
+    var prover = Prover[p, Blake3](ctx, synthetic_statement(with_accumulator=False).compile[p]().take_shape(), c.families.copy())
+    load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1, with_accumulator=False))
     var proof = prover.prove(ctx, List[UInt8]())
-    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes))
+    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), c.families))
 
 
 def test_invalid_permutation_is_rejected() raises:
     """An honest prover on a witness whose sorted copy is not a permutation: every commitment and
     challenge is fresh, and the grand product fails."""
     var ctx = DeviceContext()
-    var f = synthetic_families()
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
+    var c = synthetic_statement().compile[p]()
+    var shape = synthetic_statement().compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, synthetic_statement().compile[p]().take_shape(), c.families.copy())
     var trace = synthetic_trace[p](1)
     trace[8 * p.N() + 7] = UInt8((Int(trace[8 * p.N() + 7]) + 1) % 127)
     load_trace[p, Blake3](ctx, prover, trace)
     var proof = prover.prove(ctx, List[UInt8]())
     var stopped = String("")
     try:
-        _ = verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes)
+        _ = verify[p, Blake3](proof^, shape, List[UInt8](), c.families)
     except e:
         stopped = String(e)
     assert_equal(stopped, "accumulator grand product is not 1")
@@ -155,26 +156,26 @@ def test_point_list_and_derivation_table_are_artifact_inputs() raises:
     so is an entry naming a challenge past the table, a row over a later element, and a table without the
     accumulator rows. A longer table on a statement with accumulators proves and verifies."""
     var ctx = DeviceContext()
-    var f = synthetic_families()
-    var extra = shift_points(f.bytes)
+    var c = synthetic_statement().compile[p]()
+    var extra = shift_points(c.families)
     extra.extend(_point(4, 4))
     var table = standard_chals()
     table.extend([CHAL_MUL, 4, 2])
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs, points=extra, chals=table)
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, c.families, c.shape.accs, points=extra, chals=table)
     assert_equal(shape.points, 9)
     assert_equal(shape.chal_count(), 6)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs, points=extra, chals=table), f.bytes.copy())
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, c.families, c.shape.accs, points=extra, chals=table), c.families.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())
-    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes))
-    var short = shift_points(f.bytes)
+    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), c.families))
+    var short = shift_points(c.families)
     short.resize(len(short) - POINT, 0)
-    var bad_fam = f.bytes.copy()
+    var bad_fam = c.families.copy()
     bad_fam[32] = UInt8(7)                        # entry 0 names element 6
-    assert_equal(_rejected(short, standard_chals(), f.bytes, f.accs), "opening points must include every read shift, restriction line, and accumulator boundary point")
-    assert_equal(_rejected(shift_points(f.bytes), standard_chals(), bad_fam, f.accs), "family entry names a challenge element past the derivation table")
-    assert_equal(_rejected(shift_points(f.bytes), [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 5, 1], f.bytes, f.accs), "challenge derivation row must add or multiply earlier elements")
-    assert_equal(_rejected(shift_points(f.bytes), [CHAL_ADD, 0, CHAL_ONE], f.bytes, f.accs), "accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
+    assert_equal(_rejected(short, standard_chals(), c.families, c.shape.accs), "opening points must include every read shift, restriction line, and accumulator boundary point")
+    assert_equal(_rejected(shift_points(c.families), standard_chals(), bad_fam, c.shape.accs), "family entry names a challenge element past the derivation table")
+    assert_equal(_rejected(shift_points(c.families), [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 5, 1], c.families, c.shape.accs), "challenge derivation row must add or multiply earlier elements")
+    assert_equal(_rejected(shift_points(c.families), [CHAL_ADD, 0, CHAL_ONE], c.families, c.shape.accs), "accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
 
 
 def _rejected(points: List[UInt8], chals: List[UInt8], families: List[UInt8], accs: List[UInt8]) -> String:
@@ -187,15 +188,14 @@ def _rejected(points: List[UInt8], chals: List[UInt8], families: List[UInt8], ac
 
 def _lookup_case(ctx: DeviceContext, var trace: List[UInt8], var advice: List[UInt8]) raises -> String:
     """Prove the lookup instance on `trace` with `advice` and verify; the verifier's error, or empty."""
-    var f = synthetic_families(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True)
-    var tables: List[List[UInt8]] = [synthetic_table()]
-    var shape = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, tables)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, tables), f.bytes.copy())
+    var c = synthetic_statement(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True).compile[p]()
+    var shape = synthetic_statement(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True).compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, synthetic_statement(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True).compile[p]().take_shape(), c.families.copy())
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, advice)
     var proof = prover.prove(ctx, List[UInt8]())
     try:
-        _ = verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes)
+        _ = verify[p, Blake3](proof^, shape, List[UInt8](), c.families)
     except e:
         return String(e)
     return String("")
@@ -214,18 +214,18 @@ def test_prove_and_verify_with_lookup() raises:
     swapped[4 * 100] = swapped[4 * 101]
     swapped[4 * 101] = t
     assert_equal(_lookup_case(ctx, synthetic_trace[p](1, with_lookup=True), swapped^), "lookup product is not the table constant")
-    var f = synthetic_families(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True)
+    var c = synthetic_statement(SYNTHETIC_LOOKUP_COLUMNS, with_lookup=True).compile[p]()
     var short: List[List[UInt8]] = [List[UInt8](length=3, fill=0)]
     var stopped = String("")
     try:
-        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, short)
+        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, c.families, c.shape.accs, short)
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup descriptor needs a table of its record width")
     var noncanonical: List[List[UInt8]] = [[0, 127]]
     stopped = ""
     try:
-        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, f.bytes, f.accs, noncanonical)
+        _ = Shape.__init__[p](SYNTHETIC_LOOKUP_COLUMNS, c.families, c.shape.accs, noncanonical)
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup table bytes must be canonical field elements (< 127)")
@@ -245,37 +245,34 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     accept; a changed public coefficient fails the residual identity; a changed restriction polynomial
     fails the restriction check. The restriction adds the point (z1, e2)."""
     var ctx = DeviceContext()
-    var f = synthetic_families(SYNTHETIC_PUBLIC_COLUMNS, with_public=True)
+    var c = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]()
     var trace = synthetic_trace[p](1, with_public=True)
-    var pubs = synthetic_publics[p]()
     var block = synthetic_public_block[p]()
-    var rp = synthetic_restriction[p](trace)
-    var res = rp[0].copy()
-    var poly = rp[1].copy()
-    var shape = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), pubs, res)
-    assert_equal(shape.points, len(shift_points(f.bytes)) // 4 + 1)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), pubs, res), f.bytes.copy())
+    var poly = restriction_line[p](c.layout, trace, 0)
+    var shape = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]().take_shape()
+    assert_equal(shape.points, len(shift_points(c.families)) // 4 + 1)
+    var prover = Prover[p, Blake3](ctx, synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]().take_shape(), c.families.copy())
     load_trace[p, Blake3](ctx, prover, trace)
     load_public[p, Blake3](ctx, prover, block)
     var proof = prover.prove(ctx, List[UInt8]())
     var public = block.copy()
     public.extend(poly.copy())
-    assert_equal(_public_case(ctx, proof, shape, f.bytes, public), "")
+    assert_equal(_public_case(ctx, proof, shape, c.families, public), "")
     var bad = public.copy()
     bad[5] = (bad[5] + 1) % 127
-    assert_equal(_public_case(ctx, proof, shape, f.bytes, bad), "residual identity fails at z")
+    assert_equal(_public_case(ctx, proof, shape, c.families, bad), "residual identity fails at z")
     var bad2 = public.copy()
     bad2[len(block) + 2] = (bad2[len(block) + 2] + 1) % 127
-    assert_equal(_public_case(ctx, proof, shape, f.bytes, bad2), "restriction fails")
+    assert_equal(_public_case(ctx, proof, shape, c.families, bad2), "restriction fails")
     var short = public.copy()
     _ = short.pop()
-    assert_equal(_public_case(ctx, proof, shape, f.bytes, short), "public data has the wrong size")
+    assert_equal(_public_case(ctx, proof, shape, c.families, short), "public data has the wrong size")
     var stopped = String("")
     try:
         var bad_pub = List[UInt8](length=4, fill=0)
         bad_pub[0] = 8            # m = 8, d2 = h2 / 4: 8 (h2 / 4 - 1) >= h2
         bad_pub[2] = UInt8(p.h2() // 4)
-        _ = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, f.bytes, f.accs, List[List[UInt8]](), bad_pub, res)
+        _ = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, c.families, c.shape.accs, List[List[UInt8]](), bad_pub, c.shape.restrictions)
     except e:
         stopped = String(e)
     assert_equal(stopped, "public block does not fit the grid: need m >= 1, d2 >= 1, m (d2 - 1) < h2")
@@ -286,15 +283,15 @@ def test_prove_and_verify_with_tail() raises:
     comptime big = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
                           tail_digits=3, tail_clear_max=2500, lambda_bits=103)
     var ctx = DeviceContext()
-    var f = synthetic_families()
-    var shape = Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes, f.accs)
+    var c = synthetic_statement().compile[big]()
+    var shape = synthetic_statement().compile[big]().take_shape()
     assert_equal(len(shape.tail), 2)
-    var prover = Prover[big, Blake3](ctx, Shape.__init__[big](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
+    var prover = Prover[big, Blake3](ctx, synthetic_statement().compile[big]().take_shape(), c.families.copy())
     load_trace[big, Blake3](ctx, prover, synthetic_trace[big](1))
     var t0 = perf_counter_ns()
     var proof = prover.prove(ctx, List[UInt8]())
     var t1 = perf_counter_ns()
-    assert_true(verify[big, Blake3](proof.copy(), shape, List[UInt8](), f.bytes))
+    assert_true(verify[big, Blake3](proof.copy(), shape, List[UInt8](), c.families))
     var t2 = perf_counter_ns()
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
@@ -307,7 +304,7 @@ def test_prove_and_verify_with_tail() raises:
     bad[pos + 3] ^= 1
     var stopped = String("")
     try:
-        _ = verify[big, Blake3](bad^, shape, List[UInt8](), f.bytes)
+        _ = verify[big, Blake3](bad^, shape, List[UInt8](), c.families)
     except e:
         stopped = String(e)
     assert_equal(stopped, "sumcheck fails at a tail level")

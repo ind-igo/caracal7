@@ -9,12 +9,12 @@ from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
 from caracal7.relations.ir import ENTRY, Families
-from caracal7.relations.synthetic import synthetic_families
+from caracal7.relations.synthetic import synthetic_statement
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 
 comptime p = REFERENCE
 comptime COLS = 64
-comptime ENTRIES = 260          # 20 copies of the 13 synthetic entries over 8 columns each
+comptime ENTRIES = 260          # 15 copies of the 17 synthetic entries over 8 columns each
 comptime REPS = 5
 comptime G = 4 * p.N()
 
@@ -23,12 +23,13 @@ def main() raises:
     var ctx = DeviceContext()
     var d = Domains.__init__[p]()
     var f = Families()
-    var syn = synthetic_families(with_accumulator=False)
-    for r in range(ENTRIES // syn.count):
-        for k in range(syn.count):
+    var syn = synthetic_statement(with_accumulator=False).compile[p]()
+    var syn_count = len(syn.families) // ENTRY
+    for r in range(ENTRIES // syn_count):
+        for k in range(syn_count):
             for i in range(ENTRY):
-                f.bytes.append(syn.bytes[k * ENTRY + i])
-            f.bytes[f.count * ENTRY + 16] = UInt8((Int(syn.bytes[k * ENTRY + 16]) + 8 * (r % (COLS // 8))) & 255)
+                f.bytes.append(syn.families[k * ENTRY + i])
+            f.bytes[f.count * ENTRY + 16] = UInt8((Int(syn.families[k * ENTRY + 16]) + 8 * (r % (COLS // 8))) & 255)
             f.count += 1
     var bump = Bump()
     var e = EncLayout.__init__[p](bump, COLS)

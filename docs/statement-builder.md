@@ -48,25 +48,29 @@ of high-degree expressions. A frontend that needs a helper column declares it.
   list instead of deriving it; the verifier checks the list against the families the same way it
   checks `shift_points` today.
 
-## API
+## API (as built, `relations/statement.mojo`)
 
 ```
-var st = Statement[p]()                       # grid from Params
-st.group("keccak", pad=Pad.zero)               # row kind
-st.col("a0", kind=Kind.bit, group="keccak")    # W column; returns nothing, names are the handle
-st.acc("z", form=Acc.perm(num=[...], den=[...]))            # Z block; perm / lookup(table) / (later) horner
-st.pub("m", m=1, d2=24)                        # public column, coefficient block (d2, h1)
-st.restrict("s0", line=Line.last_chain, degree=64)
+var st = Statement()
+st.col("a0", BIT, group="keccak")              # W column; kinds BIT, LIMB6, BYTE; the index is the declaration order
+st.acc("z", KIND_PERM, num=[...], den=[...])   # Z block; KIND_LOOKUP takes table=st.table(rows)
+st.pub("m", m=4)                               # public column, block (d2, h1); d2 = 0 means h2 / m
+st.restrict("s0", FIX_E)                       # a public line on the last chain; count = 0 means h1 coefficients
 var r = st.read("a0", k1=3)                    # cyclic read (omega1^3 x1, x2); k2=1 is the next-chain read
-st.family("chi", terms=[(1, r, st.read("a1")), (-1, st.read("a2"))], gate=Gate.none)
-var art = st.compile()                         # Shape, families bytes, points, Layout
+st.family("chi", [Term(1, r, st.read("a1")), Term(-1, st.read("a2"))], GATE_NONE)
+var el = st.derived(CHAL_MUL, 3, 1)            # a challenge derivation row; the element index for Term.chal
+var c = st.compile[p]()                        # Compiled: shape, families bytes, layout (take_shape() for the Prover)
 ```
 
-`terms` are `(coefficient, read, read or none)`; a coefficient is an F constant, a challenge
-expression (`Chal.beta`, `Chal.derived(i, j)` the product of two earlier elements), or a public
-read. `family` emits one entry per term through `Families.add`, sharing a family index; `gate`
-maps to `mult`. The trace is filled by name: `art.layout.col("a0")` is the column index, and
-`art.layout.pad(trace)` fills idle chains.
+A `Term` is `coef * element(chal) * b_basis * b_basis2 * a * b` with `b` optional; a public read is a read of
+a `pub` name. `family` emits one entry per term through `Families.add`, sharing the family index (its position
+among `family` and `acc` calls); `gate` is `mult`. Kinds emit their certificates after the user's families: a
+BIT column its Booleanity family, a LIMB6 column a lookup into the [64] table through a `<name>.sorted` column
+the builder appends to W. Groups are labels for `pad_trace(layout, trace, group, live_rows)`, which fills idle
+rows with a table row for lookup record columns and zero elsewhere. `advice(layout, trace)` derives the sort
+indices, `public_block(vals, m, d2)` a block from values, `restriction_line(layout, trace, i)` a line from the
+trace. Skipped from the sketch: a `group()` call with a pad rule (the rule is a function of the kinds), `Chal`
+and `Line` wrappers (element indices and FIX_* do the job).
 
 ## Checks (statement-layer 2, as code in `compile`)
 
@@ -125,9 +129,10 @@ public-columns plan.
 1. (done) `Shape` takes the point list; the challenge derivation table. Two small IR changes, tests
    in test_prover and test_accumulate. Do these before the builder so it has nothing to work
    around.
-2. `Statement`, `Layout`, `compile`, the checks, `pad_trace`. About 400 lines in
-   `relations/statement.mojo`. test_builder.
-3. The synthetic workload and the bench moved onto the builder, so there is one path.
+2. (done 2026-09-07) `Statement`, `Layout`, `compile`, the checks, `pad_trace`, in `relations/statement.mojo`;
+   test_builder rebuilds the hand-written synthetic list by name byte for byte.
+3. (done 2026-09-07) `synthetic_statement` is the one path; every test and bench compiles it. The hand-written
+   `Families` list lives in test_builder as the oracle.
 4. Keccak-256 of 128 bytes on the builder (statement-layer 8, 9): the first real family list and
    the first measurement of the residual with thousands of entries.
 

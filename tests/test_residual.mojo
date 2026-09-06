@@ -12,7 +12,8 @@ from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
 from caracal7.relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_block, expand_blocks
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_families, synthetic_trace, synthetic_publics, synthetic_public_block, synthetic_public_value, interpolate_grid
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_block, synthetic_public_value
+from caracal7.relations.statement import interpolate_grid
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 from caracal7.core.bytes import list_e
 
@@ -43,13 +44,13 @@ struct Run:
         self.d = Domains.__init__[p]()
         var cw = SYNTHETIC_PUBLIC_COLUMNS if with_public else C
         var cp = 1 if with_public else 0
-        var f = synthetic_families(cw, with_accumulator=False, with_public=with_public)
-        self.fam = f.bytes.copy()
+        var c = synthetic_statement(cw, with_accumulator=False, with_public=with_public).compile[p]()
+        self.fam = c.families.copy()
         var bump = Bump()
         var enc = EncLayout.__init__[p](bump, cw)
         var tab = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(tab.bytes)
-        var families = bump.alloc(f.count * ENTRY)
+        var families = bump.alloc(len(c.families))
         var ltmp = bump.alloc(cw * h2 * G1 * 2)
         var lde_buf = bump.alloc((cw + cp) * G * 2)
         var pub_buf = bump.alloc(cp * N * 2)
@@ -60,12 +61,12 @@ struct Run:
         var chals = bump.alloc(3 * p.e)
         var arena = Arena(ctx, bump.used)
         arena.upload(ctx, tab.base, build_tables[p](ctx, tab, self.d))
-        arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1, with_public=with_public)))
+        arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1, with_public=with_public, with_accumulator=False)))
         var pub_coeff = List[UInt8]()
         if with_public:
             pub_coeff = expand_blocks(synthetic_publics[p](), synthetic_public_block[p](), h1, h2)
             arena.upload(ctx, pub_buf, _host(ctx, pub_coeff))
-        arena.upload(ctx, families, _host(ctx, f.bytes))
+        arena.upload(ctx, families, _host(ctx, c.families))
         self.alpha = E(0)
         for i in range(p.e):
             self.alpha[i] = UInt8((i * 29 + 3) % 127)
@@ -83,7 +84,7 @@ struct Run:
         lde[p](ctx, arena, enc.coeff, cw, tab, ltmp, lde_buf)
         if with_public:
             lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + cw * G * 2)
-        residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
+        residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf)
         quotient[p](ctx, arena, res_buf, tab, scratch, stored)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8](cw * N * 2)

@@ -13,7 +13,7 @@ from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
 from caracal7.relations.ir import shift_points, point_coord
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
 from caracal7.core.bytes import list_e
 
 comptime p = REFERENCE
@@ -50,9 +50,9 @@ def _horner(coef: List[UInt8], off: Int, stride: Int, ext: Int, z1: E, z2: E, ro
 
 def test_openings_and_fold() raises:
     var ctx = DeviceContext()
-    var f = synthetic_families()
-    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
-    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
+    var c = synthetic_statement().compile[p]()
+    var shape = synthetic_statement().compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, synthetic_statement().compile[p]().take_shape(), c.families.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     _ = prover.prove(ctx, List[UInt8]())
     ref L = prover.layout
@@ -70,7 +70,7 @@ def test_openings_and_fold() raises:
     var code_w = _dl(ctx, prover, L.enc_w.code, p.L() * SYNTHETIC_COLUMNS * 4)
     var code_z = _dl(ctx, prover, L.enc_z.code, p.L() * shape.columns_z * 4)
     var code_q = _dl(ctx, prover, L.enc_q.code, p.L() * shape.columns_q * 4)
-    var pts = shift_points(f.bytes)
+    var pts = shift_points(c.families)
     var d = prover.domains
 
     # witness columns at every point
