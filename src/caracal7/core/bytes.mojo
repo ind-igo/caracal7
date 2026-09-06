@@ -37,6 +37,11 @@ struct Buf[W: Int](TrivialRegisterPassable, DevicePassable):
         return Self(self.at(i))
 
     @always_inline
+    def ptr(self, base: Base, i: Int) -> Base:
+        """Pointer to element i, for the Hash methods."""
+        return base.unsafe_offset(self.at(i))
+
+    @always_inline
     def load(self, base: Base, i: Int) -> SIMD[DType.uint8, Self.W]:
         return base.unsafe_load[width=Self.W](self.at(i))
 
@@ -61,6 +66,21 @@ def u32(base: Base, off: Int) -> Int:
 @always_inline
 def put_u32(base: Base, off: Int, v: Int):
     comptime for b in range(4):
+        base[unsafe_offset=off + b] = UInt8((v >> (8 * b)) & 255)
+
+
+@always_inline
+def u64(base: Base, off: Int) -> Int:
+    var v = base.unsafe_load[width=8](off)
+    var c = 0
+    comptime for i in range(8):
+        c |= Int(v[i]) << (8 * i)
+    return c
+
+
+@always_inline
+def put_u64(base: Base, off: Int, v: Int):
+    comptime for b in range(8):
         base[unsafe_offset=off + b] = UInt8((v >> (8 * b)) & 255)
 
 

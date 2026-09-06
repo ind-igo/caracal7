@@ -11,7 +11,7 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import Params
 from caracal7.core.arena import Bump
 from caracal7.core.hash import Hash
-from caracal7.core.bytes import Base, Buf, u32, put_u32, host_base
+from caracal7.core.bytes import Base, Buf, u32, put_u32, u64, put_u64, host_base
 from caracal7.core.arena import Arena
 
 # Domain separators, one per line of spec 9.4, in transcript order.
@@ -39,15 +39,11 @@ struct TranscriptLayout(TrivialRegisterPassable):
 
 
 def _get_counter(state: Base) -> Int:
-    var c = 0
-    comptime for i in range(8):
-        c |= Int(state[unsafe_offset=_COUNTER + i]) << (8 * i)
-    return c
+    return u64(state, _COUNTER)
 
 
 def _set_counter(state: Base, c: Int):
-    comptime for i in range(8):
-        state[unsafe_offset=_COUNTER + i] = UInt8((c >> (8 * i)) & 255)
+    put_u64(state, _COUNTER, c)
 
 
 def absorb_into[H: Hash](state: Base, ds: UInt8, src: Base, bytes: Int):
@@ -86,15 +82,15 @@ def sample[H: Hash](state: Base, dst: Base, count: Int, below: Int):
 
 def k_reset(base: Base, state: Buf[1]):
     comptime for i in range(STATE_BYTES):
-        base[unsafe_offset=state.at(i)] = 0
+        state.store(base, i, 0)
 
 
 def k_absorb[H: Hash](base: Base, state: Buf[1], ds: UInt8, src: Buf[1], bytes: Int32):
-    absorb_into[H](base.unsafe_offset(state.at(0)), ds, base.unsafe_offset(src.at(0)), Int(bytes))
+    absorb_into[H](state.ptr(base, 0), ds, src.ptr(base, 0), Int(bytes))
 
 
 def k_sample[H: Hash](base: Base, state: Buf[1], dst: Buf[1], count: Int32, below: Int32):
-    sample[H](base.unsafe_offset(state.at(0)), base.unsafe_offset(dst.at(0)), Int(count), Int(below))
+    sample[H](state.ptr(base, 0), dst.ptr(base, 0), Int(count), Int(below))
 
 
 def reset(ctx: DeviceContext, arena: Arena, t: TranscriptLayout) raises:

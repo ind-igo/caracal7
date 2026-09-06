@@ -43,17 +43,14 @@ def root_offset[H: Hash](tree: Int, leaves: Int) -> Int:
 def k_leaves[H: Hash](base: Base, code: Buf[1], row_bytes: Int32, leaves: Int32, tree: Buf[H.DIGEST]):
     var i = Int(global_idx.x)
     if i < Int(leaves):
-        H.leaf(base.unsafe_offset(code.at(i * Int(row_bytes))), Int(row_bytes),
-               base.unsafe_offset(tree.at(i)))
+        H.leaf(code.ptr(base, i * Int(row_bytes)), Int(row_bytes), tree.ptr(base, i))
 
 
 def k_level[H: Hash](base: Base, src: Buf[H.DIGEST], n: Int32, dst: Buf[H.DIGEST]):
     var j = Int(global_idx.x)
     if j < (Int(n) + 1) // 2:
-        var left = base.unsafe_offset(src.at(2 * j))
-        var dst_ptr = base.unsafe_offset(dst.at(j))
         if 2 * j + 1 < Int(n):
-            H.node(left, left.unsafe_offset(H.DIGEST), dst_ptr)
+            H.node(src.ptr(base, 2 * j), src.ptr(base, 2 * j + 1), dst.ptr(base, j))
         else:
             dst.store(base, j, src.load(base, 2 * j))
 
@@ -136,7 +133,7 @@ def k_rows(base: Base, code: Buf[1], row_bytes: Int32, order: Buf[4], dst: Buf[1
     var out = dst.at(4 + r * Int(row_bytes))
     var b = Int(thread_idx.x)
     while b < Int(row_bytes):
-        base[unsafe_offset=out + b] = base[unsafe_offset=src + b]
+        Buf[1](out).store(base, b, Buf[1](src).load(base, b))
         b += Int(block_dim.x)
 
 
@@ -190,7 +187,7 @@ def check_multiproof[H: Hash](root: Span[UInt8, _], leaves: Int, row_bytes: Int,
         rows.append(proof[i])
     var digests = List[UInt8](length=m * H.DIGEST, fill=0)
     for i in range(m):
-        H.leaf(host_base(rows).unsafe_offset(i * row_bytes), row_bytes, host_base(digests).unsafe_offset(i * H.DIGEST))
+        H.leaf(host_base(rows[i * row_bytes:]), row_bytes, host_base(digests[i * H.DIGEST:]))
     var at = m * row_bytes
     var n = leaves
     while n > 1:
@@ -201,14 +198,14 @@ def check_multiproof[H: Hash](root: Span[UInt8, _], leaves: Int, row_bytes: Int,
             var k = known[i]
             var s = k ^ 1
             var out = List[UInt8](length=H.DIGEST, fill=0)
-            var mine = host_base(digests).unsafe_offset(i * H.DIGEST)
+            var mine = host_base(digests[i * H.DIGEST:])
             if i + 1 < m and known[i + 1] == s:
-                H.node(mine, mine.unsafe_offset(H.DIGEST), host_base(out))
+                H.node(mine, host_base(digests[(i + 1) * H.DIGEST:]), host_base(out))
                 i += 2
             elif s < n:
                 if at + H.DIGEST > len(proof):
                     raise Error("multiproof truncated")
-                var sib = host_base(proof).unsafe_offset(at)
+                var sib = host_base(proof[at:])
                 at += H.DIGEST
                 if k & 1 == 0:
                     H.node(mine, sib, host_base(out))

@@ -42,20 +42,20 @@ def k_fold_alpha(base: Base, families: Buf[1], count: Int32, alpha: Buf[16], cha
     var gid = Int(global_idx.x)
     if gid >= Int(count):
         return
-    var ent = families.at(gid * ENTRY)
+    var ent = families.offset(gid * ENTRY)
     var a = alpha.load(base, 0)
-    var fam = u16(base, ent + 30)
-    var kappa = f_mul(ext_pow[4](a, fam), E(base[unsafe_offset=ent + 29]))
-    var chal = Int(base[unsafe_offset=ent + 32])
+    var fam = u16(base, ent.at(30))
+    var kappa = f_mul(ext_pow[4](a, fam), E(ent.load(base, 29)))
+    var chal = Int(ent.load(base, 32))
     if chal != 0:
         kappa = ext_mul[4](kappa, chals.load(base, chal - 1))
     for i in range(2):
-        var basis = Int(base[unsafe_offset=ent + 33 + i])
+        var basis = Int(ent.load(base, 33 + i))
         if basis != NO_BASIS:
             var b = E(0)
             b[basis] = 1
             kappa = ext_mul[4](kappa, b)
-    base.unsafe_store[width=16](ent, kappa)
+    Buf[16](ent.at(0)).store(base, 0, kappa)
 
 
 @always_inline
@@ -83,7 +83,7 @@ struct Family[p: Params](Loader):
         var v = _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 16, n_lo, n_hi)
         if u16(base, ent + 22) != NONE:
             v = ext_mul[1](v, _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 22, n_lo, n_hi))
-        var mult = base[unsafe_offset=ent + 28]
+        var mult = Buf[1](ent).load(base, 28)
         if mult == 1:
             v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + n_lo * 2))
         elif mult == 2:
@@ -102,7 +102,7 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
         return
     var c = gid // N
     var x = gid % N
-    base[unsafe_offset=trace.at(gid)] = base[unsafe_offset=vals.at(((c // e) * N + x) * e + c % e)]
+    trace.store(base, gid, vals.load(base, ((c // e) * N + x) * e + c % e))
 
 
 # ---- host orchestration ----

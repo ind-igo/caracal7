@@ -148,8 +148,8 @@ def k_sum_splits(base: Base, src: Buf[1], splits: Int32, elems: Int32, dst: Buf[
     var i = gid % Int(elems)
     var acc: UInt32 = 0
     for k in range(Int(splits)):
-        acc += UInt32(base[unsafe_offset=src.at((o * Int(splits) + k) * Int(elems) + i)])
-    base[unsafe_offset=dst.at(o * Int(dst_stride) + i)] = UInt8(acc % 127)
+        acc += UInt32(src.load(base, (o * Int(splits) + k) * Int(elems) + i))
+    dst.store(base, o * Int(dst_stride) + i, UInt8(acc % 127))
 
 
 def open[p: Params](ctx: DeviceContext, arena: Arena,
