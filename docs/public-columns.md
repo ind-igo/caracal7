@@ -32,7 +32,14 @@ new kernel. The verifier evaluates the same block at a point with Horner.
 - **One index space.** Columns on the LDE buffer are witness, then Z coordinates, then public,
   so an entry reading a public column is a normal entry and `_read` does not change. The builder
   rejects a quadratic entry with two public reads (pointless) and the spec's degree rule holds by
-  construction: public times witness is degree 2, which the IR admits.
+  construction: public times witness is degree 2, which the IR admits. Shape checks the block
+  fits the grid: `m >= 1`, `d2 >= 1`, and `m (d2 - 1) < h2`. Without that bound a block with an
+  `X2^h2` term is truncated by the coefficient buffer while the verifier's Horner keeps it, and
+  the two sides evaluate different polynomials.
+- **Challenge-weighted columns are not public columns.** The statement layer's `zeta^t` and lane
+  weights (statement-layer 8) depend on challenges sampled after W is committed and take values
+  in E. They cannot be derived from public inputs before `prove` and do not fit the F2 LDE path.
+  They need their own plan (an E-valued term the verifier evaluates from the transcript).
 - **Dense blocks in version one.** A block is (d2, h1) coefficients, row j the coefficient
   vector of X2^(m j). The spec's product form (chain selector times interpolant) is expanded by
   the frontend into one block. The verifier pays the dense evaluation; the factored form is a
@@ -45,8 +52,9 @@ new kernel. The verifier evaluates the same block at a point with Horner.
   `{column, coordinate (FIX_ONE or FIX_E on axis 2), degree}`. `columns_p = len(publics)`. Both
   lists enter the prefix as integers. The LDE buffer grows to `columns_w + columns_z + columns_p`;
   the openings, trees, and proof do not.
-- **Prover.** `pub_coeff` arena region, `columns_p x N x 2` bytes of F2 coefficients (F bytes
-  expanded at upload). `load_public(ctx, prover, blocks)` uploads; `prove` issues a third `lde`
+- **Prover.** `pub_coeff` arena region, `columns_p x N x 2` bytes of F2 coefficients. The
+  frontend supplies F2 coefficients: the interpolant of F-valued (even bit-valued) grid points has
+  F2 coefficients, because the grid twiddles are F2-valued (caracal-prover 9.1). `load_public(ctx, prover, blocks)` uploads; `prove` issues a third `lde`
   call after the Z one, into the LDE buffer past the Z columns. The `ltmp` scratch already sizes
   by the larger of the witness and Z column counts; it takes `columns_p` into that max.
 - **Points.** A restriction at (z1, e2) is the point `(0, FIX_E)`; `shift_points` gains it when
@@ -61,14 +69,14 @@ new kernel. The verifier evaluates the same block at a point with Horner.
 
 ## Sizes
 
-| item | Keccak-256 of 2048 B, 288 x 128 | ECDSA, 144 x 1344 |
+| item | Keccak-256 of 2048 B, 64 x 384, 142 columns (statement-layer 8) | ECDSA, 144 x 1344 |
 |---|---|---|
-| public columns | 17, one per absorb lane | a few (zeta^t, lane weights) |
-| coefficient bytes per proof, host | 17 x 36,864 = 627 KB | small |
-| prover LDE growth | 17 over 309 columns, ~5% | negligible |
+| public columns | 17, one per absorb lane | few; challenge weights excluded (above) |
+| coefficient bytes per proof, host | 17 x 24,576 x 2 = 836 KB | small |
+| prover LDE growth | 17 over 142 columns, ~12% | negligible |
 | verifier terms at z, dense | 17 x 24,576 = 418K E mults, ~40 ms host | small |
 | verifier terms at z, factored (spec) | ~20K | same |
-| proof growth | one opening point, 357 x 16 = 5.7 KB | one point |
+| proof growth | two points (first state, digest), 2 x 190 x 16 = 6.1 KB | one point |
 | kernels changed | none | none |
 
 The dense verifier evaluation is the one ceiling. Version one accepts ~40 ms on the host for
