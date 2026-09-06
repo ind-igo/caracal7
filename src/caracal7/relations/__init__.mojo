@@ -3,3 +3,4 @@ from caracal7.relations.ir import ENTRY, NONE, POINT, entry, shift_points, point
 from caracal7.relations.accumulate import ACC, accumulate
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems, k_values_to_trace
 from caracal7.relations.smallgrid import small_grid_accumulator, small_grid_values, interp_cyclic
+from caracal7.relations.sort import counting_sort
