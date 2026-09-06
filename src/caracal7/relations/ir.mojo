@@ -114,8 +114,8 @@ struct Families:
         """A lookup accumulator (spec 6.3) of records f against table `table` (Shape.tables), s the sorted
         copy the prover fills (sort.mojo). N = (1 + beta) (delta + fp(f)), D = (1 + beta) delta + fp(s) +
         beta fp(s)(omega1 x1): the transition (X1 - e1) (Z(next) D - Z N) is e (2 + 3 w) entries."""
-        if len(f) != len(s) or len(f) == 0 or len(f) > ACC_W_MAX:
-            raise Error("lookup record width")
+        if len(f) != len(s) or len(f) == 0 or len(f) > ACC_W_MAX or table < 0 or table > 255:
+            raise Error("lookup record width or table id")
         for t in range(16):
             self.add(family, 1, z_col + t, k1_a=1, mult=1, chal=5, basis=t)
             for j in range(len(s)):
@@ -222,7 +222,10 @@ def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises
         var fp = E(0)
         for i in range(w):
             fp[i] = table[j * w + i]
-        num = ext_mul[4](num, ext_mul[4](ob, f_add(delta, fp)))
+        var own = ext_mul[4](ob, f_add(delta, fp))
+        if own == E(0):
+            raise Error("lookup table constant has a zero factor")
+        num = ext_mul[4](num, own)
         if j + 1 < k:
             var fp1 = E(0)
             for i in range(w):

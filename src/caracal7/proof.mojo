@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, ACC, KIND_LOOKUP, shift_points
+from caracal7.relations import ENTRY, ACC, ACC_W_MAX, KIND_LOOKUP, shift_points
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, host_base
 
@@ -112,16 +112,22 @@ struct Shape(Writable):
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
+            var w_num = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
+            var w_den = Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
+            if w_num == 0 or w_num > ACC_W_MAX or w_den == 0 or w_den > ACC_W_MAX:
+                raise Error("accumulator record width")
             for j in range(16):                        # record columns are witness columns (the factor kernel reads the W trace)
                 var at = k * ACC + 6 + 2 * j
-                var w = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8 if j < 8 else Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
-                if (j % 8) < w and (Int(accs[at]) | Int(accs[at + 1]) << 8) >= columns_w:
+                if (j % 8) < (w_num if j < 8 else w_den) and (Int(accs[at]) | Int(accs[at + 1]) << 8) >= columns_w:
                     raise Error("accumulator record columns must be witness columns")
             if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
-                var w = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
                 var t = Int(accs[k * ACC + 39])
-                if t >= len(tables) or len(tables[t]) == 0 or len(tables[t]) % w != 0 or w != (Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8):
+                if w_num != w_den or t >= len(tables) or len(tables[t]) == 0 or len(tables[t]) % w_num != 0:
                     raise Error("lookup descriptor needs a table of its record width")
+                for i in range(w_num):                 # the sort reads f and writes s in one pass
+                    for j in range(w_num):
+                        if accs[k * ACC + 6 + 2 * i] == accs[k * ACC + 22 + 2 * j] and accs[k * ACC + 7 + 2 * i] == accs[k * ACC + 23 + 2 * j]:
+                            raise Error("lookup record and sorted columns must be distinct")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
@@ -171,8 +177,8 @@ struct Shape(Writable):
 
 def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8]) -> List[UInt8]:
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
-    level, shape, public inputs, and H(family table) as the statement artifact hash of
-    statement-layer 6 step 1. Prover and verifier build the same bytes."""
+    level, shape, public inputs, H(family table) as the statement artifact hash of
+    statement-layer 6 step 1, and H(lookup tables). Prover and verifier build the same bytes."""
     var bytes = List[UInt8]()
     append_u32(bytes, Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
@@ -191,12 +197,15 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(public_inputs.copy())
     append_u32(bytes, len(shape.accs))
     bytes.extend(shape.accs.copy())
-    append_u32(bytes, len(shape.tables))
-    for t in shape.tables:
-        append_u32(bytes, len(t))
-        bytes.extend(t.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
+    bytes.extend(digest.copy())
+    var tabs = List[UInt8]()                           # the tables by digest: a table can exceed the prefix region
+    append_u32(tabs, len(shape.tables))
+    for t in shape.tables:
+        append_u32(tabs, len(t))
+        tabs.extend(t.copy())
+    H.leaf(host_base(tabs), len(tabs), host_base(digest))
     bytes.extend(digest^)
     return bytes.copy()
 
