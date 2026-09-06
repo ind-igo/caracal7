@@ -2,12 +2,8 @@
 
 from std.testing import assert_equal, TestSuite
 
-from caracal7.core.bytes import Base
+from caracal7.core.bytes import host_base
 from caracal7.core.hash import Blake3
-
-
-def _ptr(mut l: List[UInt8]) -> Base:
-    return rebind[Base](l.unsafe_ptr())
 
 
 def _pattern(n: Int) -> List[UInt8]:
@@ -28,7 +24,7 @@ def _hex(l: List[UInt8]) -> String:
 def _leaf(n: Int) raises -> String:
     var m = _pattern(n)
     var out = List[UInt8](length=32, fill=0)
-    Blake3.leaf(_ptr(m), n, _ptr(out))
+    Blake3.leaf(host_base(m), n, host_base(out))
     return _hex(out)
 
 
@@ -48,7 +44,7 @@ def test_vectors() raises:
 def test_node_is_hash_of_concatenation() raises:
     var m = _pattern(64)
     var out = List[UInt8](length=32, fill=0)
-    Blake3.node(_ptr(m), _ptr(m).unsafe_offset(32), _ptr(out))
+    Blake3.node(host_base(m), host_base(m[32:]), host_base(out))
     assert_equal(_hex(out), _leaf(64))
 
 
@@ -61,7 +57,7 @@ def test_absorb_is_keyed_hash() raises:
     var tail = List[UInt8](capacity=99)
     for i in range(1, 100):
         tail.append(m[i])
-    Blake3.absorb(_ptr(key), 0, _ptr(tail), 99)
+    Blake3.absorb(host_base(key), 0, host_base(tail), 99)
     assert_equal(_hex(key), "2ea26063087b8022ad6417194c7f35f75c3baa86f93326c5df51bbb841d1552f")
 
 
@@ -71,7 +67,7 @@ def test_squeeze_is_keyed_hash_of_counter() raises:
     for i in range(32):
         key.append(UInt8(i))
     var out = List[UInt8](length=32, fill=0)
-    Blake3.squeeze(_ptr(key), 0, _ptr(out))
+    Blake3.squeeze(host_base(key), 0, host_base(out))
     assert_equal(_hex(out), "782c6ee8963e660954892cf37288ab697922f0fe3744dfa8b08162ac6438e8c1")
 
 

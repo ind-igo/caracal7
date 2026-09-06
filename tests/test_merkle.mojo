@@ -4,7 +4,7 @@ from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
 from caracal7.core.params import REFERENCE
-from caracal7.core.bytes import Base
+from caracal7.core.bytes import host_base
 from caracal7.core.hash import Blake3
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.merkle import merkle, query_gather, root_offset, tree_nodes, multiproof_region, check_multiproof
@@ -15,22 +15,18 @@ comptime ROW = 12
 comptime QUERIES = 9
 
 
-def _ptr(mut l: List[UInt8]) -> Base:
-    return rebind[Base](l.unsafe_ptr())
-
-
 def _host_root(mut code: List[UInt8]) -> List[UInt8]:
     var level = List[UInt8](length=LEAVES * 32, fill=0)
     for i in range(LEAVES):
-        Blake3.leaf(_ptr(code).unsafe_offset(i * ROW), ROW, _ptr(level).unsafe_offset(i * 32))
+        Blake3.leaf(host_base(code[i * ROW:]), ROW, host_base(level[i * 32:]))
     var n = LEAVES
     while n > 1:
         var m = (n + 1) // 2
         var next = List[UInt8](length=m * 32, fill=0)
         for j in range(m):
             if 2 * j + 1 < n:
-                Blake3.node(_ptr(level).unsafe_offset(2 * j * 32), _ptr(level).unsafe_offset((2 * j + 1) * 32),
-                            _ptr(next).unsafe_offset(j * 32))
+                Blake3.node(host_base(level[2 * j * 32:]), host_base(level[(2 * j + 1) * 32:]),
+                            host_base(next[j * 32:]))
             else:
                 for b in range(32):
                     next[j * 32 + b] = level[2 * j * 32 + b]

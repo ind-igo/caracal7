@@ -25,7 +25,7 @@ from caracal7.core.params import Params
 from caracal7.core.arena import Arena
 from caracal7.relations import ENTRY, ACC, shift_points
 from caracal7.core.hash import Hash
-from caracal7.core.bytes import Base, append_u32, host_base
+from caracal7.core.bytes import append_u32, host_base
 
 comptime VERSION: UInt32 = 1
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor

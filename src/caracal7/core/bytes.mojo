@@ -106,7 +106,7 @@ def append_u32(mut l: List[UInt8], v: Int):
 
 
 def list_e(l: Span[UInt8, _], i: Int) -> E:
-    """Element i of a (.., e) List."""
+    """Element i of a (.., e) byte span."""
     var v = E(0)
     for t in range(16):
         v[t] = l[i * 16 + t]
