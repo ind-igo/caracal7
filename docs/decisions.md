@@ -282,3 +282,26 @@ different source, which keeps the "no kernel changes" claim; `Shape` also reject
 past the last public column, which was previously unchecked for witness columns too. Host
 interpolation (`interpolate_line`, `interpolate_grid`) sits in synthetic.mojo as the frontend's
 first tool for deriving blocks and restriction polynomials from values.
+
+## Point list and challenge table on Shape (2026-09-07)
+
+Step 1 of the builder order in `docs/statement-builder.md`. `Shape` now takes the opening list
+(`point_list`, POINT bytes each, hashed in the prefix instead of the count) and a challenge
+derivation table (`chals`, CHAL = 3 bytes per row: op, a, b; `CHAL_ONE` is the constant operand).
+`ir.required_points` is the set a list must contain: z, the read shifts, the restriction lines, and
+with accumulators the four boundary points the verifier reads, (1, z2), (e1, z2), (1, omega2 z2),
+(e1, e2). Two of the seven spec-section-3 points are gone from the fixed set: (omega1 z1, z2) is a
+read of every accumulator transition and arrives as one, and (1, 1) is implied by Z(1, z2) = 1 at
+random z2. A statement without accumulators opens only z and its reads (the synthetic one 4 points,
+not 7); the reference instance goes from 9 to 8 points. `shift_points` is now the default list
+(exactly the required set) and an empty `points` argument means it, so every existing call site is
+unchanged. The verifier locates the boundary points by lookup, not by fixed index. The kernels that
+read 1 + beta and (1 + beta) delta at elements 3 and 4 are unchanged; `Shape` rejects a table that
+does not start with `standard_chals` when there are accumulators, until descriptors name their own
+elements (merged chains, step 6). The stage-1 region is sized from the table; the table is uploaded
+once next to the descriptors. Kernel arguments that are counts are `Int32` (`Int` is not
+DevicePassable). Audit fixes: the verifier
+re-checks the family table it is given against the shape's list and challenge count (Shape validated a
+table, not necessarily this one); the table is capped at 251 rows and `Families.add` rejects a
+challenge index over 255. Every list and table invariant lives in `Shape.__init__` only: a Shape
+deserializer, when one exists, must run the same checks.

@@ -18,7 +18,8 @@ column bytes are the coordinates). The factors per kind:
                         from the openings at (e1, z2) and (1, omega2 z2).
     TODO(memory): KIND_MEMORY (6.4) adds the (addr, ts, value) columns and its own factor pair here;
                   it waits for a profile with memory (configuration.md 3).
-The stage-1 challenges arrive as the CHALS elements of ir.mojo: beta, delta, gamma, 1 + beta, (1 + beta) delta.
+The stage-1 challenges arrive as the element list of ir.mojo: beta, delta, gamma, then the derivation table's rows;
+the factor kernels read 1 + beta and (1 + beta) delta at 3 and 4 (Shape checks the table starts with standard_chals).
 
 Buffers (bytes; slowest ... fastest), per accumulator:
     num, den     (row, e)     N and D per row, row = x2 h1 + x1
@@ -42,18 +43,21 @@ from caracal7.core.field import E, f_add, ext_mul, ext_inv0, ext_one
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
-from caracal7.relations.ir import ACC, KIND_LOOKUP
+from caracal7.relations.ir import ACC, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
 from caracal7.core.arena import Arena
 
 
 
-def k_derive_chals(base: Base, chals: Buf[16]):
-    """One thread: the derived challenges 1 + beta and (1 + beta) delta after the three sampled ones."""
+def k_derive_chals(base: Base, chals: Buf[16], table: Buf[1], rows: Int32):
+    """One thread: element SAMPLED + i = op(a, b) per table row, in order (ir.derived_chals is the host twin)."""
     if global_idx.x != 0:
         return
-    var ob = f_add(chals.load(base, 0), ext_one[4]())
-    chals.store(base, 3, ob)
-    chals.store(base, 4, ext_mul[4](ob, chals.load(base, 1)))
+    for i in range(Int(rows)):
+        var ia = Int(table.load(base, i * CHAL + 1))
+        var ib = Int(table.load(base, i * CHAL + 2))
+        var a = ext_one[4]() if ia == CHAL_ONE else chals.load(base, ia)
+        var b = ext_one[4]() if ib == CHAL_ONE else chals.load(base, ib)
+        chals.store(base, SAMPLED + i, f_add(a, b) if Int(table.load(base, i * CHAL)) == CHAL_ADD else ext_mul[4](a, b))
 
 
 def k_factors[p: Params](base: Base, trace: Buf[1], acc: Buf[1], chals: Buf[16], num: Buf[16], den: Buf[16]):
@@ -161,14 +165,14 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
     z2.store(base, p.h2(), ext_one[4]())
 
 
-def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int) raises:
-    """Complete the CHALS elements at `chals` from the three sampled ones."""
-    ctx.enqueue_function[k_derive_chals](arena.buf, Buf[16](chals), grid_dim=1, block_dim=1)
+def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows: Int) raises:
+    """Complete the stage-1 elements at `chals` from the sampled ones by the `rows` table rows at `table`."""
+    ctx.enqueue_function[k_derive_chals](arena.buf, Buf[16](chals), Buf[1](table), Int32(rows), grid_dim=1, block_dim=1)
 
 
 def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int, chals: Int,
                           num: Int, den: Int, scratch: Int, zval: Int, chain_prod: Int, z2: Int, n_end: Int, d_end: Int) raises:
-    """One accumulator: its descriptor at `acc`, the CHALS elements at `chals`, Z into zval (row, e), Z2 into z2 (h2, e),
+    """One accumulator: its descriptor at `acc`, the stage-1 elements at `chals`, Z into zval (row, e), Z2 into z2 (h2, e),
     the chain-end factors into n_end, d_end (h2, e)."""
     comptime N = p.N()
     comptime B = BACKEND.block

@@ -17,7 +17,7 @@ from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TR
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain
 from caracal7.pcs import pack_slot, pack_index, slot_weight, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
-from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, entry, derived_chals, lookup_constant, shift_points, point_index, point_coord, residual_at, interp_cyclic, eval_block, eval_line, block_bytes
+from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_block, eval_line, block_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -27,8 +27,16 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     every public column, then the polynomial of every restriction; the verifier never hashes it.
     ponytail: soundness rests on the caller deriving `public` from `public_inputs` (which the prefix hashes);
     nothing here checks that. The statement builder is where the derivation becomes code on both sides."""
-    if len(families) != shape.entries * ENTRY or len(shift_points(families, shape.restrictions)) != shape.points * 4:
+    if len(families) != shape.entries * ENTRY:
         raise Error("family table does not match the shape")
+    # Shape validated its own family table; bind this one to the list and the challenge count before any index is used
+    var need = required_points(families, shape.restrictions, shape.accumulators() > 0)
+    for i in range(len(need) // POINT):
+        if point_index(shape.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
+            raise Error("family table reads a point outside the shape's opening list")
+    for k in range(shape.entries):
+        if entry(families, k).chal > shape.chal_count():
+            raise Error("family table names a challenge element past the shape's derivation table")
     if len(public) != shape.public_bytes[p]():
         raise Error("public data has the wrong size")
     var r = ProofReader(proof_bytes^)
@@ -45,7 +53,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var root_w = r.take(H.DIGEST)
     t.absorb(DS_TREE_W, root_w)
     var stage1 = t.elements(3)                      # beta, delta, gamma
-    derived_chals(stage1)
+    derived_chals(stage1, shape.chals)
 
     # step 2: Z root and Z2 -> alpha; Q root -> z
     var root_z = List[UInt8]()
@@ -70,29 +78,33 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var beta_gamma = t.elements(shape.columns() + shape.points)
 
     var one = ext_embed[4](SIMD[DType.uint8, 1](1))
+    var pts = shape.point_list.copy()
+    var at_start = point_index(pts, FIX_ONE, 0)          # (1, z2)
+    var at_e1 = point_index(pts, FIX_E, 0)               # (e1, z2)
+    var at_next = point_index(pts, FIX_ONE, 2)           # (1, omega2 z2)
+    var at_end = point_index(pts, FIX_E, FIX_E)          # (e1, e2)
     # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
-    # (1, z2) (point 2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2)
-    # (point 6). The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
+    # (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2).
+    # The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
     for k in range(shape.accumulators()):
         var z_col = get_u16(shape.accs, k * ACC)
-        if _coords_at[p](openings, shape, 2, z_col) != one:
+        if _coords_at[p](openings, shape, at_start, z_col) != one:
             raise Error("accumulator chain start is not 1")
         if list_e(z2v, k * p.h2()) != one:
             raise Error("Z2(1) is not 1")
-        var lhs = ext_mul[4](ext_mul[4](list_e(z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, 6, z_col)),
-                             _factor_at[p](openings, shape, 6, 6, shape.accs, k, stage1, False))
+        var lhs = ext_mul[4](ext_mul[4](list_e(z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, at_end, z_col)),
+                             _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, False))
         if Int(shape.accs[k * ACC + 38]) == KIND_LOOKUP:
             # 6.3: the last row has no pair factor, so the product closes on the table constant
             var w = get_u16(shape.accs, k * ACC + 2)
             if lhs != lookup_constant(shape.tables[Int(shape.accs[k * ACC + 39])], w, stage1):
                 raise Error("lookup product is not the table constant")
-        elif lhs != _factor_at[p](openings, shape, 6, 6, shape.accs, k, stage1, True):
+        elif lhs != _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
         # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
 
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     var d = Domains.__init__[p]()
-    var pts = shift_points(families, shape.restrictions)
     var z1 = list_e(z, 0)
     var z2 = list_e(z, 1)
     var preads = _PublicReads[p](shape, public, pts, z1, z2, d)
@@ -111,9 +123,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         for k in range(shape.accumulators()):
             var za = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, z2)
             var zb = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
-            var c = _coords_at[p](openings, shape, 3, get_u16(shape.accs, k * ACC))
-            var n_z = _factor_at[p](openings, shape, 3, 4, shape.accs, k, stage1, False)
-            var d_z = _factor_at[p](openings, shape, 3, 4, shape.accs, k, stage1, True)
+            var c = _coords_at[p](openings, shape, at_e1, get_u16(shape.accs, k * ACC))
+            var n_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, False)
+            var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
             var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
             r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), k), term))
         var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)

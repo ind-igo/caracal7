@@ -6,7 +6,8 @@ verifier reads; the kernels in residual.mojo consume the same bytes.
 Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
 col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
 mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32);
-chal u8 [32] (0 none, else the CHALS element chal - 1: beta, delta, gamma, 1 + beta, (1 + beta) delta); basis, basis2 u8 [33, 35)
+chal u8 [32] (0 none, else stage-1 element chal - 1: beta, delta, gamma sampled, then one per row of the
+derivation table, see standard_chals); basis, basis2 u8 [33, 35)
 (t < e: the factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l):
 a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t * b_t2, one entry
 per (family, read).
@@ -14,8 +15,13 @@ The challenge and basis factors are how an E-valued accumulator enters as e F-va
 columns (statement-layer 2: a coefficient is a constant, a challenge expression, or a public read).
 
 Opening points (POINT = 4 bytes, (dj1, dj2) u16): a shift of z by g_l^dj, or a fixed coordinate:
-FIX_ONE is 1 and FIX_E is e_l = omega_l^(h_l - 1) (spec section 3: (1, z2), (e1, z2), (1, omega2 z2),
-(1, 1), (e1, e2)). Fixed points are opening points only; a residual read is always a shift.
+FIX_ONE is 1 and FIX_E is e_l = omega_l^(h_l - 1). The list is part of the artifact (Shape.point_list);
+shift_points is the default list and required_points the set every list must contain. Fixed points are
+opening points only; a residual read is always a shift.
+
+Challenge derivation table (CHAL = 3 bytes per row: op u8, a u8, b u8): element SAMPLED + i is
+op(element a, element b) with op CHAL_ADD or CHAL_MUL and CHAL_ONE the constant 1 as an operand.
+Part of the artifact (Shape.chals); k_derive_chals and derived_chals walk the same rows.
 ponytail: collapsing shared reads into one kappa (statement-layer 5) is the compiler's job when a
 real family list exists; the kernel does not care.
 """
@@ -24,7 +30,11 @@ from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ex
 from caracal7.core.bytes import get_u16, set_u16, list_e
 
 comptime ENTRY = 48
-comptime CHALS = 5      # the stage-1 challenge elements: beta, delta, gamma sampled, then 1 + beta, (1 + beta) delta derived
+comptime SAMPLED = 3    # stage-1 elements squeezed from the transcript: beta, delta, gamma
+comptime CHAL = 3       # derivation table row: op, a, b
+comptime CHAL_ADD = 0
+comptime CHAL_MUL = 1
+comptime CHAL_ONE = 255 # operand: the constant 1
 comptime ACC = 40       # accumulator descriptor bytes (accumulate.mojo)
 comptime ACC_W_MAX = 8
 comptime KIND_PERM = 0
@@ -41,12 +51,25 @@ comptime PUB = 4        # public column spec (docs/public-columns.md): m u16, d2
 comptime RES = 6        # restriction: column u16, axis-2 coordinate u16 (FIX_ONE or FIX_E), coefficient count u16 (the line has degree < count); opened at (z1, coordinate)
 
 
-def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8]()) -> List[UInt8]:
-    """The opening points as (dj1, dj2) pairs: the seven of spec section 3 in its order (z, the shifted
-    point, (1, z2), (e1, z2), (1, omega2 z2), (1, 1), (e1, e2)), then every other distinct read shift of
-    the family table in first-seen order, then the lines (z1, coordinate) the restrictions open."""
+def standard_chals() -> List[UInt8]:
+    """The two derived elements the accumulator kernels read by index: 3 = 1 + beta, 4 = (1 + beta) delta."""
+    return [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 3, 1]
+
+
+def chal_count(table: Span[UInt8, _]) -> Int:
+    return SAMPLED + len(table) // CHAL
+
+
+def required_points(fam: Span[UInt8, _], restrictions: List[UInt8], accumulators: Bool) -> List[UInt8]:
+    """The points every opening list must contain: z, then with accumulators the boundary points the
+    verifier reads ((1, z2), (e1, z2), (1, omega2 z2), (e1, e2); (1, 1) of spec section 3 is implied by
+    Z(1, z2) = 1 at random z2), then the restriction lines (z1, coordinate), then every distinct read
+    shift of the family table in first-seen order."""
     var pts = List[UInt8]()
-    for pt in [(0, 0), (2, 0), (FIX_ONE, 0), (FIX_E, 0), (FIX_ONE, 2), (FIX_ONE, FIX_ONE), (FIX_E, FIX_E)]:
+    var fixed: List[Tuple[Int, Int]] = [(0, 0)]
+    if accumulators:
+        fixed.extend([(FIX_ONE, 0), (FIX_E, 0), (FIX_ONE, 2), (FIX_E, FIX_E)])
+    for pt in fixed:
         var n = len(pts)
         pts.extend(List[UInt8](length=POINT, fill=0))
         set_u16(pts, n, pt[0])
@@ -71,6 +94,11 @@ def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8]())
                 set_u16(pts, n, d1)
                 set_u16(pts, n + 2, d2)
     return pts^
+
+
+def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8](), accumulators: Bool = True) -> List[UInt8]:
+    """The default opening list: exactly the required points, nothing gated off."""
+    return required_points(fam, restrictions, accumulators)
 
 
 def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
@@ -160,6 +188,8 @@ struct Families:
         on G. The axis-1 gate admits a quadratic entry (2 h1 - 1): the accumulator transition."""
         if col_b >= 0 and mult == 2:
             raise Error("axis-2 gated entries must be linear (spec 8 degree bound)")
+        if chal < 0 or chal > 255:
+            raise Error("chal is a u8: 0 or element index + 1")
         var e = List[UInt8](length=ENTRY, fill=0)
         for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b]:
             if v < 0 or v > 65535:
@@ -204,14 +234,14 @@ def entry(fam: Span[UInt8, _], k: Int) -> Entry:
                  chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
 
 
-def derived_chals(mut chals: List[UInt8]):
-    """Host side of accumulate.k_derive_chals: append 1 + beta and (1 + beta) delta to the three sampled elements."""
-    var ob = f_add(list_e(chals, 0), ext_one[4]())
-    var obd = ext_mul[4](ob, list_e(chals, 1))
-    for t in range(16):
-        chals.append(ob[t])
-    for t in range(16):
-        chals.append(obd[t])
+def derived_chals(mut chals: List[UInt8], table: Span[UInt8, _]):
+    """Host side of accumulate.k_derive_chals: append one element per table row to the sampled ones."""
+    for i in range(len(table) // CHAL):
+        var a = ext_one[4]() if Int(table[i * CHAL + 1]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 1]))
+        var b = ext_one[4]() if Int(table[i * CHAL + 2]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 2]))
+        var v = f_add(a, b) if Int(table[i * CHAL]) == CHAL_ADD else ext_mul[4](a, b)
+        for t in range(16):
+            chals.append(v[t])
 
 
 def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises -> E:
@@ -251,7 +281,7 @@ def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises
 
 
 def kappa_of(en: Entry, alpha: E, chals: Span[UInt8, _]) -> E:
-    """coef * alpha^family * chal * b_t; chals holds the CHALS stage-1 elements as e bytes each."""
+    """coef * alpha^family * chal * b_t; chals holds the stage-1 elements as e bytes each."""
     var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
     if en.chal != 0:
         var c = E(0)

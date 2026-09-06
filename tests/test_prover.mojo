@@ -10,7 +10,8 @@ from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from caracal7.verifier import verify
-from caracal7.relations import shift_points
+from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE
+from caracal7.core.bytes import set_u16
 from caracal7.relations.synthetic import synthetic_families, synthetic_trace, synthetic_table, synthetic_advice, synthetic_publics, synthetic_public_block, synthetic_restriction, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime p = REFERENCE
@@ -75,7 +76,7 @@ def test_prove_and_verify() raises:
     var ctx = DeviceContext()
     var f = synthetic_families()
     var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs)
-    assert_equal(shape.points, 9)                 # the seven of spec 3, then (omega1^3 z1, z2), (z1, omega2 z2)
+    assert_equal(shape.points, 8)                 # z, the four boundary points, then the reads (omega1 z1, z2), (omega1^3 z1, z2), (z1, omega2 z2)
     var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())
@@ -90,7 +91,7 @@ def test_prove_and_verify() raises:
     # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
     # itself only sees a dishonest y with a matching frontier, which no byte flip produces
     var z2_bytes = 8 + 2 * 32
-    var z_open = openings + (2 * shape.columns() + shape.columns_w) * p.e     # Z coordinate 0 at point (1, z2)
+    var z_open = openings + (shape.columns() + shape.columns_w) * p.e         # Z coordinate 0 at point 1 = (1, z2)
     for tamper in [(openings + 5, "residual identity fails at z"),
                    (z2_bytes + 1, "Z2(1) is not 1"),
                    (z2_bytes + (p.h2() - 1) * p.e + 2, "accumulator grand product is not 1"),
@@ -116,6 +117,7 @@ def test_prove_and_verify_without_accumulators() raises:
     var f = synthetic_families(with_accumulator=False)
     var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes)
     assert_equal(shape.columns_z, 0)
+    assert_equal(shape.points, 4)                 # z and the three reads: no boundary points without accumulators
     var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes), f.bytes.copy())
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     var proof = prover.prove(ctx, List[UInt8]())
@@ -139,6 +141,48 @@ def test_invalid_permutation_is_rejected() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "accumulator grand product is not 1")
+
+
+def _point(dj1: Int, dj2: Int) -> List[UInt8]:
+    var pt = List[UInt8](length=POINT, fill=0)
+    set_u16(pt, 0, dj1)
+    set_u16(pt, 2, dj2)
+    return pt^
+
+
+def test_point_list_and_derivation_table_are_artifact_inputs() raises:
+    """An explicit list with one unused extra point proves and verifies; a list missing a read is rejected;
+    so is an entry naming a challenge past the table, a row over a later element, and a table without the
+    accumulator rows. A longer table on a statement with accumulators proves and verifies."""
+    var ctx = DeviceContext()
+    var f = synthetic_families()
+    var extra = shift_points(f.bytes)
+    extra.extend(_point(4, 4))
+    var table = standard_chals()
+    table.extend([CHAL_MUL, 4, 2])
+    var shape = Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs, points=extra, chals=table)
+    assert_equal(shape.points, 9)
+    assert_equal(shape.chal_count(), 6)
+    var prover = Prover[p, Blake3](ctx, Shape.__init__[p](SYNTHETIC_COLUMNS, f.bytes, f.accs, points=extra, chals=table), f.bytes.copy())
+    load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
+    var proof = prover.prove(ctx, List[UInt8]())
+    assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), f.bytes))
+    var short = shift_points(f.bytes)
+    short.resize(len(short) - POINT, 0)
+    var bad_fam = f.bytes.copy()
+    bad_fam[32] = UInt8(7)                        # entry 0 names element 6
+    assert_equal(_rejected(short, standard_chals(), f.bytes, f.accs), "opening points must include every read shift, restriction line, and accumulator boundary point")
+    assert_equal(_rejected(shift_points(f.bytes), standard_chals(), bad_fam, f.accs), "family entry names a challenge element past the derivation table")
+    assert_equal(_rejected(shift_points(f.bytes), [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 5, 1], f.bytes, f.accs), "challenge derivation row must add or multiply earlier elements")
+    assert_equal(_rejected(shift_points(f.bytes), [CHAL_ADD, 0, CHAL_ONE], f.bytes, f.accs), "accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
+
+
+def _rejected(points: List[UInt8], chals: List[UInt8], families: List[UInt8], accs: List[UInt8]) -> String:
+    try:
+        _ = Shape.__init__[p](SYNTHETIC_COLUMNS, families, accs, points=points, chals=chals)
+    except e:
+        return String(e)
+    return String("")
 
 
 def _lookup_case(ctx: DeviceContext, var trace: List[UInt8], var advice: List[UInt8]) raises -> String:

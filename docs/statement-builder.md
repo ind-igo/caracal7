@@ -96,8 +96,8 @@ maps to `mult`. The trace is filled by name: `art.layout.col("a0")` is the colum
 | cyclic read at any k1 | `dj1 = 2 k1` on G, wraps in `_read`, `shift_points` adds the point | nothing |
 | next-chain read, linear, axis-2 gate | `k2 = 1`, `mult = 2`, `add` rejects a quadratic | nothing |
 | gates, F constants, basis factors, quadratic terms | entry fields | nothing |
-| challenge expressions | `CHALS = 5` fixed, `k_derive_chals` hardcoded | a derivation table on `Shape`: element i = product of two earlier elements; the kernel and `derived_chals` loop over it; `chal` stays a u8 index. Small. Also what merged chains need |
-| opening points from the checks | `Shape` derives from `shift_points`, seven fixed points always | `Shape` takes the list; the verifier compares the list with the families. Small |
+| challenge expressions | derivation table on `Shape.chals` (op, a, b rows; `standard_chals` is the two accumulator rows); `k_derive_chals` and `derived_chals` walk it; `chal` is a u8 index into the list | nothing (done 2026-09-07) |
+| opening points from the checks | `Shape.point_list` is an input, hashed; `required_points` is the set it must contain (boundary points only with accumulators); the verifier finds boundary points by lookup | nothing (done 2026-09-07) |
 | public columns, restrictions | planned (`docs/public-columns.md`) | that plan first |
 | accumulator `{start, ingest, scale, end}` | KIND_PERM, KIND_LOOKUP grand products | the second Z kind: a Horner factor kernel, its chain-end rule, its boundary. Later, with mulmod |
 | chain-end families into Q3 | small grid hardwired to accumulator chain ends | later, with the second Z kind |
@@ -122,7 +122,7 @@ public-columns plan.
 
 ## Work order
 
-1. `Shape` takes the point list; the challenge derivation table. Two small IR changes, tests
+1. (done) `Shape` takes the point list; the challenge derivation table. Two small IR changes, tests
    in test_prover and test_accumulate. Do these before the builder so it has nothing to work
    around.
 2. `Statement`, `Layout`, `compile`, the checks, `pad_trace`. About 400 lines in

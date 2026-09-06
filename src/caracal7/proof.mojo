@@ -23,9 +23,9 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, FIX_ONE, FIX_E, entry, shift_points, block_bytes
+from caracal7.relations import ENTRY, NONE, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, block_bytes
 from caracal7.core.hash import Hash
-from caracal7.core.bytes import append_u32, host_base
+from caracal7.core.bytes import append_u32, get_u16, host_base
 
 comptime VERSION: UInt32 = 1
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
@@ -88,6 +88,8 @@ struct Shape(Writable):
     var columns_z: Int          # accumulator tree, e coordinate columns per accumulator
     var columns_q: Int          # quotient tree, 3 e coordinate columns
     var points: Int             # P opening points
+    var point_list: List[UInt8] # the P points (POINT bytes each), part of the artifact; index 0 is z
+    var chals: List[UInt8]      # challenge derivation table (CHAL bytes per row), part of the artifact
     var entries: Int            # family table entries (residual.mojo)
     var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
     var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (milestone-3-lookup.md)
@@ -99,24 +101,54 @@ struct Shape(Writable):
 
     def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8](),
                             tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
-                            restrictions: List[UInt8] = List[UInt8]()) raises:
-        """P and the entry count come from the family table (residual.mojo). A lookup descriptor names its
-        table by index; the table's row width is the record width.
+                            restrictions: List[UInt8] = List[UInt8](), points: List[UInt8] = List[UInt8](),
+                            chals: List[UInt8] = standard_chals()) raises:
+        """The entry count comes from the family table (residual.mojo). `points` is the opening list (an empty
+        list means the default, ir.shift_points); it must hold every point of ir.required_points. `chals` is the
+        challenge derivation table. A lookup descriptor names its table by index; the table's row width is the
+        record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0:
-            raise Error("family, accumulator, public or restriction table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0:
+            raise Error("family, accumulator, public, restriction, point or challenge table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
         self.columns_p = len(publics) // PUB
-        self.points = len(shift_points(families, restrictions)) // 4
+        self.point_list = points.copy() if len(points) > 0 else shift_points(families, restrictions, len(accs) > 0)
+        self.points = len(self.point_list) // POINT
+        self.chals = chals.copy()
         self.entries = len(families) // ENTRY
         self.accs = accs.copy()
         self.tables = tables.copy()
         self.publics = publics.copy()
         self.restrictions = restrictions.copy()
         var opened = self.columns_w + self.columns_z
+        if get_u16(self.point_list, 0) != 0 or get_u16(self.point_list, 2) != 0:
+            raise Error("opening point 0 must be z")
+        for i in range(self.points):
+            var dj1 = get_u16(self.point_list, i * POINT)
+            var dj2 = get_u16(self.point_list, i * POINT + 2)
+            if (dj1 >= 2 * p.h1() and dj1 != FIX_ONE and dj1 != FIX_E) or (dj2 >= 2 * p.h2() and dj2 != FIX_ONE and dj2 != FIX_E):
+                raise Error("opening point is outside the grid")
+            if point_index(self.point_list, dj1, dj2) != i:
+                raise Error("opening points repeat")
+        var need = required_points(families, restrictions, len(accs) > 0)
+        for i in range(len(need) // POINT):
+            if point_index(self.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
+                raise Error("opening points must include every read shift, restriction line, and accumulator boundary point")
+        if chal_count(chals) > CHAL_ONE - 1:
+            raise Error("challenge derivation table holds at most 251 rows (elements are u8 indices, 255 is the constant)")
+        for i in range(len(chals) // CHAL):
+            var op = Int(chals[i * CHAL])
+            var a = Int(chals[i * CHAL + 1])
+            var b = Int(chals[i * CHAL + 2])
+            if (op != CHAL_ADD and op != CHAL_MUL) or (a != CHAL_ONE and a >= SAMPLED + i) or (b != CHAL_ONE and b >= SAMPLED + i):
+                raise Error("challenge derivation row must add or multiply earlier elements")
+        if len(accs) > 0:                              # the factor kernels read 1 + beta and (1 + beta) delta at 3 and 4
+            var std = standard_chals()
+            if len(chals) < len(std) or chals[: len(std)] != Span(std):
+                raise Error("accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
         for i in range(self.columns_p):
             var m = Int(publics[i * PUB]) | Int(publics[i * PUB + 1]) << 8
             var d2 = Int(publics[i * PUB + 2]) | Int(publics[i * PUB + 3]) << 8
@@ -136,6 +168,8 @@ struct Shape(Writable):
                 raise Error("family entry reads a column past the public columns")
             if en.dj1_a >= 2 * p.h1() or en.dj2_a >= 2 * p.h2() or (en.col_b != NONE and (en.dj1_b >= 2 * p.h1() or en.dj2_b >= 2 * p.h2())):
                 raise Error("family entry shift is outside the residual grid")
+            if en.chal > chal_count(chals):
+                raise Error("family entry names a challenge element past the derivation table")
             if pub_a and pub_b:
                 raise Error("a quadratic entry may read at most one public column")
         for k in range(len(accs) // ACC):
@@ -165,6 +199,10 @@ struct Shape(Writable):
 
     def accumulators(self) -> Int:
         return len(self.accs) // ACC
+
+    def chal_count(self) -> Int:
+        """Stage-1 elements: the sampled ones and one per derivation row."""
+        return chal_count(self.chals)
 
     def lookups(self) -> Int:
         var n = 0
@@ -226,7 +264,10 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     append_u32(bytes, shape.columns_w)
     append_u32(bytes, shape.columns_z)
     append_u32(bytes, shape.columns_q)
-    append_u32(bytes, shape.points)
+    append_u32(bytes, len(shape.point_list))
+    bytes.extend(shape.point_list.copy())
+    append_u32(bytes, len(shape.chals))
+    bytes.extend(shape.chals.copy())
     append_u32(bytes, len(shape.tail))
     for lvl in shape.tail:
         for v in [lvl.length, lvl.rows, lvl.L, lvl.cosets, lvl.queries]:

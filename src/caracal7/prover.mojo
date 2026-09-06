@@ -20,7 +20,7 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, CHALS, KIND_LOOKUP, shift_points, expand_blocks, block_bytes, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.relations import ENTRY, POINT, ACC, CHAL, KIND_LOOKUP, expand_blocks, block_bytes, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
 from caracal7.core.bytes import Buf
 from caracal7.core.backend import BACKEND
 
@@ -94,7 +94,8 @@ struct ProverLayout:
     var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
     var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
     # challenges, one region each so nothing is overwritten before its consumer runs
-    var stage1: Int                 # (CHALS, e)            beta, delta, gamma, 1 + beta, (1 + beta) delta
+    var stage1: Int                 # (chal_count, e)       beta, delta, gamma, then the derivation table's rows
+    var chal_table: Int             # (rows, CHAL)          the derivation table
     var alpha: Int                  # (1, e)
     var z: Int                      # (2, e)
     var beta_gamma: Int             # (columns + P, e)      beta per column, gamma per point
@@ -155,7 +156,8 @@ struct ProverLayout:
             max_v = max(max_v, lvl.queries)
         self.proof_stage = bump.alloc(stage)
         self.prefix = bump.alloc(PREFIX_MAX)
-        self.stage1 = bump.alloc(CHALS * p.e)
+        self.stage1 = bump.alloc(shape.chal_count() * p.e)
+        self.chal_table = bump.alloc(len(shape.chals))
         self.alpha = bump.alloc(p.e)
         self.z = bump.alloc(2 * p.e)
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
@@ -194,7 +196,7 @@ struct Prover[p: Params, H: Hash]:
         self.proof = ProofWriter(ctx, proof_pool_bytes[Self.p, Self.H](self.shape))
         self.trace_host = ctx.enqueue_create_host_buffer[DType.uint8](self.shape.columns_w * Self.p.N())
         self.arena.upload(ctx, self.layout.tables.base, build_tables[Self.p](ctx, self.layout.tables, self.domains))
-        var pts = shift_points(self.families, self.shape.restrictions)
+        var pts = self.shape.point_list.copy()
         var fh = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
         var ph = ctx.enqueue_create_host_buffer[DType.uint8](len(pts))
         ctx.synchronize()
@@ -206,6 +208,8 @@ struct Prover[p: Params, H: Hash]:
         self.arena.upload(ctx, self.layout.shifts, ph)
         if len(self.shape.accs) > 0:
             _upload(ctx, self.arena, self.layout.accs, self.shape.accs)
+        if len(self.shape.chals) > 0:
+            _upload(ctx, self.arena, self.layout.chal_table, self.shape.chals)
         _upload(ctx, self.arena, self.layout.dom1, domain_bytes(self.domains.level1))
         for i in range(len(self.shape.tail)):
             var lvl = self.shape.tail[i]
@@ -271,7 +275,7 @@ struct Prover[p: Params, H: Hash]:
         absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_W, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.stage1, 3)             # beta, delta, gamma
-        derive_chals(ctx, self.arena, L.stage1)
+        derive_chals(ctx, self.arena, L.stage1, L.chal_table, len(S.chals) // CHAL)
         self._mark(ctx, profile, "transcript W", t0)
 
         # 4-7. the Z stage and commit Z with Z2 -> alpha

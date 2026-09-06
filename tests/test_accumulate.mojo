@@ -10,7 +10,7 @@ from caracal7.core.params import Params
 from caracal7.core.params import REFERENCE
 from caracal7.core.arena import Arena, Bump
 from caracal7.relations.accumulate import ACC, accumulate, derive_chals
-from caracal7.relations.ir import Families, CHALS, KIND_LOOKUP, lookup_constant, derived_chals
+from caracal7.relations.ir import Families, CHAL, CHAL_MUL, KIND_LOOKUP, lookup_constant, derived_chals, standard_chals, chal_count
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
 from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_families, synthetic_trace
@@ -82,13 +82,31 @@ def host_accumulate[p: Params](accs: List[UInt8], k: Int, trace: List[UInt8], ch
 
 
 
-def _chals() -> List[UInt8]:
-    """Three fixed stage-1 elements and their derived pair."""
-    var c = List[UInt8](capacity=CHALS * 16)
+def _chals(table: List[UInt8]) -> List[UInt8]:
+    """Three fixed stage-1 elements and the rows of `table`."""
+    var c = List[UInt8](capacity=chal_count(table) * 16)
     for i in range(3 * 16):
         c.append(UInt8((i * 37 + 5) % 127))
-    derived_chals(c)
+    derived_chals(c, table)
     return c^
+
+
+def test_derivation_table_matches_host() raises:
+    """A third row, (1 + beta) delta gamma, on top of the standard two: device and host agree element by element."""
+    var table = standard_chals()
+    table.extend([CHAL_MUL, 4, 2])
+    var chals = _chals(table)
+    assert_equal(len(chals), 6 * 16)
+    assert_true(list_e(chals, 5) == ext_mul[4](list_e(chals, 4), list_e(chals, 2)), "host row 3")
+    var ctx = DeviceContext()
+    var bump = Bump()
+    var o_chals = bump.alloc(6 * 16)
+    var o_table = bump.alloc(len(table))
+    var arena = Arena(ctx, bump.used)
+    arena.upload(ctx, o_chals, _host(ctx, chals[: 3 * 16]))
+    arena.upload(ctx, o_table, _host(ctx, table))
+    derive_chals(ctx, arena, o_chals, o_table, 3)
+    assert_true(_down(ctx, arena, o_chals, 6 * 16) == chals, "derived challenges differ from the host")
 
 
 def test_accumulator_matches_host_and_satisfies_the_relations() raises:
@@ -126,7 +144,7 @@ def test_lookup_accumulator_meets_the_table_constant() raises:
         table.append(UInt8(2 * j + 1))
     var ctx = DeviceContext()
     var got = _run(ctx, f.accs, 0, trace^, 4, idx, LOOKUP_K)
-    var c_t = lookup_constant(table, 2, _chals())
+    var c_t = lookup_constant(table, 2, _chals(standard_chals()))
     assert_true(got[1] == c_t, "lookup boundary is not C_T")
     assert_true(c_t != ext_one[4](), "vacuous")
 
@@ -135,11 +153,13 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
     """Z stage of descriptor k on `trace` against the host definitions; a lookup (idx non-empty holds the
     advice bytes) is sorted on device first and the host trace takes the sorted columns back. Returns
     (Z bytes, Z2(e2) Z(e1, e2) N(e1, e2), D(e1, e2))."""
-    var chals = _chals()
+    var table = standard_chals()
+    var chals = _chals(table)
     var bump = Bump()
     var o_trace = bump.alloc(columns * N)
     var o_acc = bump.alloc(ACC)
-    var o_chals = bump.alloc(CHALS * 16)
+    var o_chals = bump.alloc(len(chals))
+    var o_table = bump.alloc(len(table))
     var o_num = bump.alloc(N * 16)
     var o_den = bump.alloc(N * 16)
     var o_scratch = bump.alloc(N * 16)
@@ -158,7 +178,8 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
         one_acc.append(accs[k * ACC + i])
     arena.upload(ctx, o_acc, _host(ctx, one_acc))
     arena.upload(ctx, o_chals, _host(ctx, chals[: 3 * 16]))
-    derive_chals(ctx, arena, o_chals)
+    arena.upload(ctx, o_table, _host(ctx, table))
+    derive_chals(ctx, arena, o_chals, o_table, len(table) // CHAL)
     if len(idx) > 0:
         arena.upload(ctx, o_idx, _host(ctx, idx))
         counting_sort[p](ctx, arena, o_trace, o_acc, o_idx, o_bins, o_cursor, table_k)
@@ -169,7 +190,7 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
     var prod = _down(ctx, arena, o_prod, h2 * 16)
     var num = _down(ctx, arena, o_num, N * 16)
     var den = _down(ctx, arena, o_den, N * 16)
-    assert_true(_down(ctx, arena, o_chals, CHALS * 16) == chals, "derived challenges differ from the host")
+    assert_true(_down(ctx, arena, o_chals, len(chals)) == chals, "derived challenges differ from the host")
     for row in [0, 1, h1 - 1, h1, N - 2, N - 1]:
         assert_true(list_e(num, row) == host_factor(accs, k, trace, N, row, chals, False), "N differs from the host at row " + String(row))
         assert_true(list_e(den, row) == host_factor(accs, k, trace, N, row, chals, True), "D differs from the host at row " + String(row))
