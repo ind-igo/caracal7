@@ -22,15 +22,16 @@ The stage-1 challenges arrive as the CHALS elements of ir.mojo: beta, delta, gam
 
 Buffers (bytes; slowest ... fastest), per accumulator:
     num, den     (row, e)     N and D per row, row = x2 h1 + x1
-    zscratch     (row, e)     prefix products of D, then 1 / D
+    zscratch     (row, e)     per segment: prefix products of D, then N / D; then the segment total at
+                              its last row and the exclusive prefix of the segments at its first row
     zval         (row, e)     Z(x) with Z(1, x2) = 1 and Z(next) = Z N / D along the chain (7.2)
     chain_prod   (x2, e)      Z(e1, x2) N(e1, x2) / D(e1, x2), the whole chain's product
     n_end, d_end (x2, e)      N(e1, x2), D(e1, x2): the small grid's lines (smallgrid.mojo)
     z2           (x2 + 1, e)  Z2(1) = 1, Z2(omega2 x2) = Z2(x2) chain_prod(x2) (7.3, (W) for (P)); entry h2 is 1
 
-ponytail: one thread per chain (h1 sequential E products, h2 threads) and one thread for Z2; the
-two-level scan of 10.1 when a chain is long enough to matter. A zero D (probability ~ 1 / |E|)
-gives 0 from ext_inv0 and a proof the verifier rejects; no abort path.
+The scan is the two-level one of 10.1: segments of S = seg_len(h1) rows in parallel (N / S threads),
+one thread per chain over the segment totals, a fix-up per row. ponytail: one thread for Z2 (h2 steps). A zero D (probability ~ 1 / |E|)
+gives 0 from ext_inv0 for its segment, a zero chain product, and a proof the verifier rejects; no abort path.
 """
 
 from std.math import ceildiv
@@ -88,32 +89,64 @@ def k_factors[p: Params](base: Base, trace: Buf[1], acc: Buf[1], chals: Buf[16],
     den.store(base, row, d)
 
 
-def k_chain_scan[p: Params](base: Base, num: Buf[16], den: Buf[16], scratch: Buf[16], zval: Buf[16], chain_prod: Buf[16],
+def seg_len(h1: Int) -> Int:
+    """Rows per scan segment: the largest of 16, 8, 4 dividing h1 (check() gives a1 >= 2)."""
+    return 16 if h1 % 16 == 0 else (8 if h1 % 8 == 0 else 4)
+
+
+def k_seg_scan[p: Params](base: Base, num: Buf[16], den: Buf[16], scratch: Buf[16], zval: Buf[16]):
+    """One thread per segment of S rows inside a chain: batched inversion of D over the segment
+    (prefix products, one inverse, backward pass), q = N / D, then the segment's exclusive prefix of
+    q into zval and its total into scratch at the segment's last row."""
+    comptime S = seg_len(p.h1())
+    var seg = global_idx.x
+    if seg >= p.N() // S:
+        return
+    var row0 = seg * S
+    var acc = ext_one[4]()
+    for i in range(S):
+        acc = ext_mul[4](acc, den.load(base, row0 + i))
+        scratch.store(base, row0 + i, acc)
+    var inv = ext_inv0[4](acc)
+    for i in range(S - 1, -1, -1):
+        var pref = scratch.load(base, row0 + i - 1) if i > 0 else ext_one[4]()
+        var inv_d = ext_mul[4](inv, pref)
+        inv = ext_mul[4](inv, den.load(base, row0 + i))
+        scratch.store(base, row0 + i, ext_mul[4](num.load(base, row0 + i), inv_d))
+    var z = ext_one[4]()
+    for i in range(S):
+        zval.store(base, row0 + i, z)
+        z = ext_mul[4](z, scratch.load(base, row0 + i))
+    scratch.store(base, row0 + S - 1, z)
+
+
+def k_chain_scan[p: Params](base: Base, num: Buf[16], den: Buf[16], scratch: Buf[16], chain_prod: Buf[16],
                             n_end: Buf[16], d_end: Buf[16]):
-    """One thread per chain x2: batched inversion of D along the chain (prefix products, one inverse,
-    backward pass), then Z(1, x2) = 1, Z(next) = Z N / D, and the chain's whole product."""
+    """One thread per chain over its h1 / S segment totals (scratch, last row of each segment): the
+    exclusive prefix goes to the segment's first row, the whole product to chain_prod."""
     comptime h1 = p.h1()
+    comptime S = seg_len(h1)
     var x2 = global_idx.x
     if x2 >= p.h2():
         return
     var row0 = x2 * h1
-    var acc = ext_one[4]()
-    for i in range(h1):
-        acc = ext_mul[4](acc, den.load(base, row0 + i))
-        scratch.store(base, row0 + i, acc)
-    var inv = ext_inv0[4](acc)
-    for i in range(h1 - 1, -1, -1):
-        var pref = scratch.load(base, row0 + i - 1) if i > 0 else ext_one[4]()
-        var inv_d = ext_mul[4](inv, pref)
-        inv = ext_mul[4](inv, den.load(base, row0 + i))
-        scratch.store(base, row0 + i, inv_d)
     var z = ext_one[4]()
-    for i in range(h1):
-        zval.store(base, row0 + i, z)
-        z = ext_mul[4](z, ext_mul[4](num.load(base, row0 + i), scratch.load(base, row0 + i)))
+    for g in range(h1 // S):
+        var total = scratch.load(base, row0 + g * S + S - 1)
+        scratch.store(base, row0 + g * S, z)
+        z = ext_mul[4](z, total)
     chain_prod.store(base, x2, z)
     n_end.store(base, x2, num.load(base, row0 + h1 - 1))
     d_end.store(base, x2, den.load(base, row0 + h1 - 1))
+
+
+def k_seg_fixup[p: Params](base: Base, scratch: Buf[16], zval: Buf[16]):
+    """One thread per row: Z = local prefix x the prefix of the segments before it."""
+    comptime S = seg_len(p.h1())
+    var row = global_idx.x
+    if row >= p.N():
+        return
+    zval.store(base, row, ext_mul[4](zval.load(base, row), scratch.load(base, (row // S) * S)))
 
 
 def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
@@ -141,6 +174,11 @@ def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int
     comptime B = BACKEND.block
     ctx.enqueue_function[k_factors[p]](arena.buf, Buf[1](trace), Buf[1](acc), Buf[16](chals), Buf[16](num), Buf[16](den),
                                        grid_dim=ceildiv(N, B), block_dim=B)
-    ctx.enqueue_function[k_chain_scan[p]](arena.buf, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](zval), Buf[16](chain_prod),
+    comptime S = seg_len(p.h1())
+    comptime assert p.h1() % S == 0, "scan segments must tile the chain"
+    ctx.enqueue_function[k_seg_scan[p]](arena.buf, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](zval),
+                                        grid_dim=ceildiv(N // S, B), block_dim=B)
+    ctx.enqueue_function[k_chain_scan[p]](arena.buf, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](chain_prod),
                                           Buf[16](n_end), Buf[16](d_end), grid_dim=ceildiv(p.h2(), B), block_dim=B)
+    ctx.enqueue_function[k_seg_fixup[p]](arena.buf, Buf[16](scratch), Buf[16](zval), grid_dim=ceildiv(N, B), block_dim=B)
     ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)
