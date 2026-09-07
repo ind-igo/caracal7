@@ -384,3 +384,31 @@ The derivation also exposed that the spec's narrow Keccak-2048 layout, 1008 x 25
 (63,504 symbols per column, rate 1/10 on the largest domain); the inline profile the tail test carried had
 run it at that rate. Its tail schedule is unchanged and still tested; no Shape is built on it. So the codeword
 split gates two of the spec's four Keccak rows, not only the proxy, and moves up the perf-pass list.
+
+## Keccak-256 workload (2026-09-07)
+
+The second `Workload`, `relations/keccak.mojo`, on the bit layout of statement-layer section 8 (`docs/keccak.md`):
+a row is one bit position of the 25-lane state in one round, a chain is one round, `CLIENT.grid(64, 24 b)` for
+`b` message blocks. 142 bit columns, 284 families (142 of them Booleanity), 777 entries, 28 opening points (no accumulators, so none of the spec's boundary points), 17
+dense public columns (message bits and round constants), 29 restrictions (25 one-coefficient zero lines on the
+first chain, four 64-coefficient digest lanes on the last). Idle chains come first and hold the zero state, so
+the builder's zero padding is exact. Public inputs are the message then the digest; the verifier derives
+every block and line from them. Tests: reference digests, every compiled entry checked on the host over the
+trace, prover round trip at 64 x 24, and a prover that claims a wrong digest failing the restriction check.
+
+Measured (M1 Pro, warm prove; verify on the host):
+
+| message | grid | proof | prove | verify |
+|---|---|---:|---:|---:|
+| 128 B | 64 x 24 (N 1,536) | 234,584 B | 128 ms | 0.7 s |
+| 1024 B | 64 x 192 (N 12,288) | 297,764 B | 485 ms | 12.5 s |
+| 2048 B | 64 x 384 (N 24,576) | 326,712 B | 978 ms | 32.2 s |
+
+Proof size at 2048 B is 0.31 MiB against the spec's 0.35 MiB estimate. Prover stages at 2048 B: `build_queries`
+293 ms (P = 28, as decisions 2026-09-07 predicted: the first kernel to rewrite), `encode W` 168 ms, `open` 130
+ms, `residual` 84 ms at 777 entries (the residual is not the budget at this count), `lde` 81 ms. The verifier
+time is the dense public columns: `public_data` interpolates 17 grids on the host (O(N (h1 + h2)) each, run
+by both sides) and `verify` evaluates 17 x 34 dense blocks; the spec's factored form (a chain selector times a
+small interpolant) or a host FFT is the fix, and it is a verifier and host change only. Booleanity families
+are kept per the spec although every column is a function of the zero start and the public bits; dropping them
+removes 284 entries and is the first residual lever if that stage ever matters.

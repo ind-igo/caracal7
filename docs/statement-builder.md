@@ -144,8 +144,8 @@ public-columns plan.
    test_builder rebuilds the hand-written synthetic list by name byte for byte.
 3. (done 2026-09-07) `synthetic_statement` is the one path; every test and bench compiles it. The hand-written
    `Families` list lives in test_builder as the oracle.
-4. Keccak-256 of 128 bytes on the builder (statement-layer 8, 9): the first real family list and
-   the first measurement of the residual with thousands of entries.
+4. (done 2026-09-07) Keccak-256 on the builder (statement-layer 8, 9; `docs/keccak.md`): the first real
+   family list, 284 families and 777 entries at 28 points, one implementation swept over the message length.
 
 ## Not in this doc
 
