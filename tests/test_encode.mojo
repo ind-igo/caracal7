@@ -4,12 +4,12 @@ from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.field import F2, F4, f_mul, f_add, ext_mul, ext_pow
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, encode, slot_target, pack_slot, rs_encode_on
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime COLS = 3
 comptime N = p.N()
 comptime h1 = p.h1()
@@ -38,7 +38,7 @@ def _run() raises -> Tuple[List[UInt8], List[UInt8], List[UInt8], List[UInt8], L
     var ch = ctx.enqueue_create_host_buffer[DType.uint8](COLS * N * 2)
     var sh = ctx.enqueue_create_host_buffer[DType.uint8](COLS * N)
     var ph = ctx.enqueue_create_host_buffer[DType.uint8](COLS * N)
-    var oh = ctx.enqueue_create_host_buffer[DType.uint8](p.L0 * COLS * 4)
+    var oh = ctx.enqueue_create_host_buffer[DType.uint8](p.L() * COLS * 4)
     arena.download(ctx, e.coeff, ch)
     arena.download(ctx, e.stored, sh)
     arena.download(ctx, e.packed, ph)
@@ -124,10 +124,10 @@ def test_rs_encode_evaluates_message() raises:
     var r = _run()
     var packed = r[3].copy()
     var code = r[4].copy()
-    var d = r[5]
+    var dom = RsDomain(p.L0, p.m_cosets)                 # level 1 is m cosets of the order-L0 subgroup
     for c in range(COLS):
-        for s in [0, 1, 2, 255, 256, 315, 4097, 40320, 80639, 12345]:
-            var pt = ext_pow[2](d.g, s)
+        for s in [0, 1, 2, 255, 256, 315, p.L0 - 1, p.L0, 2 * p.L0 + 7, p.L() - 1]:
+            var pt = dom.point(s)
             var acc = F4(0)
             var pw = F4(1, 0, 0, 0)
             for i in range(K):

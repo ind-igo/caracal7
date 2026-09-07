@@ -362,14 +362,25 @@ needs none. Each side compiles the statement once (two parties, two compiles); t
 change stays deferred. test_prover round-trips the plain, lookup, and public variants through the drivers
 and rejects a changed public input.
 
-## Named profiles and the client grid (2026-09-07)
+## Profiles and derived grids (2026-09-07)
 
-`REFERENCE`, `WIDE`, `CLIENT` in `params.mojo`; the bench and test_prover use `WIDE` instead of an inline
-copy. The rule: the grid belongs to the profile, not the workload. The client grid probe (test_prover
-`test_client_profile_plans_but_does_not_fit_16gb`): `tail_digits = 3` fails ("tail level does not fit the
-F4 domain": 145,152 rows need L >= 32 rows and the largest domain is 645,120), five digits fits with two
-levels; `n_cw = 1` gives rate 0.45 and 223 queries against the spec's `n_cw = 2`; the arena is 5.3 GB at 91
-W columns (the narrow Keccak layout) and 11.7 GB at 357 (the wide one), of which the LDE region is 1.2 to 3.6
-GB and the W encode region 1.0 to 3.9 GB. So the client grid is a plan, not a run, until the perf pass
-implements the codeword split and reuses arena regions across stages. Keccak lands on `REFERENCE` (one
-permutation) and `WIDE` (16 permutations) first.
+First-principles pass on what a grid is. `h1` is set by the workload's row model (rows one unit of work
+takes: a Keccak round), `h2` by the number of units (rounds), the prover only adds legality (`2^a m`, `2 <= a
+<= 7`, `m | 63`) and derives the code domain from `N` by a rate rule. So a grid is a function, not a choice,
+and naming grids (`REFERENCE`, `WIDE`, `CLIENT`, briefly this morning) mixed two kinds of knob: the grid and
+the domain, which belong to the statement, and the security, tail, and leaf settings, which belong to the
+target. Now `Profile` holds the target's knobs and `Profile.grid(rows_per_chain, chains)` returns the
+`Params`, evaluated at compile time (`comptime p = CLIENT.grid(72, 32)`). One profile, `CLIENT`; the VM is a
+second profile when it comes, not a second grid. Level 1 uses the tail's domain rule (spec 9.5: the smallest
+domain at rate <= 1/32, else the largest at <= 1/16), moved to `params.domain_for` and shared; the tail's
+divisor scan is now an enumeration of `2^k x (odd | 315)`. Consequences: the 72 x 32 test grid moves from one
+coset of 80,640 (rate 1/140, 105 queries) to four cosets of 4,608 (rate 1/32, 108 queries), a four times
+smaller level-1 encode; the 288 x 128 bench grid moves from 161,280 (rate 2/35, 112 queries) to two cosets
+of 161,280 (rate 1/35, 108 queries), a two times larger encode, so bench numbers before and after this date
+are not comparable. The throughput proxy `CLIENT.grid(2016, 576)` fails `check()` with "grid needs the
+codeword split" (290,304 symbols per column against a 645,120 domain); the arena numbers probed on it before
+this change (5.3 GB at 91 W columns, 11.7 GB at 357, tail at five digits) stand as the perf-pass targets.
+The derivation also exposed that the spec's narrow Keccak-2048 layout, 1008 x 252, needs the codeword split
+(63,504 symbols per column, rate 1/10 on the largest domain); the inline profile the tail test carried had
+run it at that rate. Its tail schedule is unchanged and still tested; no Shape is built on it. So the codeword
+split gates two of the spec's four Keccak rows, not only the proxy, and moves up the perf-pass list.

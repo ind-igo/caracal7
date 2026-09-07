@@ -1,16 +1,17 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
-from caracal7.core.params import Params, REFERENCE
+from caracal7.core.params import Params, CLIENT
 
 
-def test_reference_profile() raises:
-    REFERENCE.check()
-    assert_equal(REFERENCE.h1(), 72)
-    assert_equal(REFERENCE.h2(), 32)
-    assert_equal(REFERENCE.N(), 2304)
-    assert_equal(REFERENCE.L(), 80640)
-    assert_equal(REFERENCE.leaf_columns_max(), 256)
-    # rate 2304 / (4 * 80640) = 1/140; queries = ceil(103 / log2(2 / (1 + 1/140))) = ceil(104.07) = 105
-    assert_equal(REFERENCE.queries(), 105)
+def test_small_grid() raises:
+    comptime p = CLIENT.grid(72, 32)
+    p.check()
+    assert_equal(p.h1(), 72)
+    assert_equal(p.h2(), 32)
+    assert_equal(p.N(), 2304)
+    assert_equal(p.L(), 18432)
+    assert_equal(p.leaf_columns_max(), 256)
+    # rate 2304 / (4 * 18432) = 1/32 on 4 cosets of 4608; queries = ceil(103 / log2(2 / (1 + 1/32))) = 108
+    assert_equal(p.queries(), 108)
 
 
 def test_query_formula_matches_spec_rows() raises:
@@ -26,11 +27,11 @@ def test_query_formula_matches_spec_rows() raises:
 
 
 def test_check_rejects_bad_profiles() raises:
-    var p = REFERENCE
+    var p = CLIENT.grid(72, 32)
     p.a1 = 1
     with assert_raises():
         p.check()
-    p = REFERENCE
+    p = CLIENT.grid(72, 32)
     p.L0 = 1000
     with assert_raises():
         p.check()

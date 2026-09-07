@@ -1,6 +1,74 @@
-"""Params: every knob of the prover, as one comptime value (docs/design.md section 2)."""
+"""Params: every knob of the prover, as one comptime value (docs/design.md section 2).
+
+A `Profile` holds the deployment knobs (field, security, tail, leaf); `Profile.grid(rows_per_chain, chains)`
+derives the Params for a statement: each axis rounded up to the smallest legal size, the level-1 code domain
+by the rate rule of spec 9.5 (`domain_for`). The grid belongs to the statement, the profile to the target.
+There is one profile, `CLIENT`; a second one appears with a second target (the VM), not with a second grid."""
 
 from std.math import ceildiv, log2
+
+comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
+comptime RATE_INV = 32              # rate rule of spec 9.5: the smallest domain at rate <= 1/32 ...
+comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
+
+
+def domain_for(rows: Int) -> Tuple[Int, Int]:
+    """(L, cosets) for `rows` symbols per column: the smallest m cosets (m in 1, 2, 4) of a divisor of H4_ORDER
+    with an odd part (the encoder scatters from an odd-radix stage) at rate <= 1/RATE_INV; else the largest
+    domain if it is at rate <= 1/RATE_MIN_INV; else (0, 0), the codeword split."""
+    var best = 0
+    var cosets = 0
+    for m in [1, 2, 4]:
+        for k in range(10):
+            for odd in [3, 5, 7, 9, 15, 21, 35, 45, 63, 105, 315]:
+                var d = (1 << k) * odd
+                if m * d >= RATE_INV * rows and (best == 0 or m * d < best):
+                    best = m * d
+                    cosets = m
+    if best == 0 and 4 * H4_ORDER >= RATE_MIN_INV * rows:
+        return (4 * H4_ORDER, 4)
+    return (best, cosets)
+
+
+def _axis(target: Int) -> Tuple[Int, Int]:
+    """(a, m): the smallest legal 2^a m >= target (2 <= a <= 7, m | 63); (0, 1) if none."""
+    var a_best = 0
+    var m_best = 1
+    var best = 0
+    for a in range(2, 8):
+        for m in [1, 3, 7, 9, 21, 63]:
+            var h = (1 << a) * m
+            if h >= target and (best == 0 or h < best):
+                best = h
+                a_best = a
+                m_best = m
+    return (a_best, m_best)
+
+
+@fieldwise_init
+struct Profile(TrivialRegisterPassable, Writable):
+    var e: Int              # extension degree; 16 (spec section 1)
+    var leaf_bytes: Int     # 1,024, one Blake3 chunk
+    var tail_digits: Int    # binary digits folded per tail level
+    var tail_clear_max: Int # E elements sent in the clear at the last level
+    var lambda_bits: Int    # lambda' for the query count, 103 in the spec
+
+    def grid(self, rows_per_chain: Int, chains: Int) -> Params:
+        """The Params of a statement with `chains` chains of `rows_per_chain` rows, padded up to legal sizes.
+        Evaluates at compile time: `comptime p = CLIENT.grid(72, 32)`. A grid the level-1 domain cannot hold
+        at n_cw = 1 gets L0 = 0 and fails `check()`."""
+        var ax1 = _axis(rows_per_chain)
+        var ax2 = _axis(chains)
+        var n = (1 << ax1[0]) * ax1[1] * (1 << ax2[0]) * ax2[1]
+        var dom = domain_for(n // 4)                     # n_cw = 1: N / 4 symbols per column
+        return Params(e=self.e, a1=ax1[0], m1=ax1[1], a2=ax2[0], m2=ax2[1],
+                      L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
+                      leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
+                      tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits)
+
+
+# The client-side target: 103-bit queries, three-digit tail folds, 2,500 elements in the clear.
+comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)
 
 
 @fieldwise_init
@@ -48,6 +116,8 @@ struct Params(TrivialRegisterPassable, Writable):
         return self.leaf_bytes // (4 * self.n_cw())
 
     def check(self) raises:
+        if self.L0 == 0:
+            raise Error("grid needs the codeword split (n_cw > 1): the level-1 domain cannot hold N / 4 symbols at rate <= 1/16")
         if self.e != 16:
             raise Error("e must be 16: field.mojo fixes E = F_(127^16)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
@@ -64,29 +134,3 @@ struct Params(TrivialRegisterPassable, Writable):
     def write_to(self, mut w: Some[Writer]):
         w.write("Params(h1=", self.h1(), ", h2=", self.h2(), ", N=", self.N(),
                 ", L=", self.L(), ", rate=", self.rate(), ", queries=", self.queries(), ")")
-
-
-# Named profiles (docs/design.md section 2). A workload never picks its grid: it is compiled under one of
-# these and pads the chains it does not use. New profiles are added here when a statement needs one.
-
-# Reference: 72 x 32, one coset of 80,640. Tests run here; Keccak-256 of 128 B is one permutation on it.
-comptime REFERENCE = Params(
-    e=16, a1=3, m1=9, a2=5, m2=1, L0=80640, m_cosets=1, leaf_bytes=1024,
-    tail_digits=3, tail_clear_max=2500, lambda_bits=103,
-)
-
-# Wide: 288 x 128 (Keccak-256 of 2048 B at 16 channels per row). The benches run here.
-comptime WIDE = Params(
-    e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
-    tail_digits=3, tail_clear_max=2500, lambda_bits=103,
-)
-
-# Client: 2016 x 576, the throughput proxy of the spec (N = 2^20 + 4096). Two ceilings stand between this
-# profile and a run on a 16 GB machine: `n_cw` is 1 (the codeword split is not implemented), so level 1 is
-# at rate 0.45 with 223 queries instead of the spec's n_cw = 2; and the allocate-once arena is 5.3 GB at 91
-# W columns and 11.7 GB at 357 (the LDE and the W encode regions are 1 to 4 GB each). A level folds five
-# digits so the first tail level (36,288 rows) fits the F4 domain at rate <= 1/16.
-comptime CLIENT = Params(
-    e=16, a1=5, m1=63, a2=6, m2=9, L0=161280, m_cosets=4, leaf_bytes=1024,
-    tail_digits=5, tail_clear_max=2500, lambda_bits=103,
-)

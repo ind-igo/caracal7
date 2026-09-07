@@ -3,12 +3,12 @@
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.core.arena import Arena, Bump
 from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime MSG = 3000
 comptime ELEMS = 500
 comptime POS = 64

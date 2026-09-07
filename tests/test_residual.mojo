@@ -7,7 +7,7 @@ from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
@@ -17,7 +17,7 @@ from caracal7.relations.statement import interpolate_grid
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 from caracal7.core.bytes import list_e
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime C = SYNTHETIC_COLUMNS
 comptime N = p.N()
 comptime h1 = p.h1()

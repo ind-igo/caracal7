@@ -6,8 +6,7 @@ from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.field import E, f_add, ext_mul, ext_inv, ext_one
-from caracal7.core.params import Params
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
 from caracal7.relations.accumulate import ACC, accumulate, derive_chals
 from caracal7.relations.ir import Families, CHAL, CHAL_MUL, KIND_LOOKUP, lookup_constant, derived_chals, standard_chals, chal_count
@@ -15,7 +14,7 @@ from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
 from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()
 comptime h1 = p.h1()
 comptime h2 = p.h2()

@@ -4,7 +4,7 @@ family table repeated to ENTRIES entries over COLS columns. Small by default."""
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
@@ -12,7 +12,7 @@ from caracal7.relations.ir import ENTRY, Families
 from caracal7.relations.synthetic import synthetic_statement
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime COLS = 64
 comptime ENTRIES = 260          # 15 copies of the 17 synthetic entries over 8 columns each
 comptime REPS = 5

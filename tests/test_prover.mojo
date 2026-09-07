@@ -5,7 +5,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE, WIDE, CLIENT, Params
+from caracal7.core.params import CLIENT, Params
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
@@ -17,7 +17,7 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.relations.synthetic import Synthetic
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_block, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 
 
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
@@ -30,7 +30,7 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
 
 def test_tail_schedule_folds_a_larger_grid() raises:
     # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32) -> clear
-    comptime big = WIDE
+    comptime big = CLIENT.grid(288, 128)
     var s = tail_schedule[big]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 4608)
@@ -45,9 +45,10 @@ def test_tail_schedule_folds_a_larger_grid() raises:
 
 
 def test_tail_schedule_stops_when_binary_digits_run_out() raises:
-    # spec 9.5 narrow row, 1008 x 252: 6 binary digits -> two folds -> 3969 in the clear (odd digit only)
-    comptime narrow = Params(e=16, a1=4, m1=63, a2=2, m2=63, L0=161280, m_cosets=4, leaf_bytes=1024,
-                             tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+    # spec 9.5 narrow row, 1008 x 252: 6 binary digits -> two folds -> 3969 in the clear (odd digit only).
+    # The tail schedule does not depend on level 1; the grid itself needs the codeword split (63,504 symbols
+    # per column against a 645,120 domain), so no Shape is built on it until n_cw > 1 exists.
+    comptime narrow = CLIENT.grid(1008, 252)
     var s = tail_schedule[narrow]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 31752)
@@ -55,8 +56,12 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var shape = synthetic_statement(43).compile[narrow]().take_shape()
-    assert_equal(shape.clear_length, 3969)
+    var stopped = String("")
+    try:
+        narrow.check()
+    except e:
+        stopped = String(e)
+    assert_true(stopped.startswith("grid needs the codeword split"))
 
 
 def test_layout_plans_the_arena() raises:
@@ -72,15 +77,24 @@ def test_layout_plans_the_arena() raises:
     print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
 
 
-def test_client_profile_plans_but_does_not_fit_16gb() raises:
-    """The client grid (2016 x 576) plans: two tail levels at five digits each, 223 queries at n_cw = 1, and an
-    arena of 5.3 GB at 91 W columns, 11.7 GB at 357 (params.mojo). The numbers are the ceilings the perf pass
-    lifts (codeword split, arena reuse); the test pins the plan so a change shows."""
-    CLIENT.check()
-    assert_equal(CLIENT.queries(), 223)
-    assert_equal(len(tail_schedule[CLIENT]()), 2)
-    var L = ProverLayout.__init__[CLIENT, Blake3](synthetic_statement(91, with_lookup=True).compile[CLIENT]().take_shape())
-    assert_true(L.bytes > 5000 * (1 << 20) and L.bytes < 5500 * (1 << 20))
+def test_derived_grids() raises:
+    """The derivation rounds each axis up to a legal size and picks the level-1 domain by the rate rule; the
+    spec's throughput proxy (2016 x 576) needs the codeword split, which check() names."""
+    comptime g = CLIENT.grid(70, 30)
+    assert_equal(g.h1(), 72)
+    assert_equal(g.h2(), 32)
+    assert_equal(g.L(), 18432)                        # 576 symbols per column: four cosets of 4608, rate 1/32
+    comptime wide = CLIENT.grid(288, 128)
+    assert_equal(wide.L(), 322560)                    # 9216 symbols: two cosets of 161280, rate 1/35
+    assert_equal(wide.m_cosets, 2)
+    comptime proxy = CLIENT.grid(2016, 576)
+    assert_equal(proxy.N(), 1161216)
+    var stopped = String("")
+    try:
+        proxy.check()
+    except e:
+        stopped = String(e)
+    assert_true(stopped.startswith("grid needs the codeword split"))
 
 
 def test_prove_and_verify() raises:
@@ -292,7 +306,7 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
 
 def test_prove_and_verify_with_tail() raises:
     """288 x 128: two committed tail levels (4608 rows on 161280, 576 rows on 4 x 4608), 576 in the clear."""
-    comptime big = WIDE
+    comptime big = CLIENT.grid(288, 128)
     var ctx = DeviceContext()
     var c = synthetic_statement().compile[big]()
     var shape = synthetic_statement().compile[big]().take_shape()

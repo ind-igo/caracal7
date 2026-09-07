@@ -21,16 +21,13 @@ from std.math import log2
 from std.memory import unsafe_memcpy
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.params import Params
+from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
 from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, block_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, get_u16, host_base
 
 comptime VERSION: UInt32 = 1
-comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
-comptime TAIL_RATE_INV = 32         # rate rule of spec 9.5: the smallest domain at rate <= 1/32 ...
-comptime TAIL_RATE_MIN_INV = 16     # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
 
 
 @fieldwise_init
@@ -56,17 +53,9 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
     var digits = p.a1 + p.a2
     while length > p.tail_clear_max and digits >= p.tail_digits:
         var rows = length >> p.tail_digits
-        var L = 0
-        var cosets = 0
-        for m in [1, 2, 4]:
-            for d in range(1, H4_ORDER + 1):
-                if H4_ORDER % d == 0 and (d & (d - 1)) != 0 and m * d >= TAIL_RATE_INV * rows and (L == 0 or m * d < L):
-                    L = m * d
-                    cosets = m
-                    break
-        if L == 0 and 4 * H4_ORDER >= TAIL_RATE_MIN_INV * rows:
-            L = 4 * H4_ORDER
-            cosets = 4
+        var dom = domain_for(rows)
+        var L = dom[0]
+        var cosets = dom[1]
         if L == 0:
             raise Error("tail level does not fit the F4 domain")
         # queries at the exact rate rows / L, same formula as level 1

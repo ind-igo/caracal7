@@ -6,13 +6,13 @@ from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.core.bytes import list_e
 from caracal7.relations.smallgrid import small_grid_accumulator, small_grid_values, interp_cyclic
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime h2 = p.h2()
 
 

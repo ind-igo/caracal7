@@ -4,7 +4,7 @@ The profiled run is slower in total (it serializes the stream); the split is wha
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import Params, REFERENCE, WIDE
+from caracal7.core.params import Params, CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace, load_advice
@@ -32,7 +32,9 @@ def run[p: Params](name: String, lookup: Bool = False) raises:
 
 
 def main() raises:
-    run[REFERENCE]("reference 72 x 32")
-    run[REFERENCE]("reference 72 x 32 + lookup", lookup=True)
-    run[WIDE]("wide 288 x 128")
-    run[WIDE]("wide 288 x 128 + lookup", lookup=True)
+    comptime small = CLIENT.grid(72, 32)
+    comptime wide = CLIENT.grid(288, 128)
+    run[small]("72 x 32")
+    run[small]("72 x 32 + lookup", lookup=True)
+    run[wide]("288 x 128")
+    run[wide]("288 x 128 + lookup", lookup=True)

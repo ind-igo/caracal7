@@ -3,12 +3,12 @@
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, encode, to_packed, rs_encode
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime COLS = 64
 comptime REPS = 5
 

@@ -3,12 +3,12 @@
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE
+from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.merkle import merkle, tree_nodes
 
-comptime p = REFERENCE
+comptime p = CLIENT.grid(72, 32)
 comptime LEAVES = p.L0
 comptime ROW = 101 * 4
 comptime REPS = 5
