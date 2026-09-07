@@ -66,8 +66,27 @@ struct Params(TrivialRegisterPassable, Writable):
                 ", L=", self.L(), ", rate=", self.rate(), ", queries=", self.queries(), ")")
 
 
-# Milestone-1 reference profile (docs/design.md section 2): 72 x 32 grid, one coset of 80,640.
+# Named profiles (docs/design.md section 2). A workload never picks its grid: it is compiled under one of
+# these and pads the chains it does not use. New profiles are added here when a statement needs one.
+
+# Reference: 72 x 32, one coset of 80,640. Tests run here; Keccak-256 of 128 B is one permutation on it.
 comptime REFERENCE = Params(
     e=16, a1=3, m1=9, a2=5, m2=1, L0=80640, m_cosets=1, leaf_bytes=1024,
     tail_digits=3, tail_clear_max=2500, lambda_bits=103,
+)
+
+# Wide: 288 x 128 (Keccak-256 of 2048 B at 16 channels per row). The benches run here.
+comptime WIDE = Params(
+    e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
+    tail_digits=3, tail_clear_max=2500, lambda_bits=103,
+)
+
+# Client: 2016 x 576, the throughput proxy of the spec (N = 2^20 + 4096). Two ceilings stand between this
+# profile and a run on a 16 GB machine: `n_cw` is 1 (the codeword split is not implemented), so level 1 is
+# at rate 0.45 with 223 queries instead of the spec's n_cw = 2; and the allocate-once arena is 5.3 GB at 91
+# W columns and 11.7 GB at 357 (the LDE and the W encode regions are 1 to 4 GB each). A level folds five
+# digits so the first tail level (36,288 rows) fits the F4 domain at rate <= 1/16.
+comptime CLIENT = Params(
+    e=16, a1=5, m1=63, a2=6, m2=9, L0=161280, m_cosets=4, leaf_bytes=1024,
+    tail_digits=5, tail_clear_max=2500, lambda_bits=103,
 )

@@ -5,7 +5,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import REFERENCE, Params
+from caracal7.core.params import REFERENCE, WIDE, CLIENT, Params
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
@@ -30,8 +30,7 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
 
 def test_tail_schedule_folds_a_larger_grid() raises:
     # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32) -> clear
-    comptime big = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
-                          tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+    comptime big = WIDE
     var s = tail_schedule[big]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 4608)
@@ -71,6 +70,17 @@ def test_layout_plans_the_arena() raises:
                 L.positions, L.proof_stage, L.prefix, L.stage1, L.alpha, L.z, L.beta_gamma, L.batch, L.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
+
+
+def test_client_profile_plans_but_does_not_fit_16gb() raises:
+    """The client grid (2016 x 576) plans: two tail levels at five digits each, 223 queries at n_cw = 1, and an
+    arena of 5.3 GB at 91 W columns, 11.7 GB at 357 (params.mojo). The numbers are the ceilings the perf pass
+    lifts (codeword split, arena reuse); the test pins the plan so a change shows."""
+    CLIENT.check()
+    assert_equal(CLIENT.queries(), 223)
+    assert_equal(len(tail_schedule[CLIENT]()), 2)
+    var L = ProverLayout.__init__[CLIENT, Blake3](synthetic_statement(91, with_lookup=True).compile[CLIENT]().take_shape())
+    assert_true(L.bytes > 5000 * (1 << 20) and L.bytes < 5500 * (1 << 20))
 
 
 def test_prove_and_verify() raises:
@@ -282,8 +292,7 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
 
 def test_prove_and_verify_with_tail() raises:
     """288 x 128: two committed tail levels (4608 rows on 161280, 576 rows on 4 x 4608), 576 in the clear."""
-    comptime big = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
-                          tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+    comptime big = WIDE
     var ctx = DeviceContext()
     var c = synthetic_statement().compile[big]()
     var shape = synthetic_statement().compile[big]().take_shape()

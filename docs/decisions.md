@@ -361,3 +361,15 @@ function. `Synthetic` conforms; its public inputs are the restricted column's ch
 needs none. Each side compiles the statement once (two parties, two compiles); the prover-takes-`Compiled`
 change stays deferred. test_prover round-trips the plain, lookup, and public variants through the drivers
 and rejects a changed public input.
+
+## Named profiles and the client grid (2026-09-07)
+
+`REFERENCE`, `WIDE`, `CLIENT` in `params.mojo`; the bench and test_prover use `WIDE` instead of an inline
+copy. The rule: the grid belongs to the profile, not the workload. The client grid probe (test_prover
+`test_client_profile_plans_but_does_not_fit_16gb`): `tail_digits = 3` fails ("tail level does not fit the
+F4 domain": 145,152 rows need L >= 32 rows and the largest domain is 645,120), five digits fits with two
+levels; `n_cw = 1` gives rate 0.45 and 223 queries against the spec's `n_cw = 2`; the arena is 5.3 GB at 91
+W columns (the narrow Keccak layout) and 11.7 GB at 357 (the wide one), of which the LDE region is 1.2 to 3.6
+GB and the W encode region 1.0 to 3.9 GB. So the client grid is a plan, not a run, until the perf pass
+implements the codeword split and reuses arena regions across stages. Keccak lands on `REFERENCE` (one
+permutation) and `WIDE` (16 permutations) first.

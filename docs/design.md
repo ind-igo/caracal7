@@ -31,6 +31,8 @@ Derived at comptime: `h1`, `h2`, `N = h1 * h2`, `L = m_cosets * L0`, the rate, t
 
 Milestone 1 profile: `e = 16`, `a1 = 3, m1 = 9` (h1 = 72), `a2 = 5, m2 = 1` (h2 = 32), `L0 = 80,640`, `m_cosets = 1`. This is the reference profile for synthetic columns, not a Keccak grid: the main spec lists Keccak-128 at 72 × 32 and statement-layer section 9 at 64 × 24, and that is reconciled when the frontend lands.
 
+Profiles are named in `params.mojo`: `REFERENCE` (72 × 32, tests), `WIDE` (288 × 128, benches), `CLIENT` (2016 × 576, the spec's throughput proxy). A workload never chooses its grid; it is compiled under a profile and pads the chains it does not use, so a message-length sweep is a loop inside one binary and a grid sweep is one compile per profile. `CLIENT` plans (two tail levels of five digits) but does not run on a 16 GB machine yet: `n_cw = 1` puts level 1 at rate 0.45 with 223 queries, and the allocate-once arena is 5.3 GB at 91 W columns and 11.7 GB at 357. The codeword split and arena region reuse are the perf-pass items that lift it.
+
 The tail schedule is derived, not chosen: from `N` and `e`, level by level, the message length, `L_l`, the exact rate, and `|S_l|` by the query formula, until the clear-vector bound of 9.3 stops the recursion. The whole schedule is computed before the transcript prefix is hashed, because the prefix commits to it.
 
 ## 3. Buffers

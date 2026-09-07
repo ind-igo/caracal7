@@ -4,14 +4,12 @@ The profiled run is slower in total (it serializes the stream); the split is wha
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import Params, REFERENCE
+from caracal7.core.params import Params, REFERENCE, WIDE
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace, load_advice
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
 
-comptime WIDE = Params(e=16, a1=5, m1=9, a2=7, m2=1, L0=161280, m_cosets=1, leaf_bytes=1024,
-                       tail_digits=3, tail_clear_max=2500, lambda_bits=103)
 
 
 def run[p: Params](name: String, lookup: Bool = False) raises:
