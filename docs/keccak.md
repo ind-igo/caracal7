@@ -49,11 +49,12 @@ byte rejected.
 
 ## Open
 
-- `build_queries` at `P = 28` is the largest prover stage at 2048 B (decisions.md 2026-09-07); the residual
-  at 777 entries is not.
+- (done, decisions.md perf pass 1) `build_queries` at `P = 28` was the largest prover stage at 2048 B; per-point
+  tables took it from 293 to 12 ms. `encode W` and `open` lead now; the residual at 777 entries is not on
+  the critical path.
 - The dense public block: 17 x N x 2 bytes of host interpolation per proof on both sides (`interpolate_grid`
   is O(N (h1 + h2))), and 17 x 28 dense block evaluations in the verifier. This is the verify time the bench
-  prints (32 s at 2048 B) and a known deviation from statement-layer 6 ("nothing is O(N)"); the spec's
+  prints (22 s at 2048 B) and a known deviation from statement-layer 6 ("nothing is O(N)"); the spec's
   factored form or a host FFT fixes it on the host side only.
 - Shared reads collapsed into one kappa (statement-builder.md, IR gaps): `t` columns are read at 24 offsets
   by 75 entries.

@@ -412,3 +412,22 @@ by both sides) and `verify` evaluates 17 x 34 dense blocks; the spec's factored 
 small interpolant) or a host FFT is the fix, and it is a verifier and host change only. Booleanity families
 are kept per the spec although every column is a function of the zero start and the public bits; dropping them
 removes 284 entries and is the first residual lever if that stage ever matters.
+
+## Perf pass 1: `build_queries` by per-point tables (2026-09-07)
+
+`k_build_queries` computed every `(point, slot)` weight from scratch: two Lagrange factors with an E
+inverse each, four E powers by exponentiation, about thirty E products and one inverse per slot, for
+P x N threads. Every factor of the weight (spec 9.1) depends on the point and one digit of the slot: `z1^x1`,
+`z2^x2`, `L1(r1)`, `L2(r2)`, and the odd-generator powers. So `k_point_tables` now builds a `(P, table_len, e)`
+region `w_tab` (`table_len = 2^a1 + 2^a2 + m1 + m2`, 320 elements on 64 x 384) and a slot costs four E
+products from table reads; the odd-generator powers stay inline (`f_pow` on a byte is cheaper than a load,
+decisions 2026-09-05). `table_entry` is the one definition of an entry; `host_table` writes it as host bytes
+and the verifier reads it through `host_base`, so `slot_weight` stays one function on both sides. Rejected on
+the way: a `PointTable` trait with a device struct holding `Base` (struct fields cannot carry an untracked
+origin), replaced by the `host_base` pattern the Hash methods already use.
+
+Keccak-256 sweep, warm prove: 128 B 128 to 109 ms; 1024 B 485 to 333 ms; 2048 B 978 to 702 ms, with
+`build_queries` 293 to 12 ms (24x). The verifier's evaluation claim was the same weights on the host: verify
+2048 B 32.2 to 22.1 s, 128 B 0.7 to 0.28 s. The remaining verify time is the dense public blocks
+(`docs/keccak.md`). Prover budget at 2048 B now: `encode W` 167, `open` 130, `residual` 84, `lde` 81,
+`encode Q` 67, `transcript openings` 50 (flat across sizes: launch-bound Blake3), `merkle W` 21.

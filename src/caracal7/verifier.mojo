@@ -16,9 +16,9 @@ from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain
-from caracal7.pcs import pack_slot, pack_index, slot_weight, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
+from caracal7.pcs import pack_slot, pack_index, slot_weight, host_table, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_block, eval_line, block_bytes
-from caracal7.core.bytes import get_u16, list_e
+from caracal7.core.bytes import get_u16, list_e, host_base, Buf
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
@@ -161,8 +161,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var z1p = point_coord(z1, dj1, d.g1, p.h1())
         var z2p = point_coord(z2, dj2, d.g2, p.h2())
         var gamma = list_e(beta_gamma, shape.columns() + pt)
+        var tab = host_table[p](z1p, z2p, d.rho1, d.rho2)
         for slot in range(p.N()):
-            _add_e(running, slot, ext_mul[4](gamma, slot_weight[p](slot, z1p, z2p, d.rho1, d.rho2)))
+            _add_e(running, slot, ext_mul[4](gamma, slot_weight[p](slot, host_base(tab), Buf[16](0), 0, d.rho1, d.rho2)))
         var claim = E(0)
         for c in range(shape.columns()):
             claim = f_add(claim, ext_mul[4](list_e(beta_gamma, c), _opening[p](openings, shape, pt, c)))

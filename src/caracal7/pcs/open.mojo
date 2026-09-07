@@ -7,8 +7,9 @@
 Opening point p is (g1^dj1 z1, g2^dj2 z2) for the (dj1, dj2) pair at `shifts + POINT p`, or a fixed coordinate (residual.mojo)
 (residual.shift_points); point 0 is z itself. The weight of a slot (t, x1', x2, r) is L(r) times
 Mon(x) + Par(x, r) at t = 0 and i (Mon(x) - Par(x, r)) at t = 1 for a pair representative x, and
-Mon(x) for a fixed slot (9.1). One thread per (point, slot) computes it from scratch; the
-verifier evaluates the same pieces as tensor factors.
+Mon(x) for a fixed slot (9.1). Every factor depends on the point and one digit of the slot, so a
+per-point table (z^x on each binary axis, L(r) on each odd axis; `table_entry`) is built first and a
+slot costs four E products from it. The verifier reads the same table from the host (`host_table`).
 
 `open` and `fold` are lane GEMMs on backend.gemm_f2: C[8 F2 lanes, n] with the F byte operand
 read through the Bytes loader.
@@ -49,11 +50,44 @@ def f_pow_inv_m(m: Int) -> Int:
     return 0
 
 
+def table_len[p: Params]() -> Int:
+    """Per-point table: z1^x for x < 2^a1, z2^x for x < 2^a2, L1(r1) for r1 < m1, L2(r2) for r2 < m2."""
+    return (1 << p.a1) + (1 << p.a2) + p.m1 + p.m2
+
+
 @always_inline
-def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> E:
-    """w_z[slot] of spec 9.1 for the point (z1, z2); shared by the kernel and the verifier."""
+def table_entry[p: Params](i: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> E:
+    """Entry i of the point table for (z1, z2): one definition for the kernel and the verifier."""
+    comptime A1 = 1 << p.a1
+    comptime A2 = 1 << p.a2
+    if i < A1:
+        return ext_pow[4](z1, i)
+    if i < A1 + A2:
+        return ext_pow[4](z2, i - A1)
+    if i < A1 + A2 + p.m1:
+        return _lagrange(ext_pow[4](z1, A1), p.m1, _rho(rho1, i - A1 - A2))
+    return _lagrange(ext_pow[4](z2, A2), p.m2, _rho(rho2, i - A1 - A2 - p.m1))
+
+
+def host_table[p: Params](z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> List[UInt8]:
+    """The point table as host bytes (table_len, e); `host_base` of it is the Base `slot_weight` reads."""
+    var t = List[UInt8](capacity=table_len[p]() * 16)
+    for i in range(table_len[p]()):
+        var v = table_entry[p](i, z1, z2, rho1, rho2)
+        for j in range(16):
+            t.append(v[j])
+    return t^
+
+
+@always_inline
+def slot_weight[p: Params](slot: Int, base: Base, tab: Buf[16], off: Int, rho1: UInt8, rho2: UInt8) -> E:
+    """w_z[slot] of spec 9.1 for the point whose table starts at element `off` of `tab`; shared by the kernel
+    and the verifier (`host_table` + `host_base`). Every factor is a table read or a power of the odd-digit
+    generator; four E products per slot."""
     comptime H1 = 1 << (p.a1 - 1)
     comptime H2 = 1 << (p.a2 - 1)
+    comptime A1 = 1 << p.a1
+    comptime A2 = 1 << p.a2
     var x1: Int
     var x2: Int
     var r: Int
@@ -61,13 +95,11 @@ def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) ->
     x1, x2, r, coord = slot_target[p](slot)
     var r1 = r % p.m1
     var r2 = r // p.m1
-    var rr1 = _rho(rho1, r1)                                  # the odd-digit point r as a field element
-    var rr2 = _rho(rho2, r2)
-    var L = ext_mul[4](_lagrange(ext_pow[4](z1, 1 << p.a1), p.m1, rr1), _lagrange(ext_pow[4](z2, 1 << p.a2), p.m2, rr2))
-    var mon = ext_mul[4](ext_pow[4](z1, x1), ext_pow[4](z2, x2))
+    var L = ext_mul[4](tab.load(base, off + A1 + A2 + r1), tab.load(base, off + A1 + A2 + p.m1 + r2))
+    var mon = ext_mul[4](tab.load(base, off + x1), tab.load(base, off + A1 + x2))
 
     var x1p = (slot >> 1) % H1
-    var x2s = ((slot >> 1) // H1) % (1 << p.a2)
+    var x2s = ((slot >> 1) // H1) % A2
     var w: E
     if x1p == 0 and (x2s == 0 or x2s == H2):
         w = mon                                              # fixed slot: c_x(r) lies in F
@@ -76,10 +108,10 @@ def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) ->
         var par = ext_one[4]()
         if x1 != 0:
             var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
-            par = ext_mul[4](ext_pow[4](z1, (1 << p.a1) - x1), _rho(rho1, (r1 * s1) % p.m1))
+            par = f_mul(tab.load(base, off + A1 - x1), E(_scal(rho1, (r1 * s1) % p.m1)))
         if x2 != 0:
             var s2 = ((1 << (7 - p.a2)) * x2 - 1) % p.m2
-            par = ext_mul[4](par, ext_mul[4](ext_pow[4](z2, (1 << p.a2) - x2), _rho(rho2, (r2 * s2) % p.m2)))
+            par = ext_mul[4](par, f_mul(tab.load(base, off + A1 + A2 - x2), E(_scal(rho2, (r2 * s2) % p.m2))))
         if coord == 0:
             w = f_add(mon, par)
         else:
@@ -90,8 +122,13 @@ def slot_weight[p: Params](slot: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) ->
 
 
 @always_inline
+def _scal(rho: UInt8, k: Int) -> UInt8:
+    return f_pow(SIMD[DType.uint8, 1](rho), k)[0]
+
+
+@always_inline
 def _rho(rho: UInt8, k: Int) -> E:
-    return ext_embed[4](f_pow(SIMD[DType.uint8, 1](rho), k))
+    return ext_embed[4](_scal(rho, k))
 
 
 @always_inline
@@ -104,27 +141,39 @@ def _coord(base: Base, z: E, dj: Int, gtab: Buf[2], h: Int) -> E:
     return g if dj == FIX_E else ext_mul[4](z, g)
 
 
-def k_build_queries[p: Params](base: Base, z: Buf[16], shifts: Buf[1], points: Int32,
-                                g1p: Buf[2], g2p: Buf[2], rho1: UInt8, rho2: UInt8, w_z: Buf[16]):
-    comptime N = p.N()
+def k_point_tables[p: Params](base: Base, z: Buf[16], shifts: Buf[1], points: Int32,
+                               g1p: Buf[2], g2p: Buf[2], rho1: UInt8, rho2: UInt8, tab: Buf[16]):
+    comptime T = table_len[p]()
     var gid = Int(global_idx.x)
-    if gid >= Int(points) * N:
+    if gid >= Int(points) * T:
         return
-    var pt = gid // N
+    var pt = gid // T
     var sh = shifts.at(pt * 4)
     var dj1 = u16(base, sh)
     var dj2 = u16(base, sh + 2)
     var z1 = _coord(base, z.load(base, 0), dj1, g1p, p.h1())
     var z2 = _coord(base, z.load(base, 1), dj2, g2p, p.h2())
-    w_z.store(base, gid, slot_weight[p](gid % N, z1, z2, rho1, rho2))
+    tab.store(base, gid, table_entry[p](gid % T, z1, z2, rho1, rho2))
+
+
+def k_build_queries[p: Params](base: Base, points: Int32, rho1: UInt8, rho2: UInt8, tab: Buf[16], w_z: Buf[16]):
+    comptime N = p.N()
+    var gid = Int(global_idx.x)
+    if gid >= Int(points) * N:
+        return
+    w_z.store(base, gid, slot_weight[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
 
 
 def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
-                             z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_z: Int) raises:
-    """w_z (P, slot, e) for the P opening points derived from z."""
+                             z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_tab: Int, w_z: Int) raises:
+    """w_z (P, slot, e) for the P opening points derived from z: the per-point tables (P, table_len, e) into
+    `w_tab`, then the slots."""
+    comptime kt = k_point_tables[p]
     comptime k = k_build_queries[p]
-    ctx.enqueue_function[k](arena.buf, Buf[16](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
-                            d.rho1, d.rho2, Buf[16](w_z),
+    ctx.enqueue_function[kt](arena.buf, Buf[16](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
+                             d.rho1, d.rho2, Buf[16](w_tab),
+                             grid_dim=ceildiv(points * table_len[p](), BACKEND.block), block_dim=BACKEND.block)
+    ctx.enqueue_function[k](arena.buf, Int32(points), d.rho1, d.rho2, Buf[16](w_tab), Buf[16](w_z),
                             grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
 

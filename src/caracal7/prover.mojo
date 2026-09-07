@@ -18,7 +18,7 @@ from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_el
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
-from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold
+from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
 from caracal7.relations import ENTRY, POINT, ACC, CHAL, KIND_LOOKUP, expand_blocks, block_bytes, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
 from caracal7.core.bytes import Buf
@@ -83,6 +83,7 @@ struct ProverLayout:
     var lde: Int                    # (column, G2, G1, 2)   witness, accumulator, then public columns on the residual grid
     var residual: Int               # (G2, G1, e)
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
+    var w_tab: Int                  # (P, table_len, e)     per-point powers and Lagrange factors (open.mojo)
     var w_z: Int                    # (P, slot, e)          evaluation queries
     var openings: Int               # (P, column, e)
     var open_partial: Int           # (P, splits, column, e) split-K partials of `open`
@@ -139,6 +140,7 @@ struct ProverLayout:
         self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * G * 2)
         self.residual = bump.alloc(G * p.e)
         self.quotient = bump.alloc(quotient_elems[p]() * p.e)
+        self.w_tab = bump.alloc(shape.points * table_len[p]() * p.e)
         self.w_z = bump.alloc(shape.points * N * p.e)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e)
         self.open_partial = bump.alloc(shape.points * open_splits[p]() * max(shape.columns_w, max(shape.columns_z, shape.columns_q)) * p.e)
@@ -332,7 +334,7 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, profile, "transcript Q", t0)
 
         # 11. openings at the P points
-        build_queries[Self.p](ctx, self.arena, L.z, L.shifts, S.points, L.tables, self.domains, L.w_z)
+        build_queries[Self.p](ctx, self.arena, L.z, L.shifts, S.points, L.tables, self.domains, L.w_tab, L.w_z)
         self._mark(ctx, profile, "build_queries", t0)
         open[Self.p](ctx, self.arena, L.w_z, S.points, L.enc_w.stored, S.columns_w, L.open_partial, L.openings, S.columns())
         if S.columns_z > 0:
