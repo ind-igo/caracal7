@@ -68,7 +68,7 @@ among `family` and `acc` calls); `gate` is `mult`. Kinds emit their certificates
 BIT column its Booleanity family, a LIMB6 column a lookup into the [64] table through a `<name>.sorted` column
 the builder appends to W. Groups are labels for `pad_trace(layout, trace, group, live_rows)`, which fills idle
 rows with a table row for lookup record columns and zero elsewhere. `advice(layout, trace)` derives the sort
-indices, `public_block(vals, m, d2)` a block from values, `restriction_line(layout, trace, i)` a line from the
+indices, `public_block(layout, i, vals)` a block from values, `restriction_line(layout, trace, i)` a line from the
 trace. Skipped from the sketch: a `group()` call with a pad rule (the rule is a function of the kinds), `Chal`
 and `Line` wrappers (element indices and FIX_* do the job).
 

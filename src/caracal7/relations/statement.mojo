@@ -17,7 +17,7 @@ from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, KIND_PERM, KIND_LOOKUP
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP
 from caracal7.proof import Shape
 
 comptime BIT = 0
@@ -77,45 +77,46 @@ struct Layout(Copyable, Movable):
     """Prover-side names: W columns in index order with their kind and group, plus the descriptors, tables,
     public specs, and restriction records the trace helpers read. Not part of the artifact."""
     var names: List[String]
+    var index: Dict[String, Int]
     var kinds: List[Int]
     var groups: List[String]
     var accs: List[UInt8]
     var tables: List[List[UInt8]]
     var publics: List[UInt8]
     var restrictions: List[UInt8]
+    var slots: List[Tuple[Int, Int, Int]]   # per W column: (table id, record position, width) of its lookup record;
+                                            # (-1, 0, 0) none, (-2, 0, 0) a sorted column, (-3, 0, 0) a record of two lookups
 
-    def __init__(out self, names: List[String], kinds: List[Int], groups: List[String], accs: List[UInt8],
-                 tables: List[List[UInt8]], publics: List[UInt8], restrictions: List[UInt8]):
+    def __init__(out self, names: List[String], index: Dict[String, Int], kinds: List[Int], groups: List[String],
+                 accs: List[UInt8], tables: List[List[UInt8]], publics: List[UInt8], restrictions: List[UInt8]):
         self.names = names.copy()
+        self.index = index.copy()
         self.kinds = kinds.copy()
         self.groups = groups.copy()
         self.accs = accs.copy()
         self.tables = tables.copy()
         self.publics = publics.copy()
         self.restrictions = restrictions.copy()
+        self.slots = List[Tuple[Int, Int, Int]](length=len(names), fill=(-1, 0, 0))
+        for k in range(len(accs) // ACC):
+            if Int(accs[k * ACC + 38]) != KIND_LOOKUP:
+                continue
+            var width = get_u16(accs, k * ACC + 2)
+            for j in range(width):
+                var c = get_u16(accs, k * ACC + 6 + 2 * j)
+                if self.slots[c][0] == -1:
+                    self.slots[c] = (Int(accs[k * ACC + 39]), j, width)
+                else:
+                    self.slots[c] = (-3, 0, 0)
+                self.slots[get_u16(accs, k * ACC + 22 + 2 * j)] = (-2, 0, 0)
 
     def col(self, name: String) raises -> Int:
-        for i in range(len(self.names)):
-            if self.names[i] == name:
-                return i
+        if name in self.index:
+            return self.index[name]
         raise Error("unknown column " + name)
 
     def columns_w(self) -> Int:
         return len(self.names)
-
-    def _record_slot(self, c: Int) -> Tuple[Int, Int, Int]:
-        """(table id, record position, record width) if W column c is a lookup record column, else (-1, 0, 0);
-        (-2, 0, 0) if it is a sorted column (the prover's)."""
-        for k in range(len(self.accs) // ACC):
-            if Int(self.accs[k * ACC + 38]) != KIND_LOOKUP:
-                continue
-            var width = get_u16(self.accs, k * ACC + 2)
-            for j in range(width):
-                if get_u16(self.accs, k * ACC + 6 + 2 * j) == c:
-                    return (Int(self.accs[k * ACC + 39]), j, width)
-                if get_u16(self.accs, k * ACC + 22 + 2 * j) == c:
-                    return (-2, 0, 0)
-        return (-1, 0, 0)
 
 
 struct Compiled(Movable):
@@ -135,6 +136,7 @@ struct Compiled(Movable):
 
 struct Statement(Movable):
     var cols: List[String]
+    var col_index: Dict[String, Int]
     var kinds: List[Int]
     var col_group: List[String]
     var fams: List[_Family]
@@ -145,10 +147,12 @@ struct Statement(Movable):
     var res: List[UInt8]                # RES records, column resolved at compile
     var res_names: List[String]
     var tables: List[List[UInt8]]
+    var widths: List[Int]
     var chals: List[UInt8]
 
     def __init__(out self):
         self.cols = List[String]()
+        self.col_index = Dict[String, Int]()
         self.kinds = List[Int]()
         self.col_group = List[String]()
         self.fams = List[_Family]()
@@ -159,12 +163,12 @@ struct Statement(Movable):
         self.res = List[UInt8]()
         self.res_names = List[String]()
         self.tables = List[List[UInt8]]()
+        self.widths = List[Int]()
         self.chals = standard_chals()
 
     def _fresh(self, name: String) raises:
-        for n in self.cols:
-            if n == name:
-                raise Error("name in use: " + name)
+        if name in self.col_index:
+            raise Error("name in use: " + name)
         for a in self.accs:
             if a.name == name:
                 raise Error("name in use: " + name)
@@ -177,6 +181,7 @@ struct Statement(Movable):
         self._fresh(name)
         if kind < BIT or kind > BYTE:
             raise Error("column kind is BIT, LIMB6, or BYTE")
+        self.col_index[name] = len(self.cols)
         self.cols.append(name)
         self.kinds.append(kind)
         self.col_group.append(group)
@@ -187,16 +192,18 @@ struct Statement(Movable):
         if width < 1 or len(rows) == 0 or len(rows) % width != 0:
             raise Error("lookup table is whole rows")
         var k = len(rows) // width
-        var has_break = False
-        for i in range(k):
-            for j in range(i + 1, k):
-                if rows[i * width : (i + 1) * width] == rows[j * width : (j + 1) * width]:
-                    raise Error("lookup table rows must be distinct")
-            if i + 1 < k:
-                has_break = True
-        if not has_break:
+        if k < 2:
             raise Error("lookup table needs two distinct entries")
+        var seen = Dict[Int, Int]()
+        for i in range(k):
+            var key = _row_key(rows, i * width, width)
+            if key < 0:
+                raise Error("lookup table bytes must be canonical field elements (< 127)")
+            if key in seen:
+                raise Error("lookup table rows must be distinct")
+            seen[key] = i
         self.tables.append(rows.copy())
+        self.widths.append(width)
         return len(self.tables) - 1
 
     def acc(mut self, name: String, kind: Int, num: List[String], den: List[String], table: Int = -1) raises:
@@ -205,6 +212,8 @@ struct Statement(Movable):
         self._fresh(name)
         if kind == KIND_LOOKUP and (table < 0 or table >= len(self.tables)):
             raise Error("lookup accumulator needs a registered table")
+        if kind == KIND_LOOKUP and len(num) != self.widths[table]:
+            raise Error("lookup record width differs from its table's")
         self.order.append((1, len(self.accs)))
         self.accs.append(_Acc(name, kind, num.copy(), den.copy(), table))
 
@@ -253,20 +262,20 @@ struct Statement(Movable):
         self.order.append((0, len(self.fams)))
         self.fams.append(_Family(name, terms.copy(), gate))
 
-    def _wcol(self, names: List[String], name: String) raises -> Int:
-        for i in range(len(names)):
-            if names[i] == name:
-                return i
+    def _wcol(self, index: Dict[String, Int], name: String) raises -> Int:
+        if name in index:
+            return index[name]
         raise Error("unknown witness column " + name)
 
-    def _resolve[p: Params](self, names: List[String], r: Read, pub_at: Int, mut touched: List[Bool]) raises -> Int:
+    def _resolve[p: Params](self, index: Dict[String, Int], r: Read, pub_at: Int, mut touched: List[Bool], mut read: List[Bool]) raises -> Int:
         """A read to a column index: W by name, else a public column past W and Z."""
         if r.k1 < 0 or r.k1 >= p.h1() or r.k2 < 0 or r.k2 > 1:
             raise Error("read shift: k1 in [0, h1), k2 in {0, 1}")
-        for i in range(len(names)):
-            if names[i] == r.col:
-                touched[i] = True
-                return i
+        if r.col in index:
+            var i = index[r.col]
+            touched[i] = True
+            read[i] = True
+            return i
         for i in range(len(self.pub_names)):
             if self.pub_names[i] == r.col:
                 return pub_at + i
@@ -278,6 +287,7 @@ struct Statement(Movable):
         if len(self.order) + len(self.cols) > 65535:
             raise Error("family index is a u16")
         var names = self.cols.copy()
+        var index = self.col_index.copy()
         var kinds = self.kinds.copy()
         var groups = self.col_group.copy()
         var tables = self.tables.copy()
@@ -293,12 +303,16 @@ struct Statement(Movable):
                     tables.append(t^)
                 limbs.append(i)
                 self._fresh(self.cols[i] + ".sorted")
+                index[self.cols[i] + ".sorted"] = len(names)
                 names.append(self.cols[i] + ".sorted")
                 kinds.append(BYTE)
                 groups.append(self.col_group[i])
         var w = len(names)
         var pub_at = w + (len(self.accs) + len(limbs)) * p.e
         var touched = List[Bool](length=w, fill=False)
+        var read = List[Bool](length=w, fill=False)       # by a family
+        var acc_uses = List[Int](length=w, fill=0)        # as a record or sorted column
+        var sorted_of = List[Int](length=w, fill=-1)      # the lookup whose sorted copy the column is
         var f = Families()
         for k in range(len(self.order)):
             var it = self.order[k]
@@ -306,12 +320,12 @@ struct Statement(Movable):
                 var fam = self.fams[it[1]].copy()
                 for t in fam.terms:
                     var quadratic = Bool(t.b)
-                    var ca = self._resolve[p](names, t.a, pub_at, touched)
+                    var ca = self._resolve[p](index, t.a, pub_at, touched, read)
                     var cb = -1
                     var k1b = 0
                     var k2b = 0
                     if quadratic:
-                        cb = self._resolve[p](names, t.b.value(), pub_at, touched)
+                        cb = self._resolve[p](index, t.b.value(), pub_at, touched, read)
                         k1b = t.b.value().k1
                         k2b = t.b.value().k2
                     if (t.a.k2 == 1 or k2b == 1) and (fam.gate != GATE_2 or quadratic):
@@ -323,15 +337,21 @@ struct Statement(Movable):
                 var num = List[Int]()
                 var den = List[Int]()
                 for n in a.num:
-                    num.append(self._wcol(names, n))
+                    num.append(self._wcol(index, n))
                     touched[num[len(num) - 1]] = True
+                    acc_uses[num[len(num) - 1]] += 1
                 for n in a.den:
-                    den.append(self._wcol(names, n))
+                    den.append(self._wcol(index, n))
                     touched[den[len(den) - 1]] = True
+                    acc_uses[den[len(den) - 1]] += 1
                 var z_col = w + it[1] * p.e
                 if a.kind == KIND_PERM:
                     f.accumulator(k, z_col, num, den)
                 elif a.kind == KIND_LOOKUP:
+                    if len(tables[a.table]) // self.widths[a.table] > p.N():
+                        raise Error("lookup table has more rows than the grid: " + a.name)
+                    for s in den:
+                        sorted_of[s] = k
                     f.lookup(k, z_col, num, den, a.table)
                 else:
                     raise Error("accumulator kind is KIND_PERM or KIND_LOOKUP")
@@ -347,28 +367,46 @@ struct Statement(Movable):
             f.lookup(fam_index, w + (len(self.accs) + j) * p.e, [limbs[j]], [s], limb_table)
             touched[limbs[j]] = True
             touched[s] = True
+            acc_uses[limbs[j]] += 1
+            acc_uses[s] += 1
+            sorted_of[s] = fam_index
             fam_index += 1
         var pubs = self.pubs.copy()
         for i in range(len(self.pub_names)):
+            if p.h2() % get_u16(pubs, i * PUB) != 0:
+                raise Error("public column period: m divides h2: " + self.pub_names[i])
             if get_u16(pubs, i * PUB + 2) == 0:
                 set_u16(pubs, i * PUB + 2, p.h2() // get_u16(pubs, i * PUB))
         var res = self.res.copy()
         for i in range(len(self.res_names)):
-            var c = self._wcol(names, self.res_names[i])
+            var c = self._wcol(index, self.res_names[i])
             set_u16(res, i * RES, c)
             if get_u16(res, i * RES + 4) == 0:
                 set_u16(res, i * RES + 4, p.h1())
             touched[c] = True
+            read[c] = True
         for i in range(w):
             if not touched[i]:
                 raise Error("column is read by nothing and constrained by nothing: " + names[i])
+            if sorted_of[i] >= 0 and (read[i] or acc_uses[i] != 1):   # the sort overwrites it: one lookup's, read by nothing
+                raise Error("a sorted column belongs to one lookup and is read by nothing else: " + names[i])
         var points = shift_points(f.bytes, res, len(f.accs) > 0)
         var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals)
-        var layout = Layout(names, kinds, groups, f.accs, tables, pubs, res)
+        var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
         return Compiled(shape^, f.bytes.copy(), layout^)
 
 
 # ---- trace helpers ----
+
+def _row_key(bytes: List[UInt8], off: Int, width: Int) -> Int:
+    """A record of at most ACC_W_MAX canonical bytes packed 7 bits each; -1 if a byte is not canonical."""
+    var key = 0
+    for j in range(width):
+        if Int(bytes[off + j]) >= 127:
+            return -1
+        key = key * 128 + Int(bytes[off + j])
+    return key
+
 
 def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, live_rows: Int) raises:
     """Fill rows [live_rows, N) of the group's columns with the neutral value: table row i mod K for a lookup
@@ -379,14 +417,18 @@ def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, 
     comptime N = p.N()
     if len(trace) != layout.columns_w() * N or live_rows < 0 or live_rows > N:
         raise Error("trace has the wrong size or live_rows is outside [0, N]")
+    if live_rows % p.h1() != 0:
+        raise Error("live_rows is whole chains (a multiple of h1): cyclic reads wrap inside a chain")
     var seen = False
     for c in range(layout.columns_w()):
         if layout.groups[c] != group:
             continue
         seen = True
-        var slot = layout._record_slot(c)
+        var slot = layout.slots[c]
         if slot[0] == -2:
             continue
+        if slot[0] == -3:
+            raise Error("column is a record of two lookups; no single table row pads it: " + layout.names[c])
         for i in range(live_rows, N):
             if slot[0] < 0:
                 trace[c * N + i] = 0
@@ -399,39 +441,47 @@ def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, 
 
 def advice[p: Params](layout: Layout, trace: List[UInt8]) raises -> List[UInt8]:
     """The advice index list the sort reads (sort.mojo): per lookup descriptor, per row, the table row the
-    record equals. ponytail: linear scan of the table per row; index the table when N K w matters."""
+    record equals. Every table row must occur (the dummy rule: the boundary constant is the whole table's),
+    else the first missing row is named here instead of failing at the verifier."""
     comptime N = p.N()
     if len(trace) != layout.columns_w() * N:
         raise Error("trace has the wrong size")
     var out = List[UInt8]()
+    var rec = List[UInt8](length=ACC_W_MAX, fill=0)
     for k in range(len(layout.accs) // ACC):
         if Int(layout.accs[k * ACC + 38]) != KIND_LOOKUP:
             continue
         var width = get_u16(layout.accs, k * ACC + 2)
         var t = layout.tables[Int(layout.accs[k * ACC + 39])].copy()
         var rows = len(t) // width
+        var at = Dict[Int, Int]()
+        for r in range(rows):
+            at[_row_key(t, r * width, width)] = r
+        var used = List[Bool](length=rows, fill=False)
         for i in range(N):
             var found = -1
-            for r in range(rows):
-                var same = True
-                for j in range(width):
-                    if trace[get_u16(layout.accs, k * ACC + 6 + 2 * j) * N + i] != t[r * width + j]:
-                        same = False
-                        break
-                if same:
-                    found = r
-                    break
+            for j in range(width):
+                rec[j] = trace[get_u16(layout.accs, k * ACC + 6 + 2 * j) * N + i]
+            var key = _row_key(rec, 0, width)
+            if key in at:
+                found = at[key]
             if found < 0:
                 raise Error("lookup record at row " + String(i) + " is not in its table")
+            used[found] = True
             append_u32(out, found)
+        for r in range(rows):
+            if not used[r]:
+                raise Error("lookup table row " + String(r) + " occurs in no record (pad with the table)")
     return out^
 
 
-def public_block[p: Params](vals: List[UInt8], m: Int, d2: Int) raises -> List[UInt8]:
-    """The (d2, h1, 2) block of a public column from its N values (x2, x1) on H: the interpolant's rows
+def public_block[p: Params](layout: Layout, i: Int, vals: List[UInt8]) raises -> List[UInt8]:
+    """The (d2, h1, 2) block of public column i from its N values (x2, x1) on H: the interpolant's rows
     k2 = m j. The other rows must be zero (the column is periodic along axis 2), else the block is rejected."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
+    var m = get_u16(layout.publics, i * PUB)
+    var d2 = get_u16(layout.publics, i * PUB + 2)
     var full = interpolate_grid[p](vals)
     var block = List[UInt8](capacity=d2 * h1 * 2)
     for k2 in range(h2):
@@ -448,6 +498,8 @@ def restriction_line[p: Params](layout: Layout, trace: List[UInt8], i: Int) rais
     """The `count` F2 coefficients of restriction i from the trace: the interpolant of the column on its chain,
     rejected if a coefficient past `count` is nonzero."""
     comptime h1 = p.h1()
+    if len(trace) != layout.columns_w() * p.N():
+        raise Error("trace has the wrong size")
     var c = get_u16(layout.restrictions, i * RES)
     var chain = p.h2() - 1 if get_u16(layout.restrictions, i * RES + 2) == FIX_E else 0
     var count = get_u16(layout.restrictions, i * RES + 4)

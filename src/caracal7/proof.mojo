@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, block_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, block_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, get_u16, host_base
 
@@ -172,6 +172,8 @@ struct Shape(Writable):
                 raise Error("family entry names a challenge element past the derivation table")
             if pub_a and pub_b:
                 raise Error("a quadratic entry may read at most one public column")
+            if en.mult > 2 or (en.mult == 2 and en.col_b != NONE) or en.coef >= 127 or (en.basis != NO_BASIS and en.basis >= p.e) or (en.basis2 != NO_BASIS and en.basis2 >= p.e):
+                raise Error("family entry gate, coefficient, or basis out of range")
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")

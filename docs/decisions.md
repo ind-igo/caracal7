@@ -330,3 +330,20 @@ from the record's own descriptor, skips sorted columns, and bounds `live_rows`; 
 Not done: `compile` cannot prove that a frontend's own families are neutral under the filler (a family tying
 a lookup record column to a zero-padded column fails on idle rows); that stays the frontend's job, documented
 on `pad_trace`.
+Fresh-eyes review before step 4 (Opus and Codex), fixes: `Shape.__init__` bounds `mult`, `coef`, `basis`, `basis2`
+of every entry (a raw `Families.add(basis=16)` reached the residual kernel unchecked) and `Families.add` checks
+`mult`, the basis, and the family index; `table()` keeps the row width and `acc` rejects a record of another
+width (a pair table read as scalar rows was silent); a sorted column belongs to exactly one lookup and is read
+by no family or restriction (the sort overwrites it); `advice` requires every table row to occur (the dummy
+rule) and names the first missing one, so a limb column that never shows a value fails on the host instead of
+at the verifier; a lookup table with more rows than the grid is rejected at compile; `pad_trace` requires
+`live_rows` to be whole chains (cyclic reads wrap inside a chain) and refuses a column that is a record of two
+lookups (no single table row pads it); `public_block` reads `m`, `d2` from the layout instead of taking them
+again; `pub` requires `m | h2`; `restriction_line` checks the trace size. Name resolution and table row lookup
+moved to `Dict` (`Layout.index`, packed row keys), and `Layout.slots` holds each column's record slot computed
+once, ahead of Keccak's column and family counts. Deferred, to land with the step that needs them: a column
+handle type instead of `String` reads; an escape hatch to raw entries and descriptors (the second Z kind,
+merged chains, memory); `Statement`-owned derivation of the public data from `public_inputs` on both sides
+(the Keccak message, step 4); `Prover` taking the `Compiled` bundle so a statement compiles once and the
+family bytes cannot drift from the Shape; `required_points` opening a point for a shift that only a public
+read uses; `pad_trace` keyed on a group with one live count, when a round-structured layout wants chain ranges.

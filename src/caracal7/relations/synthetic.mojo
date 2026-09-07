@@ -68,7 +68,7 @@ def synthetic_public_block[p: Params]() raises -> List[UInt8]:
     for x2 in range(h2):
         for x1 in range(h1):
             vals[x2 * h1 + x1] = synthetic_public_value[p](x1, x2)
-    return public_block[p](vals, SYNTHETIC_PUBLIC_M, h2 // SYNTHETIC_PUBLIC_M)
+    return public_block[p](synthetic_statement(with_public=True).compile[p]().layout, 0, vals)
 
 
 comptime SYNTHETIC_LOOKUP_COLUMNS = 14

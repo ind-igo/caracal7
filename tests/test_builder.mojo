@@ -106,10 +106,19 @@ def test_every_check_has_a_failing_case() raises:
     assert_equal(_fails(st^), "unknown witness column z0")
     st = synthetic_statement()
     st.acc("z2", KIND_LOOKUP, ["c0", "c1"], ["c0", "c9"], table=st.table(synthetic_table(), 2))
-    assert_equal(_fails(st^), "lookup record and sorted columns must be distinct")
+    assert_equal(_fails(st^), "a sorted column belongs to one lookup and is read by nothing else: c0")
     st = synthetic_statement(with_public=True)
     st.family("bad", [Term(1, st.read("pub"), st.read("pub"))])
     assert_equal(_fails(st^), "a quadratic entry may read at most one public column")
+    st = synthetic_statement(with_lookup=True)
+    st.family("bad", [Term(1, st.read("c12")), Term(-1, st.read("c0"))])
+    assert_equal(_fails(st^), "a sorted column belongs to one lookup and is read by nothing else: c12")
+    st = synthetic_statement(with_lookup=True)
+    st.restrict("c13", FIX_ONE)
+    assert_equal(_fails(st^), "a sorted column belongs to one lookup and is read by nothing else: c13")
+    st = synthetic_statement()
+    st.pub("q", 5)
+    assert_equal(_fails(st^), "public column period: m divides h2: q")
     var stopped = String("")
     st = synthetic_statement()
     try:
@@ -122,6 +131,11 @@ def test_every_check_has_a_failing_case() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "challenge derivation row must add or multiply earlier elements")
+    try:
+        st.acc("z2", KIND_LOOKUP, ["c0"], ["c9"], table=st.table(synthetic_table(), 2))
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "lookup record width differs from its table's")
     var el = st.derived(CHAL_ADD, 2, CHAL_ONE)
     assert_equal(el, 5)
 
@@ -171,6 +185,19 @@ def test_padded_trace_proves_and_verifies() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "unknown group h")
+    try:
+        pad_trace[p](c.layout, trace, "g", live + 1)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "live_rows is whole chains (a multiple of h1): cyclic reads wrap inside a chain")
+    var zeros = trace.copy()                              # a limb column that never shows row 1 fails the dummy rule
+    for i in range(N):
+        zeros[3 * N + i] = 0
+    try:
+        _ = advice[p](c.layout, zeros)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "lookup table row 1 occurs in no record (pad with the table)")
 
 
 def main() raises:

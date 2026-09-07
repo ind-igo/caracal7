@@ -190,8 +190,10 @@ struct Families:
             raise Error("axis-2 gated entries must be linear (spec 8 degree bound)")
         if chal < 0 or chal > 255:
             raise Error("chal is a u8: 0 or element index + 1")
+        if mult < 0 or mult > 2 or basis >= 16 or basis2 >= 16:
+            raise Error("mult is 0, 1, or 2; basis is -1 or a coordinate of E")
         var e = List[UInt8](length=ENTRY, fill=0)
-        for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b]:
+        for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b, family]:
             if v < 0 or v > 65535:
                 raise Error("family entry field out of range")
         set_u16(e, 16, col_a)
