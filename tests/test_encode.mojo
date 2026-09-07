@@ -176,6 +176,7 @@ def _rs_domain_check(L0: Int, m: Int, K: Int, cols: Int) raises:
 def test_rs_encode_on_cosets_and_small_odd_parts() raises:
     _rs_domain_check(4608, 4, 576, 32)     # tail level 3 of the 288 x 128 grid: M = 9, four cosets, K / M > F4_MAC_MAX
     _rs_domain_check(672, 2, 300, 5)       # M = 21: radix 3 and 7, two cosets, ragged columns
+    _rs_domain_check(4608, 1, 2000, 3)     # Q = 223 > B1 = 64: several inputs per residue in the gather
 
 
 def main() raises:

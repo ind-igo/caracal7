@@ -454,3 +454,29 @@ Keccak-256 sweep, warm prove: 128 B 109 to 42 ms; 1024 B 333 to 250 ms; 2048 B 7
 unchanged (same digest). `test_transcript` now absorbs the 85 KB openings size, 84 chunks, against the
 host mirror. Prover budget at 2048 B now: `encode W` 167, `open` 130, `residual` 88, `lde` 83,
 `encode Q` 66, then everything else at 14 ms or under.
+
+## Perf pass 3: pass A as a sparse gather plus 2-adic radix stages (2026-09-08)
+
+`bench_encode` at the Keccak 2048 B shape (64 x 384, 142 columns) put 120 of the encoder's 167 ms in
+pass A: an F4 GEMM per Good-Thomas line, `2^b x Q` by `Q x columns` with `Q = ceil(K / M) = 59`, at
+240 byte-GMAC/s, so near the F4 skeleton's rate. The work was the problem, not the rate: a dense
+`2^b`-point DFT of `Q` scattered inputs is `2^b Q` products per line where a Cooley-Tukey split is
+`2^b log`. The 2-adic axis is now `2^b = B2 B1`, `B1 = 2^min(b, 6)`. `k_rs_gather` computes the
+`B2`-point DFTs as the sparse sums they are: the inputs `i = crt(lin) + M q` in one residue class
+mod `B1` are `q = q0 + j B1` with `q0 = (n1 - crt) M^-1 mod B1`, so an output is `ceil(Q / B1)` terms,
+one at level 1. `k_rs_stage2[r]` then runs decimation-in-frequency steps of radix 8 (4, 2 for the
+remainder) on the `B1` digits with the `W_S` twiddle folded into the coefficient (one `ga` power per
+term), in place; the block ends digit-reversed and the scatter stage maps position to `t1` with
+`_t1_true`. The `wa` table (12.7 MB here, 19 MB at 288 x 128) and `RsRows` are gone; the tables
+that remain are `ga` and the odd-radix ones. Level 1 of the reference profile (Q = 64 = B1) and the
+tail domains (b = 5, 9, 11) all go through the same path; `test_encode` adds a `Q = 223 > B1` domain.
+`gemm_f4` has no stage on it now; it stays as the F4 skeleton with its test and bench (an MMA path
+may want it back), which is a deletion to make if nothing claims it.
+
+Measured, pass A: 120 to 33 ms (gather plus two radix-8 passes, each about a memory pass of etmp);
+rs_encode 146 to 59 ms at 142 columns, 5.0 to 2.5 ms at the reference. Keccak warm prove: 1024 B 250 to
+234 ms, 2048 B 622 to 498 ms with `encode W` 167 to 82 and `encode Q` 66 to 32. Proof bytes unchanged.
+Budget at 2048 B now: `open` 129, `encode W` 82, `lde` 81, `residual` 77, `encode Q` 32, then `idft2`
+inside the encoders (20 ms, the dense O(h2^2) axis) and the odd stages (27 ms). ponytail: the gather
+fuses into the first radix step (one pass fewer, about 10 ms); `idft2` and `lde` share the dense-axis
+fix (mixed-radix stages, spec 10.2) when they are the largest items.

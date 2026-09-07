@@ -20,11 +20,16 @@ the twiddle loads are group-wide broadcasts. Full coalescing needs 32+ columns p
 RS encode of K message symbols (i, columns, 4) on an RS domain of m cosets of the order-L0 subgroup,
 L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail levels K = rows with the
 8 E-valued columns seen as 32 F4 columns. Per coset k: twist x_i by gamma4^(k i), then
-    Good-Thomas across 2^b x M, then the radices of M (5, 7, 9 or 3) inside M, no twiddles between stages.
+    Good-Thomas across 2^b x M (no twiddles between), Cooley-Tukey inside 2^b (twiddles folded into
+    each stage's coefficients), then the radices of M (5, 7, 9 or 3) inside M.
     input index  i  <-> (i mod 2^b, i mod M), i mod M <-> (i mod 5, i mod 7, i mod 9)
     output index s  =  (M t1 + 2^b t2) mod L0,  t2 = sum_r (M / r) t_r mod M
-    pass A       Y[t1, lin] = sum_{i = i2 + M q < K} x_i gA^(t1 (i mod 2^b)),   i2 = crt(lin)
-                 an F4 GEMM per lin on the skeleton: A = the wa table (2^b, Q), B = the message rows (Q, columns)
+    the 2^b axis  2^b = B2 B1, B1 = 2^min(b, 6); n = n1 + B1 n2, t1 = k2 + B2 k1. Line lin has the
+                 Q = ceil(K / M) inputs i = crt(lin) + M q, at most ceil(Q / B1) per residue n1.
+    gather       etmp[lin, k2 + B2 n1] = sum_{i mod B1 = n1} x_i gA^(i k2): the B2-point DFTs, done as
+                 the sparse sums they are (one term per output at level 1).
+    stage 2^lr   decimation in frequency on the B1 digits: r-point DFT over the top digit of each
+                 size-S block with W_S folded in, in place; the block ends digit-reversed (`_t1_true`).
     stage r      r-point DFT along digit d_r of lin, in place, twiddles w_r^(t k)
     the last stage also scatters to the leaf-major `code`, coset k at s + k L0.
 """
@@ -39,7 +44,7 @@ from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
-from caracal7.core.backend import BACKEND, F4_TILE, Operands, Loader4, Strided, Bytes, launch_gemm_f2, launch_gemm_f4, strided
+from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
@@ -187,32 +192,107 @@ def _rs_thread(columns: Int32) -> Tuple[Int, Int, Bool]:
     return (c, row, c < Int(columns))
 
 
-struct RsRows(Loader4):
-    """Pass A's B operand: row q of line z is message symbol i = crt(z) + M q (zero past K), twisted
-    by gamma4^(k i) on coset k. Operand fields: b = src (i, column, 4), sb_z = the row stride, sb_hi = 4,
-    sb_k = M (a count, not a stride), aux0 = crt, aux1 = twist or -1, aux2 = K."""
-    @staticmethod
-    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
-        var i = u16(base, Int(o.aux0) + z * 2) + Int(o.sb_k) * k
-        if i >= Int(o.aux2):
-            return F4(0)
-        var x = base.unsafe_load[width=4](Int(o.b) + i * Int(o.sb_z) + n_hi * Int(o.sb_hi))
-        if o.aux1 >= 0:
-            x = ext_mul[2](x, base.unsafe_load[width=4](Int(o.aux1) + i * 4))
-        return x
+@always_inline
+def _adic_split(b: Int) -> Tuple[Int, Int]:
+    """(log2 B1, log2 B2): 2^b = B2 B1 with B1 = 2^min(b, 6). The gather sums the B2 axis, radix stages do B1."""
+    var b1 = min(b, 6)
+    return (b1, b - b1)
 
 
-def rs_pass_a(ctx: DeviceContext, arena: Arena, src: Int, etmp: Int, rs: RsTables,
-              twist: Int, columns: Int, K: Int, b: Int, M: Int) raises:
-    """etmp[lin, t1, c] = sum_q wa[lin, t1, q] x_{crt(lin) + M q} twist: one F4 GEMM per line,
-    M = 2^b, N = columns, K = Q, batch = the odd part."""
-    var o = strided(a=rs.base + rs.wa, sa_m=rs.Q * 4, sa_k=4, sa_z=(1 << b) * rs.Q * 4,
-                    b=src, sb_k=M, sb_hi=4, sb_lo=0, sb_z=columns * 4,
-                    c=etmp, sc_m=columns * 4, sc_hi=4, sc_lo=0, sc_z=(1 << b) * columns * 4)
-    o.aux0 = Int64(rs.base + rs.crt)
-    o.aux1 = Int64(twist)
-    o.aux2 = Int64(K)
-    launch_gemm_f4[BACKEND, F4_TILE, RsRows, 1](ctx, arena, o, 1 << b, columns, rs.Q, batch=M)
+@always_inline
+def _t1_true(pos: Int, b: Int) -> Int:
+    """Position within a lin block -> the 2-adic output index t1. The radix stages (8, 8, ..., then the
+    remainder) leave the B1 digits reversed: k = e + r k' sits at T e + pos(k')."""
+    var b1: Int
+    var b2: Int
+    b1, b2 = _adic_split(b)
+    var p = pos >> b2
+    var k = 0
+    var shift = 0
+    var S = b1
+    while S > 0:
+        var lr = min(3, S)
+        var t = S - lr
+        k += (p >> t) << shift
+        shift += lr
+        p &= (1 << t) - 1
+        S = t
+    return (k << b2) | (pos & ((1 << b2) - 1))
+
+
+def k_rs_gather(base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt: Buf[1], twist: Buf[4],
+                columns: Int32, K: Int32, b: Int32, M: Int32, Q: Int32, minv: Int32, twisted: Int32):
+    """etmp[lin, k2 + B2 n1] = sum over inputs i = crt(lin) + M q with i mod B1 = n1 of x_i gA^(i k2),
+    x twisted by gamma4^(k i) on coset k. q runs over one residue class mod B1: q0 = (n1 - crt) M^-1."""
+    var c: Int
+    var row: Int
+    var ok: Bool
+    c, row, ok = _rs_thread(columns)
+    var bb = Int(b)
+    var Mi = Int(M)
+    if not ok or row >= Mi << bb:
+        return
+    var b1: Int
+    var b2: Int
+    b1, b2 = _adic_split(bb)
+    var lin = row >> bb
+    var pos = row & ((1 << bb) - 1)
+    var k2 = pos & ((1 << b2) - 1)
+    var n1 = pos >> b2
+    var c0 = u16(base, crt.at(lin * 2))
+    var mask1 = (1 << b1) - 1
+    var q = (((n1 - c0) & mask1) * Int(minv)) & mask1
+    var wide = SIMD[DType.int32, 4](0)
+    var terms = 0
+    var acc = F4(0)
+    while q < Int(Q):
+        var i = c0 + Mi * q
+        if i < Int(K):
+            var x = src.load(base, i * Int(columns) + c)
+            if twisted != 0:
+                x = ext_mul[2](x, twist.load(base, i))
+            f4_mac_wide(wide, ga.load(base, (i * k2) & ((1 << bb) - 1)), x)
+            terms += 1
+            if terms == F4_MAC_MAX:
+                acc = f_add(acc, f_reduce_signed(wide))
+                wide = 0
+                terms = 0
+        q += 1 << b1
+    etmp.store(base, row * Int(columns) + c, f_add(acc, f_reduce_signed(wide)))
+
+
+def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
+    """One decimation-in-frequency step of size S = 2^s on the B1 digits: for each block of S positions
+    (stride B2) and each n_lo < T = S / r, y[e] = sum_k x[n_lo + T k] W_r^(k e) W_S^(n_lo e), stored at
+    n_lo + T e. Both factors are one gA power: gA^((B / S) e (n_lo + T k))."""
+    var c: Int
+    var row: Int
+    var ok: Bool
+    c, row, ok = _rs_thread(columns)
+    var bb = Int(b)
+    var Mi = Int(M)
+    var ss = Int(s)
+    comptime lr = 1 if r == 2 else (2 if r == 4 else 3)
+    if not ok or row >= (Mi << bb) >> lr:
+        return
+    var b2 = bb - min(bb, 6)
+    var t = ss - lr
+    var k2 = row & ((1 << b2) - 1)
+    var rest = row >> b2
+    var n_lo = rest & ((1 << t) - 1)
+    rest >>= t
+    var first = ((((rest << ss) + n_lo) << b2) + k2) * Int(columns) + c
+    var step = (1 << (t + b2)) * Int(columns)
+    var shift = bb - ss
+    var mask = (1 << bb) - 1
+    var xs = InlineArray[F4, r](fill=F4(0))
+    comptime for k in range(r):
+        xs[k] = etmp.load(base, first + k * step)
+    comptime for e in range(r):
+        var wide = SIMD[DType.int32, 4](0)
+        comptime for k in range(r):
+            f4_mac_wide(wide, ga.load(base, ((e * (n_lo + (k << t))) << shift) & mask), xs[k])
+        etmp.store(base, first + e * step, f_reduce_signed(wide))
 
 
 def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
@@ -244,7 +324,7 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
         var acc = f_reduce_signed(wide)
         var lin = first_lin + t * st
         comptime if final:
-            var s = Mi * t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
+            var s = Mi * _t1_true(t1, bb) + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
             if s >= (Mi << bb):
                 s -= (Mi << bb)
             code.store(base, s * Int(columns) + c, acc)
@@ -302,11 +382,25 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, arena: Arena,
     var cols = Int32(columns)
     var gx = ceildiv(columns, CW)
     var ruri = rs.base + rs.ruri
+    var b1 = _adic_split(b)[0]
+    var Q = (K + M - 1) // M
+    var minv = 0                                  # M^-1 mod B1
+    for x in range(1 << b1):
+        if (M * x) & ((1 << b1) - 1) == 1:
+            minv = x
     for k in range(m):
-        var twist = rs.base + rs.twist + k * K * 4 if m > 1 else -1
+        var twist = rs.base + rs.twist + k * K * 4 if m > 1 else 0
         var code_k = code + k * L0 * columns * 4
         comptime if mask & 1:
-            rs_pass_a(ctx, arena, src, etmp, rs, twist, columns, K, b, M)
+            ctx.enqueue_function[k_rs_gather](arena.buf, Buf[4](src), Buf[4](etmp), Buf[4](rs.base + rs.ga), Buf[1](rs.base + rs.crt),
+                                              Buf[4](twist), cols, Int32(K), Int32(b), Int32(M), Int32(Q), Int32(minv),
+                                              Int32(1 if m > 1 else 0),
+                                              grid_dim=(gx, ceildiv(M << b, RW)), block_dim=(CW, RW))
+            var S = b1
+            while S > 0:
+                var lr = min(3, S)
+                _stage2(ctx, arena, etmp, rs.base + rs.ga, cols, b, M, S, lr, gx)
+                S -= lr
         comptime if mask & 2:
             if F5 > 1:
                 _stage[5](ctx, arena, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9, gx)
@@ -318,6 +412,16 @@ def rs_encode_on[mask: Int = 15](ctx: DeviceContext, arena: Arena,
                 _stage[9](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
             elif F9 == 3:
                 _stage[3](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1, gx)
+
+
+def _stage2(ctx: DeviceContext, arena: Arena, etmp: Int, ga: Int, cols: Int32, b: Int, M: Int, S: Int, lr: Int, gx: Int) raises:
+    """Dispatch the radix 2^lr of one 2-adic step to a comptime one."""
+    comptime for r in [2, 4, 8]:
+        if (1 << lr) == r:
+            ctx.enqueue_function[k_rs_stage2[r]](arena.buf, Buf[4](etmp), Buf[4](ga), cols, Int32(b), Int32(M), Int32(S),
+                                                 grid_dim=(gx, ceildiv((M << b) // r, RW)), block_dim=(CW, RW))
+            return
+    raise Error("unsupported 2-adic radix")
 
 
 def _stage[r: Int](ctx: DeviceContext, arena: Arena, etmp: Int, wr: Int, code_k: Int, ruri: Int,

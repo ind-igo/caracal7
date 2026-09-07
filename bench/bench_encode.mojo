@@ -1,20 +1,23 @@
-"""Level-1 encoder throughput, reference profile, COLS columns. Small by default."""
+"""Level-1 encoder throughput: the reference profile at 64 columns, then the Keccak 2048 B shape at 142."""
 
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
+from caracal7.core.params import CLIENT, Params
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, encode, to_packed, rs_encode
+from caracal7.pcs.encode import EncLayout, encode, to_packed, rs_encode, idft2, pack
 
-comptime p = CLIENT.grid(72, 32)
-comptime COLS = 64
 comptime REPS = 5
 
 
 def main() raises:
     var ctx = DeviceContext()
+    run[CLIENT.grid(72, 32), 64](ctx)
+    run[CLIENT.grid(64, 384), 142](ctx)
+
+
+def run[p: Params, COLS: Int](ctx: DeviceContext) raises:
     var d = Domains.__init__[p]()
     var bump = Bump()
     var e = EncLayout.__init__[p](bump, COLS)
@@ -45,18 +48,28 @@ def main() raises:
     var terms = Float64((p.N() // 4 + 314) // 315 + 21)
     var macs = Float64(p.L0) * terms * 16.0 * Float64(COLS)
     var code_bytes = Float64(p.L0 * COLS * 4)
-    print("to_packed: ", grid_ms, " ms   (", grid_ms * 1000.0 / COLS, " us/column)")
-    print("rs_encode: ", rs_ms, " ms   (", rs_ms * 1000.0 / COLS, " us/column, ",
+    print("to_packed: ", grid_ms, " ms   (", grid_ms * 1000.0 / Float64(COLS), " us/column)")
+    t0 = perf_counter_ns()
+    for _ in range(REPS):
+        idft2[p](ctx, arena, e.trace, e.ctmp, e.coeff, COLS, tab)
+    ctx.synchronize()
+    print("   idft2: ", Float64(perf_counter_ns() - t0) / 1e6 / REPS, " ms")
+    t0 = perf_counter_ns()
+    for _ in range(REPS):
+        pack[p](ctx, arena, e)
+    ctx.synchronize()
+    print("   pack: ", Float64(perf_counter_ns() - t0) / 1e6 / REPS, " ms  (to_stored is the rest)")
+    print("rs_encode: ", rs_ms, " ms   (", rs_ms * 1000.0 / Float64(COLS), " us/column, ",
           macs / (rs_ms * 1e6), " GMAC/s, ", code_bytes / (rs_ms * 1e6), " GB/s code written)")
 
     # per-kernel split of rs_encode
-    time_mask[1](ctx, arena, e, tab, "pass A ")
-    time_mask[2](ctx, arena, e, tab, "stage 5")
-    time_mask[4](ctx, arena, e, tab, "stage 7")
-    time_mask[8](ctx, arena, e, tab, "stage 9 (scatter to code)")
+    time_mask[p, 1](ctx, arena, e, tab, "gather + 2-adic stages")
+    time_mask[p, 2](ctx, arena, e, tab, "stage 5")
+    time_mask[p, 4](ctx, arena, e, tab, "stage 7")
+    time_mask[p, 8](ctx, arena, e, tab, "stage 9 (scatter to code)")
 
 
-def time_mask[mask: Int](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout, name: String) raises:
+def time_mask[p: Params, mask: Int](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout, name: String) raises:
     var t = perf_counter_ns()
     for _ in range(REPS):
         rs_encode[p, mask](ctx, arena, e, tab)
