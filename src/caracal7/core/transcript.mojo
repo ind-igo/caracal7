@@ -6,7 +6,10 @@ streams H.squeeze(state, counter++) blocks through rejection sampling: F element
 positions are u32 below `below`. The same `sample` runs in the device kernel and in `HostTranscript`.
 """
 
+from std.math import ceildiv
+from std.gpu import thread_idx
 from max.gpu.host import DeviceContext
+from max.gpu.sync import barrier
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Bump
@@ -27,15 +30,19 @@ comptime DS_CLEAR: UInt8 = 7        # y_ell in the clear -> S_{ell-1}
 comptime STATE_BYTES = 128          # [0, DIGEST) state, [64, 72) counter, [72, 72 + DIGEST) scratch
 comptime _COUNTER = 64
 comptime _SCRATCH = 72
+comptime MAX_CHUNKS = 1024          # ponytail: one block per absorb, so 1 MiB per message; a multi-block merge past that
+comptime _CV_BYTES = 32             # per-chunk value slot, >= H.DIGEST
 
 
 struct TranscriptLayout(TrivialRegisterPassable):
     """Arena offset of the hash state. Challenges are squeezed into caller-owned regions, one per
     challenge of the schedule, so nothing is overwritten before the kernel that reads it runs."""
     var state: Int
+    var cvs: Int      # chunk values of one multi-chunk absorb
 
     def __init__(out self, mut bump: Bump):
         self.state = bump.alloc(STATE_BYTES)
+        self.cvs = bump.alloc(MAX_CHUNKS * _CV_BYTES)
 
 
 def _get_counter(state: Base) -> Int:
@@ -89,6 +96,18 @@ def k_absorb[H: Hash](base: Base, state: Buf[1], ds: UInt8, src: Buf[1], bytes: 
     absorb_into[H](state.ptr(base, 0), ds, src.ptr(base, 0), Int(bytes))
 
 
+def k_absorb_tree[H: Hash](base: Base, state: Buf[1], ds: UInt8, src: Buf[1], bytes: Int32, cvs: Buf[1], n: Int32):
+    """One block, one thread per chunk; thread 0 merges after the barrier. Same state as `k_absorb`."""
+    var k = Int(thread_idx.x)
+    var st = state.ptr(base, 0)
+    if k < Int(n):
+        H.chunk(st, ds, src.ptr(base, 0), Int(bytes), k, cvs.ptr(base, _CV_BYTES * k))
+    barrier()
+    if k == 0:
+        H.merge(st, Int(n), cvs.ptr(base, 0))
+        _set_counter(st, 0)
+
+
 def k_sample[H: Hash](base: Base, state: Buf[1], dst: Buf[1], count: Int32, below: Int32):
     sample[H](state.ptr(base, 0), dst.ptr(base, 0), Int(count), Int(below))
 
@@ -100,8 +119,17 @@ def reset(ctx: DeviceContext, arena: Arena, t: TranscriptLayout) raises:
 
 def absorb[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: TranscriptLayout,
                                ds: UInt8, src: Int, bytes: Int) raises:
-    """Hash `bytes` at arena offset `src` into the state under separator `ds`. One thread: serial by definition."""
-    ctx.enqueue_function[k_absorb[H]](arena.buf, Buf[1](t.state), ds, Buf[1](src), Int32(bytes), grid_dim=1, block_dim=1)
+    """Hash `bytes` at arena offset `src` into the state under separator `ds`: one thread per chunk of
+    the message `ds || src`, or one thread when there is one chunk."""
+    comptime assert H.DIGEST <= _CV_BYTES
+    var n = ceildiv(bytes + 1, H.CHUNK)
+    if n <= 1:
+        ctx.enqueue_function[k_absorb[H]](arena.buf, Buf[1](t.state), ds, Buf[1](src), Int32(bytes), grid_dim=1, block_dim=1)
+        return
+    if n > MAX_CHUNKS:
+        raise Error("absorb of " + String(bytes) + " bytes exceeds the one-block ceiling of " + String(MAX_CHUNKS) + " chunks")
+    ctx.enqueue_function[k_absorb_tree[H]](arena.buf, Buf[1](t.state), ds, Buf[1](src), Int32(bytes),
+                                           Buf[1](t.cvs), Int32(n), grid_dim=1, block_dim=n)
 
 
 def squeeze_elements[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: TranscriptLayout,

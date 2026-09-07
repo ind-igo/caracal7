@@ -9,7 +9,7 @@ from caracal7.core.arena import Arena, Bump
 from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
 
 comptime p = CLIENT.grid(72, 32)
-comptime MSG = 3000
+comptime MSG = 85_120     # the Keccak openings: 84 chunks, one block of the tree absorb
 comptime ELEMS = 500
 comptime POS = 64
 comptime BELOW = 161280

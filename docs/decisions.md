@@ -431,3 +431,26 @@ Keccak-256 sweep, warm prove: 128 B 128 to 109 ms; 1024 B 485 to 333 ms; 2048 B 
 2048 B 32.2 to 22.1 s, 128 B 0.7 to 0.28 s. The remaining verify time is the dense public blocks
 (`docs/keccak.md`). Prover budget at 2048 B now: `encode W` 167, `open` 130, `residual` 84, `lde` 81,
 `encode Q` 67, `transcript openings` 50 (flat across sizes: launch-bound Blake3), `merkle W` 21.
+
+## Perf pass 2: one-block tree absorb (2026-09-08)
+
+`transcript openings` was 50 ms at every size: one GPU thread hashing the P x columns x e = 85 KB
+openings buffer serially, about 2 MB/s, with each 64-byte block packed from 64 byte loads. It was not
+launch-bound. Blake3 is a tree, so chunk values depend only on the key and their own 1 KB. The `Hash`
+trait gains `CHUNK`, `chunk(k)`, and `merge`, with `absorb == merge over chunk(k)`; `_hash` is now
+`_chunk_cv` plus `_fold` (the stack step), and both paths share them, so the serial host absorb, the
+Merkle leaf, and the device tree absorb are one definition of the digest. `k_absorb_tree` runs one block
+with one thread per chunk, a barrier, and thread 0 merging; a one-chunk absorb keeps `k_absorb`. Chunk
+values land in a 32 KB `cvs` region of `TranscriptLayout`, sized for `MAX_CHUNKS = 1024`: one block per
+absorb, so 1 MiB per message, checked at launch (ponytail: a multi-block merge if a statement absorbs
+more). Full blocks past the prefix byte load as sixteen words (`unsafe_bitcast[UInt32]`, alignment 1),
+and `_load_words`/`_store_cv` do the same; partial blocks and the prefix block pack byte by byte.
+Sparse openings were considered as the larger lever and rejected from first principles, not only by
+the spec: one fold `g = sum_c beta_c f_c` needs `g(z_p) = sum_c beta_c alpha_{c,p}` over every column,
+so a sparse set needs a fold per distinct column set, up to P of them, to save about 70 KB of proof.
+
+Keccak-256 sweep, warm prove: 128 B 109 to 42 ms; 1024 B 333 to 250 ms; 2048 B 702 to 622 ms, with
+`transcript openings` 50 to 1-2 ms and the batch absorbs 3 ms or under. Proof bytes and the verifier are
+unchanged (same digest). `test_transcript` now absorbs the 85 KB openings size, 84 chunks, against the
+host mirror. Prover budget at 2048 B now: `encode W` 167, `open` 130, `residual` 88, `lde` 83,
+`encode Q` 66, then everything else at 14 ms or under.
