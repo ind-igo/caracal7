@@ -68,9 +68,20 @@ among `family` and `acc` calls); `gate` is `mult`. Kinds emit their certificates
 BIT column its Booleanity family, a LIMB6 column a lookup into the [64] table through a `<name>.sorted` column
 the builder appends to W. Groups are labels for `pad_trace(layout, trace, group, live_rows)`, which fills idle
 rows with a table row for lookup record columns and zero elsewhere. `advice(layout, trace)` derives the sort
-indices, `public_block(layout, i, vals)` a block from values, `restriction_line(layout, trace, i)` a line from the
-trace. Skipped from the sketch: a `group()` call with a pad rule (the rule is a function of the kinds), `Chal`
+indices, `public_block(layout, i, vals)` a block from values, `restriction_line(layout, i, vals)` a line from the
+h1 chain values (`chain_values(layout, trace, i)` reads them from the trace on the prover's side). Skipped from the sketch: a `group()` call with a pad rule (the rule is a function of the kinds), `Chal`
 and `Line` wrappers (element indices and FIX_* do the job).
+
+## Workload (`workload.mojo`)
+
+A frontend is a struct that conforms to `Workload`: `statement()`, `trace[p](layout)` (live rows filled,
+idle rows padded), `public_inputs[p]()` (what the verifier is given; the prefix hashes it), and the static
+`public_data[p](layout, public_inputs)` (every public block, then every restriction line, from the public
+inputs alone). `prove_workload[p, H](ctx, w)` and `verify_workload[p, H](proof, w, public_inputs)` are the
+one path from a workload to a proof and back: compile, trace, advice, public data, load, prove; compile,
+public data, verify. `public_data` is static so it cannot touch the trace: that is where "the derivation
+becomes code on both sides" (verifier.mojo) lives. `Synthetic` is the first instance; Keccak is the second.
+Tests that need a wrong trace or a wrong advice call the pieces directly.
 
 ## Checks (statement-layer 2, as code in `compile`)
 

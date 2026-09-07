@@ -4,8 +4,43 @@ over ten columns, two permutation accumulators, and a trace that satisfies them.
 from caracal7.core.field import F2, f_add, f_mul
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_E, KIND_PERM, KIND_LOOKUP, PUB
-from caracal7.relations.statement import Statement, Term, BIT, BYTE, GATE_1, GATE_2, public_block
+from caracal7.relations.statement import Statement, Layout, Term, BIT, BYTE, GATE_1, GATE_2, public_block, restriction_line, chain_values
+from caracal7.workload import Workload
 from caracal7.core.bytes import append_u32, set_u16
+
+
+@fieldwise_init
+struct Synthetic(Workload, Copyable, Movable):
+    """The synthetic instance as a Workload: the public inputs are the restricted column's chain values (with
+    the public column), the public block is the fixed `synthetic_public_value` and needs no input."""
+    var columns_w: Int
+    var with_accumulator: Bool
+    var with_lookup: Bool
+    var with_public: Bool
+    var seed: Int
+
+    def statement(self) raises -> Statement:
+        return synthetic_statement(self.columns_w, self.with_accumulator, self.with_lookup, self.with_public)
+
+    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
+        var t = synthetic_trace[p](self.seed, self.with_lookup, self.with_public, self.with_accumulator)
+        t.resize(layout.columns_w() * p.N(), 0)              # filler bit columns past the instance are zero
+        return t^
+
+    def public_inputs[p: Params](self) raises -> List[UInt8]:
+        if not self.with_public:
+            return List[UInt8]()
+        var c = self.statement().compile[p]()
+        return chain_values[p](c.layout, self.trace[p](c.layout), 0)
+
+    @staticmethod
+    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
+        if len(layout.publics) == 0:
+            return List[UInt8]()
+        var data = synthetic_public_block[p]()
+        data.extend(restriction_line[p](layout, 0, public_inputs))
+        return data^
+
 
 def synthetic_statement(columns_w: Int = 10, with_accumulator: Bool = True, with_lookup: Bool = False, with_public: Bool = False) raises -> Statement:
     """Eight families over ten columns, satisfied by `synthetic_trace`, plus two permutation accumulators

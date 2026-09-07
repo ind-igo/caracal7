@@ -1,7 +1,7 @@
 """The skeleton: the arena plan builds for the reference profile and the prover stops at the first
 stage that does not exist, in spec order."""
 
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
@@ -12,7 +12,9 @@ from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_
 from caracal7.verifier import verify
 from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE
 from caracal7.core.bytes import set_u16
-from caracal7.relations.statement import restriction_line
+from caracal7.relations.statement import restriction_line, chain_values
+from caracal7.workload import prove_workload, verify_workload
+from caracal7.relations.synthetic import Synthetic
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_block, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime p = REFERENCE
@@ -248,7 +250,7 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     var c = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]()
     var trace = synthetic_trace[p](1, with_public=True)
     var block = synthetic_public_block[p]()
-    var poly = restriction_line[p](c.layout, trace, 0)
+    var poly = restriction_line[p](c.layout, 0, chain_values[p](c.layout, trace, 0))
     var shape = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]().take_shape()
     assert_equal(shape.points, len(shift_points(c.families)) // 4 + 1)
     var prover = Prover[p, Blake3](ctx, synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]().take_shape(), c.families.copy())
@@ -309,6 +311,28 @@ def test_prove_and_verify_with_tail() raises:
         stopped = String(e)
     assert_equal(stopped, "sumcheck fails at a tail level")
 
+
+
+def test_workload_driver_round_trips_every_synthetic_variant() raises:
+    """The one path every frontend runs: prove_workload then verify_workload, for the plain, lookup, and
+    public variants; a changed public input fails on the verifier's side."""
+    var ctx = DeviceContext()
+    var plain = Synthetic(SYNTHETIC_COLUMNS, True, False, False, 1)
+    assert_true(verify_workload[p, Blake3](prove_workload[p, Blake3](ctx, plain), plain, List[UInt8]()))
+    var lookup = Synthetic(SYNTHETIC_LOOKUP_COLUMNS, True, True, False, 1)
+    assert_true(verify_workload[p, Blake3](prove_workload[p, Blake3](ctx, lookup), lookup, List[UInt8]()))
+    var public = Synthetic(SYNTHETIC_PUBLIC_COLUMNS, True, False, True, 1)
+    var proof = prove_workload[p, Blake3](ctx, public)
+    var inputs = public.public_inputs[p]()
+    assert_true(verify_workload[p, Blake3](proof.copy(), public, inputs))
+    var bad = inputs.copy()
+    bad[3] = (bad[3] + 1) % 127
+    var ok: Bool
+    try:
+        ok = verify_workload[p, Blake3](proof^, public, bad)
+    except e:
+        ok = False
+    assert_false(ok)
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -347,3 +347,17 @@ merged chains, memory); `Statement`-owned derivation of the public data from `pu
 (the Keccak message, step 4); `Prover` taking the `Compiled` bundle so a statement compiles once and the
 family bytes cannot drift from the Shape; `required_points` opening a point for a shift that only a public
 read uses; `pad_trace` keyed on a group with one live count, when a round-structured layout wants chain ranges.
+
+## Workload trait (2026-09-07)
+
+Defined before Keccak rather than after it, so a second frontend lands against a named interface and the
+prove-and-verify sequence has one implementation to fix. `workload.mojo`: trait `Workload` with `statement`,
+`trace[p](layout)`, `public_inputs[p]()`, and a static `public_data[p](layout, public_inputs)`; the drivers
+`prove_workload` and `verify_workload`. The static `public_data` is the deferred "Statement-owned derivation
+of the public data" item: the verifier's side cannot read the trace, so the blocks and lines it consumes are
+a function of the hashed public inputs by construction. `restriction_line` now takes the h1 chain values
+instead of the trace (`chain_values` reads them out on the prover's side) so both sides call the same
+function. `Synthetic` conforms; its public inputs are the restricted column's chain values, its public block
+needs none. Each side compiles the statement once (two parties, two compiles); the prover-takes-`Compiled`
+change stays deferred. test_prover round-trips the plain, lookup, and public variants through the drivers
+and rejects a changed public input.

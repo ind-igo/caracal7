@@ -9,7 +9,7 @@ from caracal7.core.hash import Blake3
 from caracal7.prover import Prover, load_trace, load_advice
 from caracal7.verifier import verify
 from caracal7.relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
-from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line
+from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
 from caracal7.relations.ir import Families
 from caracal7.relations.synthetic import synthetic_statement, synthetic_table, SYNTHETIC_PUBLIC_M
 
@@ -177,7 +177,7 @@ def test_padded_trace_proves_and_verifies() raises:
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, advice[p](c.layout, trace))
     var proof = prover.prove(ctx, List[UInt8]())
-    var line = restriction_line[p](c.layout, trace, 0)
+    var line = restriction_line[p](c.layout, 0, chain_values[p](c.layout, trace, 0))
     assert_true(verify[p, Blake3](proof.copy(), c.shape, List[UInt8](), c.families, line))
     var stopped = String("")
     try:

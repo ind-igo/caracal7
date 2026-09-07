@@ -494,20 +494,29 @@ def public_block[p: Params](layout: Layout, i: Int, vals: List[UInt8]) raises ->
     return block^
 
 
-def restriction_line[p: Params](layout: Layout, trace: List[UInt8], i: Int) raises -> List[UInt8]:
-    """The `count` F2 coefficients of restriction i from the trace: the interpolant of the column on its chain,
-    rejected if a coefficient past `count` is nonzero."""
+def chain_values[p: Params](layout: Layout, trace: List[UInt8], i: Int) raises -> List[UInt8]:
+    """The h1 values of restriction i's column on its chain, read from the trace: the prover's public inputs
+    for that restriction (the verifier gets them, not the trace)."""
     comptime h1 = p.h1()
     if len(trace) != layout.columns_w() * p.N():
         raise Error("trace has the wrong size")
     var c = get_u16(layout.restrictions, i * RES)
     var chain = p.h2() - 1 if get_u16(layout.restrictions, i * RES + 2) == FIX_E else 0
-    var count = get_u16(layout.restrictions, i * RES + 4)
     var line = List[UInt8](capacity=h1)
     for x1 in range(h1):
         line.append(trace[c * p.N() + chain * h1 + x1])
+    return line^
+
+
+def restriction_line[p: Params](layout: Layout, i: Int, vals: List[UInt8]) raises -> List[UInt8]:
+    """The `count` F2 coefficients of restriction i from its h1 chain values: the interpolant, rejected if a
+    coefficient past `count` is nonzero. Both sides call it (`chain_values` on the prover's)."""
+    comptime h1 = p.h1()
+    if len(vals) != h1:
+        raise Error("restriction line takes h1 values")
+    var count = get_u16(layout.restrictions, i * RES + 4)
     var d = Domains.__init__[p]()
-    var coeffs = interpolate_line(line, d.omega1, h1)
+    var coeffs = interpolate_line(vals, d.omega1, h1)
     for t in range(count * 2, h1 * 2):
         if coeffs[t] != 0:
             raise Error("restriction line has degree at least the coefficient count")
