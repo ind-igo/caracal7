@@ -8,7 +8,7 @@ state, which the round with no constant fixes, so idle padding is zero."""
 
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_ONE, FIX_E
-from caracal7.relations.statement import Statement, Layout, Term, Read, BIT, GATE_2, public_block, restriction_line
+from caracal7.relations.statement import Statement, Layout, Term, Read, BIT, GATE_2, restriction_line
 from caracal7.workload import Workload
 
 comptime ROUNDS = 24
@@ -297,7 +297,7 @@ struct Keccak(Workload, Copyable, Movable):
         digest[0] ^= rc()[ROUNDS - 1]
         var data = List[UInt8]()
         for l in range(ABSORB):
-            data.extend(public_block[p](layout, l, keccak_public_values[p](message, l)))
+            data.extend(keccak_public_values[p](message, l))
         var zero = List[UInt8](length=ROWS, fill=0)
         for l in range(LANES):
             data.extend(restriction_line[p](layout, l, zero))

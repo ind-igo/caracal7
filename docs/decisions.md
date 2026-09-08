@@ -488,4 +488,27 @@ compile 0, trace 3, public blocks 23,034, advice 0, prover construction (arena, 
 cold prove 580 ms, warm prove 503 ms, verify 25,014 ms. At 128 B: public blocks 161 ms against a 44 ms
 prove. The end-to-end prove is the public blocks: 17 host interpolations of O(N (h1 + h2)) each, run again
 by the verifier. Everything else on the host is under a second, and the prover construction is per shape.
-Next: the public blocks in factored form on both sides.
+Next: the public columns as values on both sides (below).
+
+## Public columns as values, no host interpolation (2026-09-08)
+
+The 23 s was the representation, not the arithmetic: a public column existed as values in the frontend,
+as a truncated coefficient block on the wire, and as a full coefficient table for the LDE, and the host
+interpolated it (direct DFT, `ext_pow` per term) before the GPU transformed it again. Now the public data
+of a column is one period of its values, (h2 / m, h1) F bytes, and the coefficient form exists only on
+the device. `load_public` tiles the period to H and runs the trace's `idft2` into `pub_coeff`; the LDE
+call is unchanged. The verifier evaluates the period at a point barycentrically per axis
+(`eval_values`: h1 + h2 / m inversions, one F x E product per value), the period's interpolant on
+<omega2^m> at x2^m, which is the spec's polynomial in (X1, X2^m) in value form. Deleted: `interpolate_grid`,
+`public_block`, `expand_blocks`, the Horner `eval_block`, the `d2` field and the `m (d2 - 1) < h2` rule
+(the interpolant of grid values has the right degree by construction), and the periodicity check (a period
+cannot be aperiodic). `PUB` is `m` alone; `m` stays because a periodic column costs the verifier only its
+period. Restrictions are unchanged (29 lines of h1 values, under a millisecond). Against the spec's
+factored form (~20K terms for Keccak-2048) the verifier does ~418K products; for a message column the
+values are the message bits, so both are linear in the public input, and the difference is milliseconds.
+The challenge-weighted columns, where few coefficients would beat many values, were already outside this
+mechanism (docs/public-columns.md).
+
+Measured at 2048 B (64 x 384): public values 10 ms (was 23,034), loads 23 ms (the idft2 on 17 columns
+included, was 15), cold prove 546, warm prove 508, verify 1,493 ms (was 25,014). The verify is now the
+openings and tail checks; the public reads are one column-point each at z.

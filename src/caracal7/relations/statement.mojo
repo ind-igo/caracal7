@@ -217,15 +217,14 @@ struct Statement(Movable):
         self.order.append((1, len(self.accs)))
         self.accs.append(_Acc(name, kind, num.copy(), den.copy(), table))
 
-    def pub(mut self, name: String, m: Int, d2: Int = 0) raises:
-        """A public column (docs/public-columns.md): block (d2, h1), row j at X2^(m j); d2 = 0 means h2 / m, the
-        full block of a column periodic along axis 2 with period h2 / m. Indexed after W and Z."""
+    def pub(mut self, name: String, m: Int = 1) raises:
+        """A public column (docs/public-columns.md): a polynomial in (X1, X2^m), a column periodic along axis 2
+        with period h2 / m; its public data is one period of values. Indexed after W and Z."""
         self._fresh(name)
-        if m < 1 or d2 < 0 or m > 65535 or d2 > 65535:
-            raise Error("public column needs m >= 1 and u16 dimensions")
+        if m < 1 or m > 65535:
+            raise Error("public column needs m >= 1, a u16")
         var b = List[UInt8](length=PUB, fill=0)
         set_u16(b, 0, m)
-        set_u16(b, 2, d2)
         self.pubs.extend(b^)
         self.pub_names.append(name)
 
@@ -375,8 +374,6 @@ struct Statement(Movable):
         for i in range(len(self.pub_names)):
             if p.h2() % get_u16(pubs, i * PUB) != 0:
                 raise Error("public column period: m divides h2: " + self.pub_names[i])
-            if get_u16(pubs, i * PUB + 2) == 0:
-                set_u16(pubs, i * PUB + 2, p.h2() // get_u16(pubs, i * PUB))
         var res = self.res.copy()
         for i in range(len(self.res_names)):
             var c = self._wcol(index, self.res_names[i])
@@ -475,25 +472,6 @@ def advice[p: Params](layout: Layout, trace: List[UInt8]) raises -> List[UInt8]:
     return out^
 
 
-def public_block[p: Params](layout: Layout, i: Int, vals: List[UInt8]) raises -> List[UInt8]:
-    """The (d2, h1, 2) block of public column i from its N values (x2, x1) on H: the interpolant's rows
-    k2 = m j. The other rows must be zero (the column is periodic along axis 2), else the block is rejected."""
-    comptime h1 = p.h1()
-    comptime h2 = p.h2()
-    var m = get_u16(layout.publics, i * PUB)
-    var d2 = get_u16(layout.publics, i * PUB + 2)
-    var full = interpolate_grid[p](vals)
-    var block = List[UInt8](capacity=d2 * h1 * 2)
-    for k2 in range(h2):
-        var kept = k2 % m == 0 and k2 // m < d2
-        for t in range(h1 * 2):
-            if kept:
-                block.append(full[(k2 * h1) * 2 + t])
-            elif full[(k2 * h1) * 2 + t] != 0:
-                raise Error("public column is not periodic with period h2 / m")
-    return block^
-
-
 def chain_values[p: Params](layout: Layout, trace: List[UInt8], i: Int) raises -> List[UInt8]:
     """The h1 values of restriction i's column on its chain, read from the trace: the prover's public inputs
     for that restriction (the verifier gets them, not the trace)."""
@@ -535,31 +513,4 @@ def interpolate_line(vals: List[UInt8], omega: F2, h: Int) raises -> List[UInt8]
         var c = ext_mul[1](acc, F2(inv_h[0], 0))
         out.append(c[0])
         out.append(c[1])
-    return out^
-
-
-def interpolate_grid[p: Params](vals: List[UInt8]) raises -> List[UInt8]:
-    """N F values (x2, x1) on H -> (k2, k1, 2) F2 coefficients, axis 1 then axis 2 (host, O(N (h1 + h2)))."""
-    comptime h1 = p.h1()
-    comptime h2 = p.h2()
-    var d = Domains.__init__[p]()
-    var inv_h2 = f_pow(SIMD[DType.uint8, 1](UInt8(h2 % 127)), 125)
-    var ctmp = List[UInt8](length=p.N() * 2, fill=0)       # (x2, k1, 2)
-    for x2 in range(h2):
-        var line = List[UInt8](capacity=h1)
-        for x1 in range(h1):
-            line.append(vals[x2 * h1 + x1])
-        var c = interpolate_line(line, d.omega1, h1)
-        for t in range(h1 * 2):
-            ctmp[x2 * h1 * 2 + t] = c[t]
-    var out = List[UInt8](length=p.N() * 2, fill=0)         # (k2, k1, 2)
-    for k1 in range(h1):
-        for k2 in range(h2):
-            var acc = F2(0)
-            for x2 in range(h2):
-                acc = f_add(acc, ext_mul[1](F2(ctmp[(x2 * h1 + k1) * 2], ctmp[(x2 * h1 + k1) * 2 + 1]),
-                                            ext_pow[1](d.omega2, (h2 - (k2 * x2) % h2) % h2)))
-            var c = ext_mul[1](acc, F2(inv_h2[0], 0))
-            out[(k2 * h1 + k1) * 2] = c[0]
-            out[(k2 * h1 + k1) * 2 + 1] = c[1]
     return out^

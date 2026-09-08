@@ -13,14 +13,14 @@ from caracal7.core.params import Params
 from caracal7.core.field import ext_pow
 from caracal7.core.arena import Arena, Bump
 from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
-from caracal7.pcs.encode import EncLayout, encode
+from caracal7.pcs.encode import EncLayout, encode, idft2
 from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, CHAL, KIND_LOOKUP, expand_blocks, block_bytes, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.relations import ENTRY, POINT, ACC, CHAL, KIND_LOOKUP, value_bytes, tile_values, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
 from caracal7.core.bytes import Buf
 from caracal7.core.backend import BACKEND
 
@@ -78,7 +78,8 @@ struct ProverLayout:
     var cursor: Int                 # (max K, u32)
     var sg: Int                     # small-grid scratch: lines (5, h2, e), pac (2 h2, e), p1 (2 h2, e), p2 (3 h2, e), q3c (2 h2, e)
     var q3: Int                     # (2 h2, e)             Q3 on G2 in the clear
-    var pub_coeff: Int              # (public column, k2, k1, 2)   public blocks expanded to full coefficient tables (load_public)
+    var pub_vals: Int               # (public column, x2, x1)      public column values on H (load_public)
+    var pub_coeff: Int              # (public column, k2, k1, 2)   their coefficients (idft2 in load_public), the LDE input
     var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
     var lde: Int                    # (column, G2, G1, 2)   witness, accumulator, then public columns on the residual grid
     var residual: Int               # (G2, G1, e)
@@ -135,6 +136,7 @@ struct ProverLayout:
         self.cursor = bump.alloc(shape.max_table_rows() * 4)
         self.sg = bump.alloc(14 * p.h2() * p.e)
         self.q3 = bump.alloc(2 * p.h2() * p.e)
+        self.pub_vals = bump.alloc(shape.columns_p * N)
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)
         self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * p.h2() * 2 * p.h1() * 2)
         self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * G * 2)
@@ -468,9 +470,11 @@ def load_advice[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H]
     _upload(ctx, prover.arena, prover.layout.idx, advice)
 
 
-def load_public[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], blocks: Span[UInt8, _]) raises:
-    """Upload the public blocks: (d2, h1, 2) F2 coefficients per public column in order (docs/public-columns.md),
-    expanded to the full coefficient layout the LDE reads."""
-    if len(blocks) != block_bytes(prover.shape.publics, p.h1()):
-        raise Error("public blocks have the wrong size")
-    _upload(ctx, prover.arena, prover.layout.pub_coeff, expand_blocks(prover.shape.publics, blocks, p.h1(), p.h2()))
+def load_public[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], values: Span[UInt8, _]) raises:
+    """Upload the public columns: one period of (h2 / m, h1) F values per column in order (docs/public-columns.md),
+    tiled to H and transformed to the coefficients the LDE reads with the trace's `idft2` (ltmp as scratch)."""
+    if len(values) != value_bytes(prover.shape.publics, p.h1(), p.h2()):
+        raise Error("public values have the wrong size")
+    _upload(ctx, prover.arena, prover.layout.pub_vals, tile_values(prover.shape.publics, values, p.h1(), p.h2()))
+    if prover.shape.columns_p > 0:
+        idft2[p](ctx, prover.arena, prover.layout.pub_vals, prover.layout.ltmp, prover.layout.pub_coeff, prover.shape.columns_p, prover.layout.tables)

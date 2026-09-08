@@ -117,3 +117,14 @@ wrong size; a block past the degree rule is rejected by Shape).
 
 Public factors in the wiring grand product (ECDSA constants), and the wiring itself. Row groups
 and names: the statement builder above the IR, which is where the frontend interface lives.
+
+## Status (2026-09-08): values, not blocks
+
+Measured, the dense host interpolation was the whole end-to-end cost (23 s prover side and 25 s verifier
+at Keccak-2048, against a 0.5 s prove). The block form is gone: the public data of a column is one period
+of its values, (h2 / m, h1) F bytes, the same on both sides. The prover tiles the period to H and runs
+the trace's `idft2` on the device (`load_public`); the verifier interpolates the period barycentrically at
+the point (`eval_values`, the period's interpolant on <omega2^m> at x2^m). `PublicSpec` is `m` alone; `d2`,
+the degree rule, `expand_blocks`, `eval_block`, and the host interpolation helpers are deleted. The
+"factored form" of the sizes table is not needed: the verifier's cost is one product per public value,
+linear in the message. See decisions.md, "Public columns as values".

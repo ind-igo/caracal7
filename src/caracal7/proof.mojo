@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, block_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, get_u16, host_base
 
@@ -83,7 +83,7 @@ struct Shape(Writable):
     var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
     var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (milestone-3-lookup.md)
     var columns_p: Int          # public columns: on the LDE buffer after W and Z, never committed (docs/public-columns.md)
-    var publics: List[UInt8]    # (m, d2) per public column (PUB bytes each), part of the artifact
+    var publics: List[UInt8]    # m per public column (PUB bytes each), part of the artifact
     var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
@@ -140,9 +140,8 @@ struct Shape(Writable):
                 raise Error("accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
         for i in range(self.columns_p):
             var m = Int(publics[i * PUB]) | Int(publics[i * PUB + 1]) << 8
-            var d2 = Int(publics[i * PUB + 2]) | Int(publics[i * PUB + 3]) << 8
-            if m == 0 or d2 == 0 or m * (d2 - 1) >= p.h2():
-                raise Error("public block does not fit the grid: need m >= 1, d2 >= 1, m (d2 - 1) < h2")
+            if m == 0 or p.h2() % m != 0:
+                raise Error("public column period divides h2: need m >= 1, h2 % m == 0")
         for i in range(len(restrictions) // RES):
             var col = Int(restrictions[i * RES]) | Int(restrictions[i * RES + 1]) << 8
             var coord = Int(restrictions[i * RES + 2]) | Int(restrictions[i * RES + 3]) << 8
@@ -213,8 +212,8 @@ struct Shape(Writable):
         return m
 
     def public_bytes[p: Params](self) -> Int:
-        """Host bytes of the public data both sides derive: the blocks, then the restriction polynomials."""
-        var n = block_bytes(self.publics, p.h1())
+        """Host bytes of the public data both sides derive: the column periods, then the restriction polynomials."""
+        var n = value_bytes(self.publics, p.h1(), p.h2())
         for i in range(len(self.restrictions) // RES):
             n += (Int(self.restrictions[i * RES + 4]) | Int(self.restrictions[i * RES + 5]) << 8) * 2
         return n

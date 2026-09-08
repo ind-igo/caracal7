@@ -10,10 +10,9 @@ from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ex
 from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, to_packed
-from caracal7.relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_block, expand_blocks
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_block, synthetic_public_value
-from caracal7.relations.statement import interpolate_grid
+from caracal7.pcs.encode import EncLayout, to_packed, idft2
+from caracal7.relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_values, tile_values
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_values, synthetic_public_value
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 from caracal7.core.bytes import list_e
 
@@ -53,6 +52,7 @@ struct Run:
         var families = bump.alloc(len(c.families))
         var ltmp = bump.alloc(cw * h2 * G1 * 2)
         var lde_buf = bump.alloc((cw + cp) * G * 2)
+        var pub_vals = bump.alloc(cp * N)
         var pub_buf = bump.alloc(cp * N * 2)
         var res_buf = bump.alloc(G * p.e)
         var scratch = bump.alloc(quotient_elems[p]() * p.e)
@@ -62,10 +62,9 @@ struct Run:
         var arena = Arena(ctx, bump.used)
         arena.upload(ctx, tab.base, build_tables[p](ctx, tab, self.d))
         arena.upload(ctx, enc.trace, _host(ctx, synthetic_trace[p](1, with_public=with_public, with_accumulator=False)))
-        var pub_coeff = List[UInt8]()
         if with_public:
-            pub_coeff = expand_blocks(synthetic_publics[p](), synthetic_public_block[p](), h1, h2)
-            arena.upload(ctx, pub_buf, _host(ctx, pub_coeff))
+            arena.upload(ctx, pub_vals, _host(ctx, tile_values(synthetic_publics[p](), synthetic_public_values[p](), h1, h2)))
+            idft2[p](ctx, arena, pub_vals, ltmp, pub_buf, cp, tab)
         arena.upload(ctx, families, _host(ctx, c.families))
         self.alpha = E(0)
         for i in range(p.e):
@@ -87,19 +86,24 @@ struct Run:
         residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf)
         quotient[p](ctx, arena, res_buf, tab, scratch, stored)
 
-        var ch = ctx.enqueue_create_host_buffer[DType.uint8](cw * N * 2)
+        var ch = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * N * 2)
         var lh = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * G * 2)
         var rh = ctx.enqueue_create_host_buffer[DType.uint8](G * p.e)
         var qh = ctx.enqueue_create_host_buffer[DType.uint8](quotient_elems[p]() * p.e)
         var sh = ctx.enqueue_create_host_buffer[DType.uint8](3 * p.e * N)
         arena.download(ctx, enc.coeff, ch)
+        if with_public:                                # the public column's coefficients follow the witness ones: col_at works by index
+            var ph = ctx.enqueue_create_host_buffer[DType.uint8](cp * N * 2)
+            arena.download(ctx, pub_buf, ph)
+            ctx.synchronize()
+            for i in range(cp * N * 2):
+                ch[cw * N * 2 + i] = ph[i]
         arena.download(ctx, lde_buf, lh)
         arena.download(ctx, res_buf, rh)
         arena.download(ctx, scratch, qh)
         arena.download(ctx, stored, sh)
         ctx.synchronize()
         self.coeff = _to_list(ch)
-        self.coeff.extend(pub_coeff^)                  # the public column's coefficients follow the witness ones: col_at works by index
         self.lde = _to_list(lh)
         self.res = _to_list(rh)
         self.scratch = _to_list(qh)
@@ -250,27 +254,22 @@ def _check_deep(r: Run) raises:
 
 
 def test_public_column_reads_match_host() raises:
-    """The public block through the LDE is the column the host evaluates: the residual vanishes on H with
-    the public read, the DEEP identity holds, and `eval_block` (the verifier's evaluation) agrees with the
-    dense Horner. The periodic public function has no coefficients off the rows k2 = m j."""
+    """The public values through idft2 and the LDE are the column the host evaluates: the residual vanishes
+    on H with the public read, the DEEP identity holds, and `eval_values` (the verifier's barycentric
+    evaluation) agrees with the dense Horner over the coefficients; the periodic column has no coefficients off
+    the rows k2 = m j."""
     var r = Run(with_public=True)
     _check_on_g(r)
     _check_deep(r)
     var z1 = _random_e(5)
     var z2 = _random_e(6)
-    var block = synthetic_public_block[p]()
-    var got = eval_block(block, 0, SYNTHETIC_PUBLIC_M, h2 // SYNTHETIC_PUBLIC_M, h1, z1, z2)
-    assert_true(got == r.col_at(SYNTHETIC_PUBLIC_COLUMNS, z1, z2), "eval_block differs from the dense Horner")
-    var vals = List[UInt8](capacity=N)
-    for x2 in range(h2):
-        for x1 in range(h1):
-            vals.append(synthetic_public_value[p](x1, x2))
-    var full = interpolate_grid[p](vals)
-    var off_rows = 0
+    var got = eval_values(synthetic_public_values[p](), 0, SYNTHETIC_PUBLIC_M, h1, h2, r.d.omega1, r.d.omega2, z1, z2)
+    assert_true(got == r.col_at(SYNTHETIC_PUBLIC_COLUMNS, z1, z2), "eval_values differs from the dense Horner")
+    var off_rows = 0                                   # idft2 of the tiled period: no coefficients off the rows k2 = m j
     for k2 in range(h2):
         if k2 % SYNTHETIC_PUBLIC_M != 0:
             for t in range(h1 * 2):
-                off_rows += Int(full[k2 * h1 * 2 + t])
+                off_rows += Int(r.coeff[((SYNTHETIC_PUBLIC_COLUMNS * h2 + k2) * h1) * 2 + t])
     assert_equal(off_rows, 0)
 
 

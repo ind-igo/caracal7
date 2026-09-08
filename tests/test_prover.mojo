@@ -15,7 +15,7 @@ from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
 from caracal7.relations.synthetic import Synthetic
-from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_block, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
+from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime p = CLIENT.grid(72, 32)
 
@@ -268,12 +268,12 @@ def _public_case(ctx: DeviceContext, proof: List[UInt8], shape: Shape, families:
 
 def test_prove_and_verify_with_public_column_and_restriction() raises:
     """One public column (c10 = c0 pub) and one restriction (c1 on the last chain equals its interpolant):
-    accept; a changed public coefficient fails the residual identity; a changed restriction polynomial
+    accept; a changed public value fails the residual identity; a changed restriction polynomial
     fails the restriction check. The restriction adds the point (z1, e2)."""
     var ctx = DeviceContext()
     var c = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]()
     var trace = synthetic_trace[p](1, with_public=True)
-    var block = synthetic_public_block[p]()
+    var block = synthetic_public_values[p]()
     var poly = restriction_line[p](c.layout, 0, chain_values[p](c.layout, trace, 0))
     var shape = synthetic_statement(SYNTHETIC_PUBLIC_COLUMNS, with_public=True).compile[p]().take_shape()
     assert_equal(shape.points, len(shift_points(c.families)) // 4 + 1)
@@ -295,13 +295,12 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     assert_equal(_public_case(ctx, proof, shape, c.families, short), "public data has the wrong size")
     var stopped = String("")
     try:
-        var bad_pub = List[UInt8](length=4, fill=0)
-        bad_pub[0] = 8            # m = 8, d2 = h2 / 4: 8 (h2 / 4 - 1) >= h2
-        bad_pub[2] = UInt8(p.h2() // 4)
+        var bad_pub = List[UInt8](length=2, fill=0)
+        bad_pub[0] = 5            # m = 5 does not divide h2
         _ = Shape.__init__[p](SYNTHETIC_PUBLIC_COLUMNS, c.families, c.shape.accs, List[List[UInt8]](), bad_pub, c.shape.restrictions)
     except e:
         stopped = String(e)
-    assert_equal(stopped, "public block does not fit the grid: need m >= 1, d2 >= 1, m (d2 - 1) < h2")
+    assert_equal(stopped, "public column period divides h2: need m >= 1, h2 % m == 0")
 
 
 def test_prove_and_verify_with_tail() raises:

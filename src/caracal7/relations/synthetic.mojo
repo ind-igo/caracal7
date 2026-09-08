@@ -4,7 +4,7 @@ over ten columns, two permutation accumulators, and a trace that satisfies them.
 from caracal7.core.field import F2, f_add, f_mul
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_E, KIND_PERM, KIND_LOOKUP, PUB
-from caracal7.relations.statement import Statement, Layout, Term, BIT, BYTE, GATE_1, GATE_2, public_block, restriction_line, chain_values
+from caracal7.relations.statement import Statement, Layout, Term, BIT, BYTE, GATE_1, GATE_2, restriction_line, chain_values
 from caracal7.workload import Workload
 from caracal7.core.bytes import append_u32, set_u16
 
@@ -12,7 +12,7 @@ from caracal7.core.bytes import append_u32, set_u16
 @fieldwise_init
 struct Synthetic(Workload, Copyable, Movable):
     """The synthetic instance as a Workload: the public inputs are the restricted column's chain values (with
-    the public column), the public block is the fixed `synthetic_public_value` and needs no input."""
+    the public column), the public column is the fixed `synthetic_public_value` and needs no input."""
     var columns_w: Int
     var with_accumulator: Bool
     var with_lookup: Bool
@@ -37,7 +37,7 @@ struct Synthetic(Workload, Copyable, Movable):
     def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
         if len(layout.publics) == 0:
             return List[UInt8]()
-        var data = synthetic_public_block[p]()
+        var data = synthetic_public_values[p]()
         data.extend(restriction_line[p](layout, 0, public_inputs))
         return data^
 
@@ -88,22 +88,20 @@ def synthetic_public_value[p: Params](x1: Int, x2: Int) -> UInt8:
 
 
 def synthetic_publics[p: Params]() -> List[UInt8]:
-    """The PUB record of the one public column: m = 4, d2 = h2 / 4."""
+    """The PUB record of the one public column: m = 4."""
     var b = List[UInt8](length=PUB, fill=0)
     set_u16(b, 0, SYNTHETIC_PUBLIC_M)
-    set_u16(b, 2, p.h2() // SYNTHETIC_PUBLIC_M)
     return b^
 
 
-def synthetic_public_block[p: Params]() raises -> List[UInt8]:
-    """The block (d2, h1, 2) of the public column from its values on H."""
+def synthetic_public_values[p: Params]() -> List[UInt8]:
+    """One period of the public column: (h2 / m, h1) values."""
     comptime h1 = p.h1()
-    comptime h2 = p.h2()
-    var vals = List[UInt8](length=p.N(), fill=0)
-    for x2 in range(h2):
+    var vals = List[UInt8](capacity=(p.h2() // SYNTHETIC_PUBLIC_M) * h1)
+    for x2 in range(p.h2() // SYNTHETIC_PUBLIC_M):
         for x1 in range(h1):
-            vals[x2 * h1 + x1] = synthetic_public_value[p](x1, x2)
-    return public_block[p](synthetic_statement(with_public=True).compile[p]().layout, 0, vals)
+            vals.append(synthetic_public_value[p](x1, x2))
+    return vals^
 
 
 comptime SYNTHETIC_LOOKUP_COLUMNS = 14

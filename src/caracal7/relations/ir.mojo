@@ -26,7 +26,7 @@ ponytail: collapsing shared reads into one kappa (statement-layer 5) is the comp
 real family list exists; the kernel does not care.
 """
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one, ext_inv
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv
 from caracal7.core.bytes import get_u16, set_u16, list_e
 
 comptime ENTRY = 48
@@ -47,7 +47,7 @@ comptime FIX_E = 65535      # a point coordinate fixed at e_l
 
 
 comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
-comptime PUB = 4        # public column spec (docs/public-columns.md): m u16, d2 u16; the block is (d2, h1) F2 coefficients, row j of X2^(m j)
+comptime PUB = 2        # public column spec (docs/public-columns.md): m u16; the column is a polynomial in (X1, X2^m), its public data the h1 x (h2 / m) values of one period, row x2 then x1
 comptime RES = 6        # restriction: column u16, axis-2 coordinate u16 (FIX_ONE or FIX_E), coefficient count u16 (the line has degree < count); opened at (z1, coordinate)
 
 
@@ -317,19 +317,41 @@ def residual_at(fam: Span[UInt8, _], alpha: E, chals: Span[UInt8, _], z1: E, z2:
     return acc
 
 
-def eval_block(coeffs: Span[UInt8, _], off: Int, m: Int, d2: Int, h1: Int, x1: E, x2: E) -> E:
-    """A public block at a point: sum_j X2^(m j) sum_k1 c[j, k1] X1^k1, Horner in X1 then in X2^m
-    (docs/public-columns.md). coeffs holds (d2, h1, 2) F2 bytes from `off`.
-    ponytail: dense, d2 h1 E products per (column, point) (~40 ms host for Keccak-2048); the factored
-    form (a block as a product of two smaller blocks) is a PublicSpec variant when verifier time matters."""
-    var x2m = ext_pow[4](x2, m)
+def _lagrange(n: Int, w: F2, z: E) raises -> List[E]:
+    """L_i(z) for i < n on the cyclic group <w> of order n: (z^n - 1) / n * w^i / (z - w^i), or the
+    indicator of i when z is w^i."""
+    var out = List[E](capacity=n)
+    var wi = ext_one[4]()
+    var we = ext_embed[4](w)
+    var n_inv = E(0)
+    n_inv[0] = f_pow(SIMD[DType.uint8, 1](n % 127), 125)[0]
+    var lead = ext_mul[4](f_sub(ext_pow[4](z, n), ext_one[4]()), n_inv)
+    for i in range(n):
+        var den = f_sub(z, wi)
+        if den.reduce_or() == 0:
+            out = List[E](length=n, fill=E(0))
+            out[i] = ext_one[4]()
+            return out^
+        out.append(ext_mul[4](lead, ext_mul[4](wi, ext_inv[4](den))))
+        wi = ext_mul[4](wi, we)
+    return out^
+
+
+def eval_values(vals: Span[UInt8, _], off: Int, m: Int, h1: Int, h2: Int, w1: F2, w2: F2, x1: E, x2: E) raises -> E:
+    """A public column at a point from its values: `vals` holds one period, (h2 / m, h1) F bytes from `off`,
+    and the column is a polynomial in (X1, X2^m), so it is the period's interpolant on <w2^m> at x2^m
+    (docs/public-columns.md). Barycentric per axis: h1 + h2 / m inversions, then one F x E product per value."""
+    var period = h2 // m
+    var l1 = _lagrange(h1, w1, x1)
+    var l2 = _lagrange(period, ext_pow[1](w2, m), ext_pow[4](x2, m))
     var acc = E(0)
-    for j in range(d2 - 1, -1, -1):
-        var inner = E(0)
-        for k1 in range(h1 - 1, -1, -1):
-            var at = off + (j * h1 + k1) * 2
-            inner = f_add(ext_mul[4](inner, x1), ext_embed[4](F2(coeffs[at], coeffs[at + 1])))
-        acc = f_add(ext_mul[4](acc, x2m), inner)
+    for t2 in range(period):
+        var row = E(0)
+        for t1 in range(h1):
+            var v = vals[off + t2 * h1 + t1]
+            if v != 0:
+                row = f_add(row, f_mul(l1[t1], E(v)))
+        acc = f_add(acc, ext_mul[4](row, l2[t2]))
     return acc
 
 
@@ -341,25 +363,22 @@ def eval_line(coeffs: Span[UInt8, _], off: Int, count: Int, x1: E) -> E:
     return acc
 
 
-def block_bytes(publics: Span[UInt8, _], h1: Int) -> Int:
-    """Host bytes of every public block: sum d2 h1 2."""
+def value_bytes(publics: Span[UInt8, _], h1: Int, h2: Int) -> Int:
+    """Host bytes of every public column's period: sum h1 (h2 / m)."""
     var n = 0
     for i in range(len(publics) // PUB):
-        n += get_u16(publics, i * PUB + 2) * h1 * 2
+        n += h1 * (h2 // get_u16(publics, i * PUB))
     return n
 
 
-def expand_blocks(publics: Span[UInt8, _], blocks: Span[UInt8, _], h1: Int, h2: Int) -> List[UInt8]:
-    """The blocks as full (column, k2, k1, 2) coefficient tables, the layout `lde` reads: row j of
-    block i at k2 = m j, the other rows zero."""
-    var out = List[UInt8](length=(len(publics) // PUB) * h2 * h1 * 2, fill=0)
+def tile_values(publics: Span[UInt8, _], values: Span[UInt8, _], h1: Int, h2: Int) -> List[UInt8]:
+    """The periods as full (column, x2, x1) value tables on H, the layout `idft2` reads."""
+    var out = List[UInt8](capacity=(len(publics) // PUB) * h2 * h1)
     var src = 0
     for i in range(len(publics) // PUB):
-        var m = get_u16(publics, i * PUB)
-        var d2 = get_u16(publics, i * PUB + 2)
-        for j in range(d2):
-            var dst = (i * h2 + m * j) * h1 * 2
-            for t in range(h1 * 2):
-                out[dst + t] = blocks[src + t]
-            src += h1 * 2
+        var period = h2 // get_u16(publics, i * PUB)
+        for x2 in range(h2):
+            for t in range(h1):
+                out.append(values[src + (x2 % period) * h1 + t])
+        src += period * h1
     return out^
