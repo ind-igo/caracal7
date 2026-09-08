@@ -235,3 +235,108 @@ def horner_trace[p: Params](seed: Int) -> List[UInt8]:
                     c += a[i] * b[k - i]
             t[2 * N + x2 * h1 + h1 - 2 - k] = UInt8(c)
     return t^
+
+
+@fieldwise_init
+struct SyntheticWiring(Workload, Copyable, Movable):
+    """Bit columns a, b with one Horner fingerprint each; b on chain j is a on chain pi(j) for a fixed
+    permutation pi of the chains 1 .. chains - 1, and b on chain 0 (and a on chain 0) is the public value v:
+    one wiring product of two slots and one public factor. `chains` is h2 (the edges name chains). With
+    `full`, also a permutation accumulator a against b (a (P) product before the wiring lines) and a third
+    bit column c = a with its own fingerprint as a third slot: a second, one-slot product, and cycles
+    (ra, rb, rc) that cross the two products."""
+    var seed: Int
+    var chains: Int
+    var full: Bool
+
+    def statement(self) raises -> Statement:
+        return wiring_statement(self.chains, self.full)
+
+    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
+        if self.chains != p.h2():
+            raise Error("the wiring instance's chain count is h2")
+        return wiring_trace[p](self.seed, self.full)
+
+    def public_inputs[p: Params](self) raises -> List[UInt8]:
+        return _bits(self.seed)
+
+    @staticmethod
+    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
+        """The public value as the ingest column of one chain: bit m at row h1 - 2 - m."""
+        if len(public_inputs) != HORNER_DEGREE + 1:
+            raise Error("the wiring instance's public value is HORNER_DEGREE + 1 bits")
+        var col = List[UInt8](length=p.h1(), fill=0)
+        for m in range(HORNER_DEGREE + 1):
+            col[p.h1() - 2 - m] = public_inputs[m]
+        return col^
+
+
+def wiring_permutation(chains: Int) -> List[Int]:
+    """pi on 1 .. chains - 1 (pi(0) = 0), a fixed shuffle: part of the statement, not the trace."""
+    var pi = List[Int](capacity=chains)
+    for j in range(chains):
+        pi.append(j)
+    var s = 7
+    for j in range(chains - 1, 1, -1):
+        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+        var k = 1 + (s >> 8) % j
+        var t = pi[j]
+        pi[j] = pi[k]
+        pi[k] = t
+    return pi^
+
+
+def _bits(seed: Int) -> List[UInt8]:
+    var v = List[UInt8](capacity=HORNER_DEGREE + 1)
+    var s = seed * 31 + 17
+    for _ in range(HORNER_DEGREE + 1):
+        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+        v.append(UInt8((s >> 8) & 1))
+    return v^
+
+
+def wiring_statement(chains: Int, full: Bool = False) raises -> Statement:
+    """R_A = A(gamma), R_B = B(gamma) (scale gamma, high weight first); slot 0 = R_A, slot 1 = R_B; R_B on
+    chain j is wired to R_A on chain pi(j), and on chain 0 to the public value v. `full` adds the permutation
+    accumulator a against b and slot 2 = R_C over c, wired to R_A on the same chain."""
+    var st = Statement()
+    st.col("a", BIT)
+    st.col("b", BIT)
+    if full:
+        st.col("c", BIT)
+        st.acc("pz", KIND_PERM, ["a"], ["b"])
+    st.horner("ra", [Term(1, st.read("a"))], scale=2)
+    st.horner("rb", [Term(1, st.read("b"))], scale=2)
+    var sa = st.slot("ra")
+    var sb = st.slot("rb")
+    var pi = wiring_permutation(chains)
+    for j in range(1, chains):
+        st.wire(sb, j, sa, pi[j])
+    st.public_factor("v", "ra", sb, 0)
+    if full:
+        st.horner("rc", [Term(1, st.read("c"))], scale=2)
+        var sc = st.slot("rc")
+        for j in range(chains):
+            st.wire(sc, j, sa, j)
+    return st^
+
+
+def wiring_trace[p: Params](seed: Int, full: Bool = False) -> List[UInt8]:
+    """Columns a, b [, c] (column, x2, x1): random bits at weights 0 .. HORNER_DEGREE, v on chain 0 of a; b copies
+    a under the permutation, c copies a."""
+    comptime h1 = p.h1()
+    comptime N = p.N()
+    var t = List[UInt8](length=(3 if full else 2) * N, fill=0)
+    var s = seed
+    var v = _bits(seed)
+    for x2 in range(p.h2()):
+        for m in range(HORNER_DEGREE + 1):
+            s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+            t[x2 * h1 + h1 - 2 - m] = v[m] if x2 == 0 else UInt8((s >> 8) & 1)
+    var pi = wiring_permutation(p.h2())
+    for x2 in range(p.h2()):
+        for m in range(HORNER_DEGREE + 1):
+            t[N + x2 * h1 + h1 - 2 - m] = t[pi[x2] * h1 + h1 - 2 - m]
+            if full:
+                t[2 * N + x2 * h1 + h1 - 2 - m] = t[x2 * h1 + h1 - 2 - m]
+    return t^

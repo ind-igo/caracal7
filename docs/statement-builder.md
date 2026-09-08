@@ -58,6 +58,9 @@ st.pub("m", m=4)                               # public column, block (d2, h1); 
 st.restrict("s0", FIX_E)                       # a public line on the last chain; count = 0 means h1 coefficients
 st.horner("ra", [Term(1, st.read("a", k1=1))], scale=2, start=0)   # the second Z kind: R(next) = scale R + sum coef chal read; scale, chal are element indices
 st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb")), Term(-1, st.read("rc"))], gated=False)   # a family on H2 over accumulators at (e1, X2)
+var sa = st.slot("ra")                         # a wiring slot: the accumulator's chain-end values; slots pair into products
+st.wire(sa, 3, sb, 7)                          # slot sa on chain 3 equals slot sb on chain 7
+st.public_factor("r", "ra", sb, 0)             # a public value fingerprinted by "ra", equal to slot sb on chain 0; its ingest columns follow the restriction lines in the public data
 var r = st.read("a0", k1=3)                    # cyclic read (omega1^3 x1, x2); k2=1 is the next-chain read
 st.family("chi", [Term(1, r, st.read("a1")), Term(-1, st.read("a2"))], GATE_NONE)
 var el = st.derived(CHAL_MUL, 3, 1)            # a challenge derivation row; the element index for Term.chal
@@ -118,7 +121,7 @@ Tests that need a wrong trace or a wrong advice call the pieces directly.
 | public columns, restrictions | planned (`docs/public-columns.md`) | that plan first |
 | accumulator `{start, ingest, scale, end}` | KIND_HORNER (done 2026-09-08): `horner`, ingest terms are the transition's own entries | nothing |
 | chain-end families into Q3 | `chain_end` terms (Shape.ends) next to the (W) pairs, alpha powers by family index (done 2026-09-08) | nothing |
-| wiring, public factors | absent | later, with ECDSA |
+| wiring, public factors | `slot`, `wire`, `public_factor` (done 2026-09-09): Shape.wires, sigma, pubf; two fresh challenges; one joint boundary | chain ordering for next-chain edges, with ECDSA |
 | memory | absent, `TODO(memory)` slots | later |
 | names, groups, kinds, padding | no IR concept | builder only, no IR change |
 | shared reads collapsed into one kappa | `ponytail:` note in ir.mojo, every term its own entry | builder pass; a perf item once Keccak's family list is measured |

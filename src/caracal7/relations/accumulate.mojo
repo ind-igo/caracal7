@@ -37,6 +37,15 @@ Buffers (bytes; slowest ... fastest), per accumulator:
     n_end, d_end (x2, e)      N(e1, x2), D(e1, x2): the small grid's lines (smallgrid.mojo)
     z2           (x2 + 1, e)  Z2(1) = 1, Z2(omega2 x2) = Z2(x2) chain_prod(x2) (7.3, (W) for (P)); entry h2 is 1
 
+Wiring (polynomial-mulmod "Wiring"): a copy constraint on the chain-end values of slot columns, PLONK-style.
+Slot s (a Z block) on chain j has the value w = R(e1, omega2^j) and the id kappa_s omega2^j in F2 (kappa_s a
+coset representative, so ids are distinct); sigma (Shape.sigma, F2 per slot and chain) is the public
+permutation. A wiring product (WIRE record: two slots, family) is the Z2 line of the per-chain factors
+    N = prod_s (w_s + beta_w id_s + gamma_w),  D = prod_s (w_s + beta_w sigma_s + gamma_w)
+with beta_w, gamma_w the two wiring elements (squeezed after the derivation table). k_wire_factors writes
+the four factor lines (n0, n1, d0, d1: (4, x2, e)) for the small grid and chain_prod = N / D for k_z2; a NONE
+slot contributes 1. Products multiply across groups: the verifier closes them jointly on the public factors.
+
 The scan is the two-level one of 10.1: segments of S = seg_len(h1) rows in parallel (N / S threads),
 one thread per chain over the segment totals, a fix-up per row. ponytail: one thread for Z2 (h2 steps). A zero D (probability ~ 1 / |E|)
 gives 0 from ext_inv0 for its segment, a zero chain product, and a proof the verifier rejects; no abort path.
@@ -46,11 +55,11 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv0, ext_one
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_inv0, ext_one
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
-from caracal7.relations.ir import ACC, ENTRY, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
+from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
 from caracal7.core.arena import Arena
 
 
@@ -172,6 +181,38 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
     z2.store(base, p.h2(), ext_one[4]())
 
 
+def k_wire_factors[p: Params](base: Base, zval: Buf[16], wire: Buf[1], sigma: Buf[1], slot0: Int32, columns_w: Int32, wchal: Buf[16],
+                              ka: UInt8, kb: UInt8, kc: UInt8, kd: UInt8, wa: UInt8, wb: UInt8, chain_prod: Buf[16], lines: Buf[16]):
+    """One thread per chain: the wiring factor lines and N / D (module docstring). (ka, kb), (kc, kd) are the
+    two slots' coset representatives, (wa, wb) omega2."""
+    comptime h1 = p.h1()
+    comptime h2 = p.h2()
+    var j = global_idx.x
+    if j >= h2:
+        return
+    var x = ext_pow[1](F2(wa, wb), j)
+    var beta = wchal.load(base, 0)
+    var gamma = wchal.load(base, 1)
+    var n = ext_one[4]()
+    var d = ext_one[4]()
+    for s in range(2):
+        var ns = ext_one[4]()
+        var ds = ext_one[4]()
+        var col = u16(base, wire.at(2 * s))
+        if col != NONE:
+            var w = zval.load(base, ((col - Int(columns_w)) // p.e) * p.N() + j * h1 + h1 - 1)
+            var kappa = F2(ka, kb) if s == 0 else F2(kc, kd)
+            var sg = F2(sigma.load(base, ((Int(slot0) + s) * h2 + j) * 2), sigma.load(base, ((Int(slot0) + s) * h2 + j) * 2 + 1))
+            var wg = f_add(w, gamma)
+            ns = f_add(wg, ext_mul[4](beta, ext_embed[4](ext_mul[1](kappa, x))))
+            ds = f_add(wg, ext_mul[4](beta, ext_embed[4](sg)))
+        lines.store(base, s * h2 + j, ns)
+        lines.store(base, (2 + s) * h2 + j, ds)
+        n = ext_mul[4](n, ns)
+        d = ext_mul[4](d, ds)
+    chain_prod.store(base, j, ext_mul[4](n, ext_inv0[4](d)))
+
+
 def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], acc: Buf[1], chals: Buf[16], num: Buf[16]):
     """One thread per row: sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the
     read cyclic inside the chain (fields of ir.mojo; kappa at [0, 16) is not read, it is folded later)."""
@@ -223,6 +264,16 @@ def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: In
                                       grid_dim=ceildiv(p.N(), B), block_dim=B)
     ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](acc), Buf[16](chals), Buf[16](num), Buf[16](zval),
                                            grid_dim=ceildiv(p.h2(), B), block_dim=B)
+
+
+def wiring[p: Params](ctx: DeviceContext, arena: Arena, zval: Int, wire: Int, sigma: Int, slot0: Int, columns_w: Int, wchal: Int,
+                      kappa_a: F2, kappa_b: F2, omega2: F2, chain_prod: Int, lines: Int, z2: Int) raises:
+    """One wiring product: its factor lines into `lines` (4, h2, e) and its Z2 line into z2 (h2 + 1, e)."""
+    comptime B = BACKEND.block
+    ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[16](zval), Buf[1](wire), Buf[1](sigma), Int32(slot0), Int32(columns_w), Buf[16](wchal),
+                                            kappa_a[0], kappa_a[1], kappa_b[0], kappa_b[1], omega2[0], omega2[1], Buf[16](chain_prod), Buf[16](lines),
+                                            grid_dim=ceildiv(p.h2(), B), block_dim=B)
+    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)
 
 
 def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows: Int) raises:

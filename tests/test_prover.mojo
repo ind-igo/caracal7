@@ -14,7 +14,7 @@ from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CH
 from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
-from caracal7.relations.synthetic import Synthetic, SyntheticHorner, horner_statement, horner_trace
+from caracal7.relations.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
@@ -372,6 +372,40 @@ def test_prove_and_verify_with_horner_accumulators() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "small grid identity fails at z2")
+
+
+def test_prove_and_verify_with_wiring() raises:
+    """The copy constraint: one wiring product over two Horner slots and one public factor; then the full
+    instance with a (P) product before the wiring lines, a one-slot second product, and cycles across the
+    two. A bit moved on one chain keeps every family and fails the joint boundary."""
+    var ctx = DeviceContext()
+    var w = SyntheticWiring(3, p.h2(), False)
+    var c = wiring_statement(p.h2()).compile[p]()
+    assert_equal(c.shape.wiring_products(), 1)
+    assert_equal(c.shape.products(), 1)
+    assert_equal(len(c.shape.sigma), 2 * 2 * p.h2())
+    var proof = prove_workload[p, Blake3](ctx, w)
+    print("wiring proof bytes:", len(proof))
+    assert_true(verify_workload[p, Blake3](proof^, w, w.public_inputs[p]()))
+    var wf = SyntheticWiring(3, p.h2(), True)
+    var cf = wiring_statement(p.h2(), True).compile[p]()
+    assert_equal(cf.shape.wiring_products(), 2)
+    assert_equal(cf.shape.products(), 3)
+    assert_equal(len(cf.shape.sigma), 2 * 3 * p.h2())
+    var pf = prove_workload[p, Blake3](ctx, wf)
+    assert_true(verify_workload[p, Blake3](pf^, wf, wf.public_inputs[p]()))
+    var shape = wiring_statement(p.h2(), True).compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, wiring_statement(p.h2(), True).compile[p]().take_shape(), cf.families.copy())
+    var trace = wiring_trace[p](3, True)
+    trace[2 * p.N() + 3 * p.h1() + p.h1() - 2] ^= 1             # c on chain 3: no family reads it but its fingerprint
+    load_trace[p, Blake3](ctx, prover, trace)
+    var bad = prover.prove(ctx, wf.public_inputs[p]())
+    var stopped = String("")
+    try:
+        _ = verify[p, Blake3](bad^, shape, wf.public_inputs[p](), cf.families, SyntheticWiring.public_data[p](cf.layout, wf.public_inputs[p]()))
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "wiring grand product is not the public factor")
 
 
 def test_workload_driver_round_trips_every_synthetic_variant() raises:

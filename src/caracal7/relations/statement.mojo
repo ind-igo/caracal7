@@ -17,7 +17,9 @@ from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
+from caracal7.core.field import F2, ext_mul, ext_pow
+from caracal7.core.tables import Domains, f2_primitive, F2_ORDER
 from caracal7.proof import Shape
 
 comptime BIT = 0
@@ -160,6 +162,9 @@ struct Statement(Movable):
     var tables: List[List[UInt8]]
     var widths: List[Int]
     var chals: List[UInt8]
+    var slots: List[Int]                # wiring slots: accumulator index each (accumulate.mojo, "Wiring")
+    var edges: List[Tuple[Int, Int, Int, Int]]   # (slot, chain, slot, chain) equalities
+    var factors: List[Tuple[String, Int, Int, Int]]   # public factors: (name, accumulator, slot, chain)
 
     def __init__(out self):
         self.cols = List[String]()
@@ -177,6 +182,9 @@ struct Statement(Movable):
         self.tables = List[List[UInt8]]()
         self.widths = List[Int]()
         self.chals = standard_chals()
+        self.slots = List[Int]()
+        self.edges = List[Tuple[Int, Int, Int, Int]]()
+        self.factors = List[Tuple[String, Int, Int, Int]]()
 
     def _fresh(self, name: String) raises:
         if name in self.col_index:
@@ -186,6 +194,9 @@ struct Statement(Movable):
                 raise Error("name in use: " + name)
         for n in self.pub_names:
             if n == name:
+                raise Error("name in use: " + name)
+        for f in self.factors:
+            if f[0] == name:
                 raise Error("name in use: " + name)
 
     def col(mut self, name: String, kind: Int = BYTE, group: String = "") raises:
@@ -252,6 +263,29 @@ struct Statement(Movable):
                 raise Error("chain-end terms read accumulators at (e1, X2) with no shift or basis: " + name)
         self.order.append((2, len(self.ends)))
         self.ends.append(_End(name, terms.copy(), gated))
+
+    def slot(mut self, acc: String) raises -> Int:
+        """Register accumulator `acc`'s chain-end values as a wiring slot (polynomial-mulmod "Wiring"); returns
+        the slot index. Slots pair up into products in registration order."""
+        self.slots.append(self._acc_index(acc))
+        return len(self.slots) - 1
+
+    def wire(mut self, slot_a: Int, chain_a: Int, slot_b: Int, chain_b: Int) raises:
+        """Slot `slot_a` on chain `chain_a` equals slot `slot_b` on chain `chain_b` (a copy constraint edge)."""
+        if slot_a < 0 or slot_a >= len(self.slots) or slot_b < 0 or slot_b >= len(self.slots) or chain_a < 0 or chain_b < 0:
+            raise Error("wire names registered slots and chain indices")
+        self.edges.append((slot_a, chain_a, slot_b, chain_b))
+
+    def public_factor(mut self, name: String, acc: String, slot: Int, chain: Int) raises:
+        """A public value `name` equal to `slot` on `chain`: the verifier fingerprints its public data (h1 bytes per
+        ingest entry of Horner accumulator `acc`, after the restriction lines) and closes the wiring product on it."""
+        self._fresh(name)
+        if slot < 0 or slot >= len(self.slots) or chain < 0:
+            raise Error("public factor names a registered slot and a chain index")
+        var k = self._acc_index(acc)
+        if self.accs[k].kind != KIND_HORNER:
+            raise Error("public factor fingerprints by a horner accumulator: " + name)
+        self.factors.append((name, k, slot, chain))
 
     def pub(mut self, name: String, m: Int = 1) raises:
         """A public column (docs/public-columns.md): a polynomial in (X1, X2^m), a column periodic along axis 2
@@ -447,8 +481,64 @@ struct Statement(Movable):
                 raise Error("column is read by nothing and constrained by nothing: " + names[i])
             if sorted_of[i] >= 0 and (read[i] or acc_uses[i] != 1):   # the sort overwrites it: one lookup's, read by nothing
                 raise Error("a sorted column belongs to one lookup and is read by nothing else: " + names[i])
+        var wires = List[UInt8]()
+        var sigma = List[UInt8]()
+        var pubf = List[UInt8]()
+        if len(self.slots) > 0:
+            comptime h2 = p.h2()
+            var ns = len(self.slots)
+            var nf = len(self.factors)
+            if (ns + (nf + h2 - 1) // h2) * h2 > F2_ORDER:
+                raise Error("wiring slots and public factors exceed the cosets of H2 in F2*")
+            for i in range(ns):
+                if i % 2 == 0:
+                    wires.extend(wire_record(fam_index, w + self.slots[i] * p.e, -1 if i + 1 == ns else w + self.slots[i + 1] * p.e))
+                    fam_index += 1
+            var kappa = f2_primitive()
+            var omega2 = Domains.__init__[p]().omega2
+            var ids = List[F2]()                      # node s h2 + j is slot s on chain j; node ns h2 + i the factor i
+            for s in range(ns + (nf + h2 - 1) // h2):
+                var k = ext_pow[1](kappa, s)
+                for j in range(h2):
+                    ids.append(ext_mul[1](k, ext_pow[1](omega2, j)))
+            var parent = List[Int](length=len(ids), fill=0)
+            for n in range(len(ids)):
+                parent[n] = n
+            var pairs = List[Tuple[Int, Int]]()
+            for ed in self.edges:
+                if ed[1] >= h2 or ed[3] >= h2:
+                    raise Error("wire chain index is outside the grid")
+                pairs.append((ed[0] * h2 + ed[1], ed[2] * h2 + ed[3]))
+            for i in range(nf):
+                if self.factors[i][3] >= h2:
+                    raise Error("public factor chain index is outside the grid: " + self.factors[i][0])
+                pairs.append((ns * h2 + i, self.factors[i][2] * h2 + self.factors[i][3]))
+            for pr in pairs:
+                var a = pr[0]
+                var b = pr[1]
+                while parent[a] != a:
+                    a = parent[a]
+                while parent[b] != b:
+                    b = parent[b]
+                parent[a] = b
+            var members = Dict[Int, List[Int]]()      # sigma maps every node to the next of its cycle
+            for n in range(len(ids)):
+                var r = n
+                while parent[r] != r:
+                    r = parent[r]
+                if r not in members:
+                    members[r] = List[Int]()
+                members[r].append(n)
+            var succ = List[Int](length=len(ids), fill=0)
+            for e in members.items():
+                for i in range(len(e.value)):
+                    succ[e.value[i]] = e.value[(i + 1) % len(e.value)]
+            for n in range(ns * h2):
+                sigma.extend([ids[succ[n]][0], ids[succ[n]][1]])
+            for i in range(nf):
+                pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0)
-        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends)
+        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf)
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
         return Compiled(shape^, f.bytes.copy(), layout^)
 

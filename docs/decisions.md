@@ -586,3 +586,39 @@ transition with the axis-1 gate. Decisions:
 Synthetic instance `SyntheticHorner`: per chain bits a, b and coefficients c = a b as polynomials, three
 accumulators (one with a shifted ingest, one with a challenge weight), the check `R_A R_B = 3 delta gamma R_C`.
 Reference grid 72 x 32: 156,600 proof bytes at 3 + 48 columns; a wrong coefficient fails the small grid.
+
+## Wiring: the copy constraint on the small grid, public factors (2026-09-09)
+
+The spec's step 7 (polynomial-mulmod "Wiring", "Public constants"; statement-layer decision 5): equalities
+between chain-end values anywhere on the grid as a PLONK-style copy constraint on H2, and public values as
+verifier-side factors of its grand product. Decisions:
+
+- **A wiring product is one more Z2 line.** Slot s (a Z block) on chain j has the value R(e1, omega2^j) and the
+  id kappa^s omega2^j in F2 (kappa a primitive element of F2*, so the slots' ids are cosets of H2 and id_s(X2)
+  = kappa^s X2 has degree 1); the public permutation sigma is one F2 element per slot and chain
+  (`Shape.sigma`, hashed in the prefix). Per chain N = prod_s (w + beta_w id + gamma_w), D the same with
+  sigma; `k_wire_factors` writes the four factor lines and N / D, `k_z2` the running product. Two slots per
+  product (`WIRE` records), so the small-grid term (X2 - e2)(Z(omega2 X2) d0 d1 - Z(X2) n0 n1) stays below
+  degree 3 h2, and it is the (W) term with two lines a side: `small_grid_product` takes lists of lines and
+  `k_q3` the coefficient counts, one function for both kinds.
+- **Two fresh challenges.** beta_w, gamma_w are squeezed after the derivation table, only when the shape has
+  wiring. Nothing renumbers; the copy argument does not share variables with the fingerprint polynomials.
+- **Products multiply across groups, one joint boundary.** Every product starts at 1; the verifier checks
+  prod_g Z_g(e2) N_g(e2) times the public factors' (v + beta_w id + gamma_w) against prod_g D_g(e2) times
+  their (v + beta_w sigma + gamma_w), so a cycle may cross products. A zero public factor is rejected like a
+  zero table factor.
+- **Public factors ride the public-data channel.** A `PUBF` record names the Horner accumulator whose
+  convention fingerprints the value, the virtual slot's id and its sigma. The value's ingest columns (h1
+  bytes per ingest entry) come after the restriction lines in the data both sides derive from the public
+  inputs (`Workload.public_data`), so the public inputs stay compact and the verifier's fingerprint is
+  `horner_chain_end`, 256 E products for a 256-bit value.
+- **The builder owns the permutation.** `slot`, `wire`, `public_factor`; `compile` joins the edges with a
+  union-find into cycles and emits sigma as "next in cycle", the wiring products (pairs of slots in
+  registration order, family indices after the certificates), and the factor records.
+
+Not done, as in the spec: ordering chains so that edges become next-chain reads; add/sub chains are a
+workload. Synthetic instance `SyntheticWiring`: b on chain j is a on chain pi(j), b on chain 0 the public
+value; one product, two slots, one public factor. Its `full` variant adds a permutation accumulator (a (P)
+line before the wiring lines) and a third slot in a one-slot second product with cycles across the two. A
+moved bit keeps every family and fails the joint boundary. Shape rejects a sigma that is not a permutation
+of the slot and public factor ids, and a short product anywhere but last (slot index 2 g + s indexes sigma).

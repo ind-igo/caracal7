@@ -31,6 +31,7 @@ real family list exists; the kernel does not care.
 
 from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv
 from caracal7.core.bytes import get_u16, set_u16, list_e
+from caracal7.core.params import Params
 
 comptime ENTRY = 48
 comptime SAMPLED = 3    # stage-1 elements squeezed from the transcript: beta, delta, gamma
@@ -45,6 +46,8 @@ comptime KIND_LOOKUP = 1
 comptime KIND_HORNER = 2    # the spec's {start, ingest, scale, end} record: R(next) = scale R + sum weight read (polynomial-mulmod 5)
 # TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
+comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
+comptime PUBF = 6       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -291,6 +294,49 @@ def derived_chals(mut chals: List[UInt8], table: Span[UInt8, _]):
         var v = f_add(a, b) if Int(table[i * CHAL]) == CHAL_ADD else ext_mul[4](a, b)
         for t in range(16):
             chals.append(v[t])
+
+
+def wire_record(family: Int, col_a: Int, col_b: Int) raises -> List[UInt8]:
+    """A wiring product (polynomial-mulmod "Wiring"): the copy constraint's grand product over the chain-end
+    values of two slot columns (Z blocks by their first coordinate column; col_b < 0 for one slot)."""
+    if col_a < 0 or col_a > 65535 or col_b > 65535 or family < 0 or family > 65535:
+        raise Error("wiring record: columns and family are u16")
+    var w = List[UInt8](length=WIRE, fill=0)
+    set_u16(w, 0, col_a)
+    set_u16(w, 2, NONE if col_b < 0 else col_b)
+    set_u16(w, 4, family)
+    return w^
+
+
+def public_factor_record(acc: Int, id: F2, sigma: F2) raises -> List[UInt8]:
+    """A public value in the copy constraint: a virtual slot with id `id` whose value is the fingerprint of
+    the public data by Horner accumulator `acc` (horner_chain_end), and `sigma` the id it is wired to."""
+    if acc < 0 or acc > 65535:
+        raise Error("public factor: accumulator index is a u16")
+    return [UInt8(acc & 255), UInt8(acc >> 8), id[0], id[1], sigma[0], sigma[1]]
+
+
+def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, cols: Span[UInt8, _], chals: Span[UInt8, _]) -> E:
+    """R(e1) of Horner accumulator k over one chain whose ingest columns are `cols`: entry i of the ingest range
+    reads cols[i h1 + x1]. The verifier's fingerprint of a public value (polynomial-mulmod "Public constants")."""
+    comptime h1 = p.h1()
+    var first = get_u16(accs, k * ACC + 2)
+    var count = get_u16(accs, k * ACC + 4)
+    var scale = ext_one[4]() if accs[k * ACC + 7] == 0 else list_e(chals, Int(accs[k * ACC + 7]) - 1)
+    var r = E(0)
+    r[0] = accs[k * ACC + 6]
+    for x1 in range(h1 - 1):
+        var s = E(0)
+        for i in range(count):
+            var en = entry(families, first + i)
+            var v = E(0)
+            v[0] = cols[i * h1 + (x1 + en.dj1_a // 2) % h1]
+            v = f_mul(v, E(UInt8(en.coef)))
+            if en.chal != 0:
+                v = ext_mul[4](v, list_e(chals, en.chal - 1))
+            s = f_add(s, v)
+        r = f_sub(ext_mul[4](scale, r), s)
+    return r
 
 
 def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises -> E:

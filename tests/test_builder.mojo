@@ -6,12 +6,13 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
+from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace, load_advice
 from caracal7.verifier import verify
 from caracal7.relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
 from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
 from caracal7.relations.ir import Families
-from caracal7.relations.synthetic import synthetic_statement, synthetic_table, SYNTHETIC_PUBLIC_M
+from caracal7.relations.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
 
 comptime p = CLIENT.grid(72, 32)
 
@@ -146,6 +147,35 @@ def test_every_check_has_a_failing_case() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "challenge derivation row must add or multiply earlier elements")
+    try:
+        _ = st.slot("nope")
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "unknown accumulator nope")
+    var ws = wiring_statement(p.h2())
+    try:
+        ws.public_factor("v", "ra", 0, 0)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "name in use: v")
+    ws.wire(0, p.h2(), 1, 0)
+    assert_equal(_fails(ws^), "wire chain index is outside the grid")
+    ws = Statement()
+    ws.col("a", BIT)
+    ws.horner("ra", [Term(1, ws.read("a"))], scale=2)
+    _ = ws.slot("ra")
+    ws.wire(0, 0, 0, 1)
+    assert_true(ws.compile[p]().shape.wiring_products() == 1, "a single slot pads to one product")
+    var wc = wiring_statement(p.h2()).compile[p]()
+    var sigma = wc.shape.sigma.copy()
+    sigma[2] = sigma[0]                                # slot 0 on chains 0 and 1 map to one id
+    sigma[3] = sigma[1]
+    try:
+        _ = Shape.__init__[p](wc.layout.columns_w(), wc.families, wc.shape.accs, wc.shape.tables, wc.shape.publics, wc.shape.restrictions,
+                              wc.shape.point_list, wc.shape.chals, wc.shape.ends, wc.shape.wires, sigma, wc.shape.pubf)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "sigma must map every slot to a distinct id")
     try:
         st.acc("z2", KIND_LOOKUP, ["c0"], ["c9"], table=st.table(synthetic_table(), 2))
     except e:

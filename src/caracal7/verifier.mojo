@@ -17,10 +17,10 @@ from caracal7.core.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
-from caracal7.core.tables import Domains, RsDomain
+from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -58,6 +58,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     t.absorb(DS_TREE_W, root_w)
     var stage1 = t.elements(3)                      # beta, delta, gamma
     derived_chals(stage1, shape.chals)
+    var wchal = List[UInt8]()
+    if shape.wiring_products() > 0:
+        wchal = t.elements(2)                       # beta_w, gamma_w of the copy constraint
 
     # step 2: Z root and Z2 -> alpha; Q root -> z
     var root_z = List[UInt8]()
@@ -88,6 +91,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var at_e1 = point_index(pts, FIX_E, 0)               # (e1, z2)
     var at_next = point_index(pts, FIX_ONE, 2)           # (1, omega2 z2)
     var at_end = point_index(pts, FIX_E, FIX_E)          # (e1, e2)
+    var d = Domains.__init__[p]()
     _vmark(profile, "transcript and openings", tv)
     # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     # (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2).
@@ -114,10 +118,49 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         elif lhs != _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
         # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
+    # the wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
+    # factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)
+    var kappa = f2_primitive()
+    if shape.wiring_products() > 0:
+        var e2f = ext_pow[1](d.omega2, p.h2() - 1)
+        var bw = list_e(wchal, 0)
+        var gw = list_e(wchal, 1)
+        var lhs = one
+        var rhs = one
+        for g in range(shape.wiring_products()):
+            if list_e(z2v, pi * p.h2()) != one:
+                raise Error("wiring product does not start at 1")
+            lhs = ext_mul[4](lhs, list_e(z2v, pi * p.h2() + p.h2() - 1))
+            for sl in range(2):
+                var col = get_u16(shape.wires, g * WIRE + 2 * sl)
+                if col == NONE:
+                    continue
+                var wg = f_add(_coords_at[p](openings, shape, at_end, col), gw)
+                var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
+                lhs = ext_mul[4](lhs, f_add(wg, ext_mul[4](bw, ext_embed[4](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
+                rhs = ext_mul[4](rhs, f_add(wg, ext_mul[4](bw, ext_embed[4](sg))))
+            pi += 1
+        var off = shape.public_bytes[p]()
+        for i in range(len(shape.pubf) // PUBF):
+            off -= shape.factor_bytes[p](i)
+        for i in range(len(shape.pubf) // PUBF):
+            var n = shape.factor_bytes[p](i)
+            var cols = List[UInt8](capacity=n)
+            for t in range(n):
+                cols.append(public[off + t])
+            off += n
+            var vg = f_add(horner_chain_end[p](families, shape.accs, get_u16(shape.pubf, i * PUBF), cols, stage1), gw)
+            var f_id = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 2], shape.pubf[i * PUBF + 3]))))
+            var f_sg = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 4], shape.pubf[i * PUBF + 5]))))
+            if f_id.reduce_or() == 0 or f_sg.reduce_or() == 0:
+                raise Error("zero public factor")
+            lhs = ext_mul[4](lhs, f_id)
+            rhs = ext_mul[4](rhs, f_sg)
+        if lhs != rhs:
+            raise Error("wiring grand product is not the public factor")
 
     _vmark(profile, "boundaries", tv)
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
-    var d = Domains.__init__[p]()
     var z1 = list_e(z, 0)
     var z2 = list_e(z, 1)
     var preads = _PublicReads[p](shape, public, pts, z1, z2, d)
@@ -145,6 +188,22 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
             var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
             r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), shape.family_of(k)), term))
+            pi += 1
+        for g in range(shape.wiring_products()):       # (z2 - e2) (Z(omega2 z2) prod den - Z(z2) prod num) over the two slots
+            var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
+            var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
+            var nn = one
+            var dd = one
+            for sl in range(2):
+                var col = get_u16(shape.wires, g * WIRE + 2 * sl)
+                if col == NONE:
+                    continue
+                var wg = f_add(_coords_at[p](openings, shape, at_e1, col), list_e(wchal, 1))
+                var sig = interp_cyclic(shape.sigma, (2 * g + sl) * p.h2(), p.h2(), d.omega2, z2, 2)
+                nn = ext_mul[4](nn, f_add(wg, ext_mul[4](ext_mul[4](list_e(wchal, 0), ext_embed[4](ext_pow[1](kappa, 2 * g + sl))), z2)))
+                dd = ext_mul[4](dd, f_add(wg, ext_mul[4](list_e(wchal, 0), sig)))
+            var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, dd), ext_mul[4](za, nn)))
+            r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), get_u16(shape.wires, g * WIRE + 4)), term))
             pi += 1
         for i in range(len(shape.ends) // END):           # chain-end terms (smallgrid.mojo): coef chal alpha^family A [B] [(z2 - e2)]
             var v = ext_mul[4](ext_pow[4](list_e(alpha, 0), get_u16(shape.ends, i * END + 4)), _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END)))

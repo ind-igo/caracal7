@@ -23,8 +23,10 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
+from caracal7.core.tables import F2_ORDER, Domains, f2_primitive
+from caracal7.core.field import ext_mul, ext_pow
 from caracal7.core.bytes import append_u32, get_u16, host_base
 
 comptime VERSION: UInt32 = 1
@@ -86,21 +88,25 @@ struct Shape(Writable):
     var publics: List[UInt8]    # m per public column (PUB bytes each), part of the artifact
     var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact
     var ends: List[UInt8]       # chain-end terms on the small grid (END bytes each, smallgrid.mojo), part of the artifact
+    var wires: List[UInt8]      # wiring products (WIRE bytes each, accumulate.mojo), part of the artifact
+    var sigma: List[UInt8]      # the wiring permutation: F2 per slot and chain, slot-major, part of the artifact
+    var pubf: List[UInt8]       # public factors (PUBF bytes each): virtual slots whose value the verifier fingerprints from the public data
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
     def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8](),
                             tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
                             restrictions: List[UInt8] = List[UInt8](), points: List[UInt8] = List[UInt8](),
-                            chals: List[UInt8] = standard_chals(), ends: List[UInt8] = List[UInt8]()) raises:
+                            chals: List[UInt8] = standard_chals(), ends: List[UInt8] = List[UInt8](), wires: List[UInt8] = List[UInt8](),
+                            sigma: List[UInt8] = List[UInt8](), pubf: List[UInt8] = List[UInt8]()) raises:
         """The entry count comes from the family table (residual.mojo). `points` is the opening list (an empty
         list means the default, ir.shift_points); it must hold every point of ir.required_points. `chals` is the
         challenge derivation table. A lookup descriptor names its table by index; the table's row width is the
         record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0:
-            raise Error("family, accumulator, public, restriction, point, challenge or chain-end table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0 or len(wires) % WIRE != 0 or len(pubf) % PUBF != 0:
+            raise Error("family, accumulator, public, restriction, point, challenge, chain-end, wiring or public factor table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
@@ -114,6 +120,9 @@ struct Shape(Writable):
         self.publics = publics.copy()
         self.restrictions = restrictions.copy()
         self.ends = ends.copy()
+        self.wires = wires.copy()
+        self.sigma = sigma.copy()
+        self.pubf = pubf.copy()
         var opened = self.columns_w + self.columns_z
         if get_u16(self.point_list, 0) != 0 or get_u16(self.point_list, 2) != 0:
             raise Error("opening point 0 must be z")
@@ -214,8 +223,62 @@ struct Shape(Writable):
             for j in range(k):                             # one alpha power per (W) pair
                 if Int(accs[j * ACC + 38]) != KIND_HORNER and get_u16(accs, j * ACC + 40) == get_u16(accs, k * ACC + 40):
                     raise Error("grand-product accumulators must carry distinct family indices")
+        var slots = 0
+        for g in range(len(wires) // WIRE):
+            var fam = get_u16(wires, g * WIRE + 4)
+            for s in range(2):
+                var c = get_u16(wires, g * WIRE + 2 * s)
+                if c == NONE and (s == 0 or g + 1 < len(wires) // WIRE):    # slot index 2 g + s indexes sigma: only the last product is short
+                    raise Error("only the last wiring product may have one slot")
+                if c != NONE and (c < columns_w or c >= opened or (c - columns_w) % p.e != 0):
+                    raise Error("wiring slots are Z blocks by their first column")
+                slots += 0 if c == NONE else 1
+            for k in range(len(accs) // ACC):
+                if Int(accs[k * ACC + 38]) != KIND_HORNER and get_u16(accs, k * ACC + 40) == fam:
+                    raise Error("wiring family index collides with a grand-product accumulator's")
+            for i in range(len(ends) // END):
+                if get_u16(ends, i * END + 4) == fam:
+                    raise Error("wiring family index collides with a chain-end family's")
+            for h in range(g):
+                if get_u16(wires, h * WIRE + 4) == fam:
+                    raise Error("wiring products must carry distinct family indices")
+        if slots * p.h2() > F2_ORDER:
+            raise Error("wiring slots exceed the cosets of H2 in F2*")
+        if len(sigma) != 2 * slots * p.h2():
+            raise Error("sigma holds one F2 element per wiring slot and chain")
+        for b in sigma:
+            if Int(b) >= 127:
+                raise Error("sigma bytes must be canonical field elements (< 127)")
+        for i in range(len(pubf) // PUBF):
+            var k = get_u16(pubf, i * PUBF)
+            if len(wires) == 0 or k >= len(accs) // ACC or Int(accs[k * ACC + 38]) != KIND_HORNER:
+                raise Error("public factor names a horner accumulator of a wired statement")
+            for t in range(2, PUBF):
+                if Int(pubf[i * PUBF + t]) >= 127:
+                    raise Error("public factor id and sigma must be canonical field elements (< 127)")
+        if slots > 0:                                  # sigma is a permutation of the ids: the slots' cosets kappa^s H2 and the public factors' own
+            var ids = Dict[Int, Int]()
+            var kappa = f2_primitive()
+            var omega2 = Domains.__init__[p]().omega2
+            for s in range(slots):
+                var x = ext_pow[1](kappa, s)
+                for _ in range(p.h2()):
+                    ids[Int(x[0]) | Int(x[1]) << 8] = 1
+                    x = ext_mul[1](x, omega2)
+            for i in range(len(pubf) // PUBF):
+                var key = Int(pubf[i * PUBF + 2]) | Int(pubf[i * PUBF + 3]) << 8
+                if key in ids:
+                    raise Error("public factor id collides with another id")
+                ids[key] = 1
+            for i in range(slots * p.h2() + len(pubf) // PUBF):
+                var at = i * 2 if i < slots * p.h2() else (i - slots * p.h2()) * PUBF + 4
+                var key = Int(sigma[at]) | Int(sigma[at + 1]) << 8 if i < slots * p.h2() else Int(pubf[at]) | Int(pubf[at + 1]) << 8
+                if key not in ids or ids[key] == 0:
+                    raise Error("sigma must map every slot to a distinct id")
+                ids[key] = 0
+        products += len(wires) // WIRE
         if len(accs) > 0 and products == 0 and len(ends) == 0:
-            raise Error("horner accumulators need a chain-end family (nothing else writes Q3)")
+            raise Error("horner accumulators need a chain-end family or a wiring product (nothing else writes Q3)")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
@@ -223,11 +286,18 @@ struct Shape(Writable):
         return len(self.accs) // ACC
 
     def products(self) -> Int:
-        """Grand-product accumulators (KIND_PERM, KIND_LOOKUP): the ones with a Z2 line in the clear."""
-        var n = 0
+        """Z2 lines in the clear: the grand-product accumulators (KIND_PERM, KIND_LOOKUP), then the wiring products."""
+        var n = self.wiring_products()
         for k in range(self.accumulators()):
             n += 0 if Int(self.accs[k * ACC + 38]) == KIND_HORNER else 1
         return n
+
+    def wiring_products(self) -> Int:
+        return len(self.wires) // WIRE
+
+    def factor_bytes[p: Params](self, i: Int) -> Int:
+        """Public data of public factor i: h1 bytes per ingest entry of its accumulator (ir.horner_chain_end)."""
+        return p.h1() * get_u16(self.accs, get_u16(self.pubf, i * PUBF) * ACC + 4)
 
     def family_of(self, k: Int) -> Int:
         """The family index of accumulator k: its alpha power on the small grid."""
@@ -255,10 +325,13 @@ struct Shape(Writable):
         return m
 
     def public_bytes[p: Params](self) -> Int:
-        """Host bytes of the public data both sides derive: the column periods, then the restriction polynomials."""
+        """Host bytes of the public data both sides derive: the column periods, the restriction polynomials, then
+        the public factors' ingest columns."""
         var n = value_bytes(self.publics, p.h1(), p.h2())
         for i in range(len(self.restrictions) // RES):
             n += (Int(self.restrictions[i * RES + 4]) | Int(self.restrictions[i * RES + 5]) << 8) * 2
+        for i in range(len(self.pubf) // PUBF):
+            n += self.factor_bytes[p](i)
         return n
 
     def trees(self) -> Int:
@@ -316,6 +389,12 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.restrictions.copy())
     append_u32(bytes, len(shape.ends))
     bytes.extend(shape.ends.copy())
+    append_u32(bytes, len(shape.wires))
+    bytes.extend(shape.wires.copy())
+    append_u32(bytes, len(shape.sigma))
+    bytes.extend(shape.sigma.copy())
+    append_u32(bytes, len(shape.pubf))
+    bytes.extend(shape.pubf.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())

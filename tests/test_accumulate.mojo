@@ -9,7 +9,7 @@ from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_on
 from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
 from caracal7.relations.accumulate import ACC, accumulate, horner, derive_chals
-from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count
+from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
 from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
@@ -251,6 +251,24 @@ def host_horner[p: Params](families: List[UInt8], accs: List[UInt8], k: Int, tra
                 s = f_add(s, v)
             r = f_sub(ext_mul[4](scale, r), s)
     return out^
+
+
+def test_horner_chain_end_fingerprints_a_chain() raises:
+    """The verifier's public-factor fingerprint is the host recurrence's chain-end value: ingest columns of one
+    chain in entry order (the shifted read included)."""
+    var c = horner_statement().compile[p]()
+    var chals = _chals(c.shape.chals.copy())
+    var trace = horner_trace[p](5)
+    for k in range(3):
+        var full = host_horner[p](c.families, c.shape.accs, k, trace, chals)
+        var count = get_u16(c.shape.accs, k * ACC + 4)
+        for x2 in [0, 3, h2 - 1]:
+            var cols = List[UInt8]()
+            for i in range(count):
+                var col = entry(c.families, get_u16(c.shape.accs, k * ACC + 2) + i).col_a
+                for x1 in range(h1):
+                    cols.append(trace[col * N + x2 * h1 + x1])
+            assert_true(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals) == list_e(full, x2 * h1 + h1 - 1), "fingerprint differs at chain " + String(x2))
 
 
 def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:

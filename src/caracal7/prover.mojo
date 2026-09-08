@@ -10,9 +10,9 @@ from std.math import ceildiv
 from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params
-from caracal7.core.field import ext_pow
+from caracal7.core.field import F2, ext_pow
 from caracal7.core.arena import Arena, Bump
-from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
+from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
 from caracal7.pcs.encode import EncLayout, encode, idft2
 from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
@@ -20,8 +20,8 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, END, CHAL, KIND_LOOKUP, KIND_HORNER, value_bytes, tile_values, accumulate, horner, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_end, small_grid_values
-from caracal7.core.bytes import Buf
+from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, value_bytes, tile_values, accumulate, horner, wiring, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_product, small_grid_end, small_grid_values, SG_TOTAL
+from caracal7.core.bytes import Buf, get_u16
 from caracal7.core.backend import BACKEND
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
@@ -76,7 +76,10 @@ struct ProverLayout:
     var idx: Int                    # (lookup, row, u32)    advice indices, one list per lookup descriptor in order (sort.mojo)
     var bins: Int                   # (max K + 1, u32)
     var cursor: Int                 # (max K, u32)
-    var sg: Int                     # small-grid scratch: lines (5, h2, e), pac (2 h2, e), p1 (2 h2, e), p2 (3 h2, e), q3c (2 h2, e)
+    var wires: Int                  # (wiring product, WIRE)
+    var sigma: Int                  # (slot, x2, 2)         the wiring permutation
+    var wlines: Int                 # (wiring product, 4, x2, e)  the factor lines n0, n1, d0, d1 (accumulate.k_wire_factors)
+    var sg: Int                     # small-grid scratch, SG_TOTAL h2 e bytes (smallgrid.mojo)
     var q3: Int                     # (2 h2, e)             Q3 on G2 in the clear
     var pub_vals: Int               # (public column, x2, x1)      public column values on H (load_public)
     var pub_coeff: Int              # (public column, k2, k1, 2)   their coefficients (idft2 in load_public), the LDE input
@@ -98,6 +101,7 @@ struct ProverLayout:
     # challenges, one region each so nothing is overwritten before its consumer runs
     var stage1: Int                 # (chal_count, e)       beta, delta, gamma, then the derivation table's rows
     var chal_table: Int             # (rows, CHAL)          the derivation table
+    var wchal: Int                  # (2, e)                beta_w, gamma_w of the wiring copy constraint
     var alpha: Int                  # (1, e)
     var z: Int                      # (2, e)
     var beta_gamma: Int             # (columns + P, e)      beta per column, gamma per point
@@ -134,7 +138,10 @@ struct ProverLayout:
         self.idx = bump.alloc(shape.lookups() * N * 4)
         self.bins = bump.alloc((shape.max_table_rows() + 1) * 4)
         self.cursor = bump.alloc(shape.max_table_rows() * 4)
-        self.sg = bump.alloc(14 * p.h2() * p.e)
+        self.wires = bump.alloc(len(shape.wires))
+        self.sigma = bump.alloc(len(shape.sigma))
+        self.wlines = bump.alloc(shape.wiring_products() * 4 * p.h2() * p.e)
+        self.sg = bump.alloc(SG_TOTAL * p.h2() * p.e)
         self.q3 = bump.alloc(2 * p.h2() * p.e)
         self.pub_vals = bump.alloc(shape.columns_p * N)
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)
@@ -162,6 +169,7 @@ struct ProverLayout:
         self.prefix = bump.alloc(PREFIX_MAX)
         self.stage1 = bump.alloc(shape.chal_count() * p.e)
         self.chal_table = bump.alloc(len(shape.chals))
+        self.wchal = bump.alloc(2 * p.e)
         self.alpha = bump.alloc(p.e)
         self.z = bump.alloc(2 * p.e)
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
@@ -182,6 +190,7 @@ struct Prover[p: Params, H: Hash]:
     var layout: ProverLayout
     var arena: Arena
     var domains: Domains
+    var kappa: F2                   # a primitive element of F2*: wiring slot s has the ids kappa^s H2 (accumulate.mojo)
     var profile_names: List[String]     # filled by prove(profile=True): stage label and ms, in order
     var profile_ms: List[Int]
     var proof: ProofWriter          # host staging pool, sized once from the shape
@@ -195,6 +204,7 @@ struct Prover[p: Params, H: Hash]:
         self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
+        self.kappa = f2_primitive()
         self.profile_names = List[String]()
         self.profile_ms = List[Int]()
         self.proof = ProofWriter(ctx, proof_pool_bytes[Self.p, Self.H](self.shape))
@@ -214,6 +224,9 @@ struct Prover[p: Params, H: Hash]:
             _upload(ctx, self.arena, self.layout.accs, self.shape.accs)
         if len(self.shape.chals) > 0:
             _upload(ctx, self.arena, self.layout.chal_table, self.shape.chals)
+        if len(self.shape.wires) > 0:
+            _upload(ctx, self.arena, self.layout.wires, self.shape.wires)
+            _upload(ctx, self.arena, self.layout.sigma, self.shape.sigma)
         _upload(ctx, self.arena, self.layout.dom1, domain_bytes(self.domains.level1))
         for i in range(len(self.shape.tail)):
             var lvl = self.shape.tail[i]
@@ -280,6 +293,8 @@ struct Prover[p: Params, H: Hash]:
         self.proof.stage(self.arena, root_offset[Self.H](L.tree_w, Self.p.L()), Self.H.DIGEST)
         squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.stage1, 3)             # beta, delta, gamma
         derive_chals(ctx, self.arena, L.stage1, L.chal_table, len(S.chals) // CHAL)
+        if S.wiring_products() > 0:
+            squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.wchal, 2)          # beta_w, gamma_w
         self._mark(ctx, profile, "transcript W", t0)
 
         # 4-7. the Z stage and commit Z with Z2 -> alpha
@@ -290,6 +305,12 @@ struct Prover[p: Params, H: Hash]:
                 continue
             accumulate[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.stage1, L.num, L.den, L.zscratch,
                                L.zval + k * N * e, L.chain_prod, L.z2 + pi * Self.p.h2() * e, L.n_end + pi * Self.p.h2() * e, L.d_end + pi * Self.p.h2() * e)
+            pi += 1
+        comptime h2 = Self.p.h2()
+        for g in range(S.wiring_products()):
+            wiring[Self.p](ctx, self.arena, L.zval, L.wires + g * WIRE, L.sigma, 2 * g, S.columns_w, L.wchal,
+                           ext_pow[1](self.kappa, 2 * g), ext_pow[1](self.kappa, 2 * g + 1), self.domains.omega2,
+                           L.chain_prod, L.wlines + g * 4 * h2 * e, L.z2 + pi * h2 * e)
             pi += 1
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
@@ -308,21 +329,24 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, profile, "transcript Z", t0)
 
         # 7.4: the small grid, Q3 in the clear (sent with the Q root)
-        comptime h2 = Self.p.h2()
         var e2 = ext_pow[1](self.domains.omega2, h2 - 1)
         pi = 0
         for k in range(S.accumulators()):
             if Int(S.accs[k * ACC + 38]) == KIND_HORNER:
                 continue
-            small_grid_accumulator[Self.p](ctx, self.arena, L.tables, L.z2 + pi * h2 * e, L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e,
-                                           L.n_end + pi * h2 * e, L.d_end + pi * h2 * e, L.sg, L.sg + 5 * h2 * e, L.sg + 7 * h2 * e, L.sg + 9 * h2 * e,
-                                           L.alpha, S.family_of(k), e2, L.sg + 12 * h2 * e, pi == 0)
+            small_grid_product[Self.p](ctx, self.arena, L.tables, L.z2 + pi * h2 * e,
+                                       [(L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e), (L.n_end + pi * h2 * e, 16)],
+                                       [(L.d_end + pi * h2 * e, 16)], L.sg, L.alpha, S.family_of(k), e2, pi == 0)
+            pi += 1
+        for g in range(S.wiring_products()):
+            var wl = L.wlines + g * 4 * h2 * e
+            small_grid_product[Self.p](ctx, self.arena, L.tables, L.z2 + pi * h2 * e, [(wl, 16), (wl + h2 * e, 16)],
+                                       [(wl + 2 * h2 * e, 16), (wl + 3 * h2 * e, 16)], L.sg, L.alpha, get_u16(S.wires, g * WIRE + 4), e2, pi == 0)
             pi += 1
         for i in range(len(S.ends) // END):
-            small_grid_end[Self.p](ctx, self.arena, L.tables, L.zval, S.columns_w, S.ends, i, L.sg, L.sg + 5 * h2 * e, L.alpha, L.stage1, e2,
-                                   L.sg + 12 * h2 * e, pi == 0 and i == 0)
+            small_grid_end[Self.p](ctx, self.arena, L.tables, L.zval, S.columns_w, S.ends, i, L.sg, L.alpha, L.stage1, e2, pi == 0 and i == 0)
         if S.accumulators() > 0:
-            small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg + 12 * h2 * e, L.q3)
+            small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg, L.q3)
             self._mark(ctx, profile, "small grid", t0)
 
         # 8-10. residual grid, quotient, commit Q
