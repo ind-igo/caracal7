@@ -12,6 +12,7 @@ Tower constants (docs/decisions.md):
 """
 
 from std.math import min
+from std.sys.info import is_gpu
 
 comptime P: Int = 127
 comptime E_LEVEL: Int = 4          # E = F_{127^16}
@@ -131,6 +132,8 @@ def ext_mul[k: Int](a: SIMD[DType.uint8, 1 << k], b: SIMD[DType.uint8, 1 << k]) 
     """Schoolbook on the tower: (a0 + a1 g)(b0 + b1 g) = (a0 b0 + C a1 b1) + (a0 b1 + a1 b0) g."""
     comptime if k == 0:
         return f_mul(a, b)
+    elif k == E_LEVEL and not is_gpu():
+        return rebind[SIMD[DType.uint8, 1 << k]](e_mul_power(rebind[E](a), rebind[E](b)))   # ponytail: host only; try on device when measured
     else:
         comptime h = 1 << (k - 1)
         var a0 = a.slice[h]()
@@ -140,6 +143,56 @@ def ext_mul[k: Int](a: SIMD[DType.uint8, 1 << k], b: SIMD[DType.uint8, 1 << k]) 
         var lo = f_add(ext_mul[k - 1](a0, b0), ext_mul[k - 1](_level_const[k](), ext_mul[k - 1](a1, b1)))
         var hi = f_add(ext_mul[k - 1](a0, b1), ext_mul[k - 1](a1, b0))
         return rebind[SIMD[DType.uint8, 1 << k]](lo.join(hi))
+
+
+# ---- E product in the power basis (host) ---------------------------------
+# E = F[y] / (y^16 - 4 y^8 + 5): u = y^2, j = y^4, i = y^8 - 2. Tower index t = t0 + 2 t1 + 4 t2 + 8 t3
+# is i^t0 j^t1 u^t2 y^t3, so its t0 = 0 part has y-exponent 4 t1 + 2 t2 + t3. One 16 x 16 convolution in
+# 32-bit lanes replaces the 625 scalar products of the recursive schoolbook (324 -> 58 ns on the host).
+
+@always_inline
+def _texp(m: Int) -> Int:
+    """Tower index (t0 = 0) whose y-exponent is m."""
+    return 2 * ((m & 1) * 4 + (m & 2) + (m >> 2))
+
+
+@always_inline
+def e_to_power(a: E) -> E:
+    """Lane m of the result is the coefficient of y^m."""
+    var ev = SIMD[DType.uint8, 8]()
+    var od = SIMD[DType.uint8, 8]()
+    comptime for m in range(8):
+        ev[m] = a[_texp(m)]
+        od[m] = a[_texp(m) + 1]
+    var lo = f_sub(ev, f_add(od, od))       # y^m: a_even - 2 a_odd (i = y^8 - 2)
+    return rebind[E](lo.join(od))           # y^(m+8): a_odd
+
+
+@always_inline
+def e_from_power(p: E) -> E:
+    var lo = p.slice[8]()
+    var hi = p.slice[8, offset=8]()
+    var ev = f_add(lo, f_add(hi, hi))
+    var a = E()
+    comptime for m in range(8):
+        a[_texp(m)] = ev[m]
+        a[_texp(m) + 1] = hi[m]
+    return a
+
+
+@always_inline
+def e_mul_power(a: E, b: E) -> E:
+    var pa = e_to_power(a)
+    var b32 = e_to_power(b).cast[DType.uint32]().join(SIMD[DType.uint32, 16](0))
+    var acc = SIMD[DType.uint32, 32](0)
+    comptime for m in range(16):
+        acc += (b32 * UInt32(pa[m])).shift_right[m]()     # lanes < 16 * 126^2
+    var c = f_reduce(acc).cast[DType.uint32]()
+    var top = c.slice[8, offset=24]()                      # y^16 = 4 y^8 + 122
+    var mid = c.slice[8, offset=16]() + top * 4
+    var lo8 = c.slice[8, offset=8]() + top * 122 + mid * 4
+    var lo0 = c.slice[8]() + mid * 122                     # lanes < 2^17
+    return e_from_power(f_reduce(lo0.join(lo8)))
 
 
 @always_inline

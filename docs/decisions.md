@@ -549,3 +549,13 @@ the point coordinates (a zero coordinate now yields the right products instead o
 with both odd parts (24 x 24) and a zero-coordinate case, the design.md field comment. Deferred, marked
 in tensor.mojo: the unit count and factor storage scale with M = m1 m2 (the 2016 x 576 client grid has
 M = 567, ~440K units); share factor lists across r and widen the host E product when that grid is built.
+
+## Host E product in the power basis (2026-09-08)
+
+E = F[y] / (y^16 - 4 y^8 + 5) with u = y^2, j = y^4, i = y^8 - 2, so the tower basis is a lane
+permutation plus one add away from the power basis. `ext_mul[4]` on the host converts, does one 16 x 16
+convolution in 32-bit lanes, folds y^16 = 4 y^8 + 122 in two passes, and converts back: 324 -> 58 ns
+per product. The device path keeps the recursive schoolbook until measured (`is_gpu()` gate).
+
+Verify, Keccak-256, tail levels now ~15 ms of which ~10 ms is the Merkle multiproof: 128 B 75 -> 30 ms,
+1024 B 109 -> 45 ms, 2048 B 120 -> 50 ms. Warm prove unchanged.

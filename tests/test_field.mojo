@@ -76,6 +76,22 @@ def test_e_ring_identities() raises:
     assert_equal(ext_mul[4](a, one), a)
 
 
+def test_e_product_matches_the_schoolbook() raises:
+    var one = ext_embed[4, 1](SIMD[DType.uint8, 1](1))
+    for s in range(64):
+        var a = _sample_e(s)
+        var b = _sample_e(s * 7 + 11)
+        var a0 = a.slice[8]()
+        var a1 = a.slice[8, offset=8]()
+        var b0 = b.slice[8]()
+        var b1 = b.slice[8, offset=8]()
+        var lo = f_add(ext_mul[3](a0, b0), ext_mul[3](C4, ext_mul[3](a1, b1)))
+        var hi = f_add(ext_mul[3](a0, b1), ext_mul[3](a1, b0))
+        assert_equal(ext_mul[4](a, b), rebind[E](lo.join(hi)))
+        assert_equal(e_from_power(e_to_power(a)), a)
+    assert_equal(ext_mul[4](one, one), one)
+
+
 def test_e_inverse() raises:
     var one = ext_embed[4, 1](SIMD[DType.uint8, 1](1))
     for s in range(1, 6):
