@@ -30,7 +30,7 @@ comptime DS_CLEAR: UInt8 = 7        # y_ell in the clear -> S_{ell-1}
 comptime STATE_BYTES = 128          # [0, DIGEST) state, [64, 72) counter, [72, 72 + DIGEST) scratch
 comptime _COUNTER = 64
 comptime _SCRATCH = 72
-comptime MAX_CHUNKS = 1024          # ponytail: one block per absorb, so 1 MiB per message; a multi-block merge past that
+comptime MAX_CHUNKS = 1024          # ponytail: one block per absorb, 1 MiB; larger messages fall back to the serial thread
 comptime _CV_BYTES = 32             # per-chunk value slot, >= H.DIGEST
 
 
@@ -101,7 +101,7 @@ def k_absorb_tree[H: Hash](base: Base, state: Buf[1], ds: UInt8, src: Buf[1], by
     var k = Int(thread_idx.x)
     var st = state.ptr(base, 0)
     if k < Int(n):
-        H.chunk(st, ds, src.ptr(base, 0), Int(bytes), k, cvs.ptr(base, _CV_BYTES * k))
+        H.chunk(st, ds, src.ptr(base, 0), Int(bytes), k, cvs.ptr(base, H.DIGEST * k))
     barrier()
     if k == 0:
         H.merge(st, Int(n), cvs.ptr(base, 0))
@@ -123,11 +123,9 @@ def absorb[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: TranscriptLa
     the message `ds || src`, or one thread when there is one chunk."""
     comptime assert H.DIGEST <= _CV_BYTES
     var n = ceildiv(bytes + 1, H.CHUNK)
-    if n <= 1:
+    if n <= 1 or n > MAX_CHUNKS:      # one chunk, or past the one-block ceiling: the serial thread
         ctx.enqueue_function[k_absorb[H]](arena.buf, Buf[1](t.state), ds, Buf[1](src), Int32(bytes), grid_dim=1, block_dim=1)
         return
-    if n > MAX_CHUNKS:
-        raise Error("absorb of " + String(bytes) + " bytes exceeds the one-block ceiling of " + String(MAX_CHUNKS) + " chunks")
     ctx.enqueue_function[k_absorb_tree[H]](arena.buf, Buf[1](t.state), ds, Buf[1](src), Int32(bytes),
                                            Buf[1](t.cvs), Int32(n), grid_dim=1, block_dim=n)
 

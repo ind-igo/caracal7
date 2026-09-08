@@ -442,8 +442,8 @@ trait gains `CHUNK`, `chunk(k)`, and `merge`, with `absorb == merge over chunk(k
 Merkle leaf, and the device tree absorb are one definition of the digest. `k_absorb_tree` runs one block
 with one thread per chunk, a barrier, and thread 0 merging; a one-chunk absorb keeps `k_absorb`. Chunk
 values land in a 32 KB `cvs` region of `TranscriptLayout`, sized for `MAX_CHUNKS = 1024`: one block per
-absorb, so 1 MiB per message, checked at launch (ponytail: a multi-block merge if a statement absorbs
-more). Full blocks past the prefix byte load as sixteen words (`unsafe_bitcast[UInt32]`, alignment 1),
+absorb, so 1 MiB per message; a larger absorb falls back to the serial thread (ponytail: a multi-block
+merge when one shows up in a profile). Full blocks past the prefix byte load as sixteen words (`unsafe_bitcast[UInt32]`, alignment 1),
 and `_load_words`/`_store_cv` do the same; partial blocks and the prefix block pack byte by byte.
 Sparse openings were considered as the larger lever and rejected from first principles, not only by
 the spec: one fold `g = sum_c beta_c f_c` needs `g(z_p) = sum_c beta_c alpha_{c,p}` over every column,
