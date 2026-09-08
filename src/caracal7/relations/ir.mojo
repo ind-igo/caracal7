@@ -22,6 +22,9 @@ opening points only; a residual read is always a shift.
 Challenge derivation table (CHAL = 3 bytes per row: op u8, a u8, b u8): element SAMPLED + i is
 op(element a, element b) with op CHAL_ADD or CHAL_MUL and CHAL_ONE the constant 1 as an operand.
 Part of the artifact (Shape.chals); k_derive_chals and derived_chals walk the same rows.
+
+Accumulator descriptors (ACC bytes) are documented in accumulate.mojo; chain-end terms (END bytes,
+Shape.ends) in smallgrid.mojo. Both carry the family index whose alpha power weights them.
 ponytail: collapsing shared reads into one kappa (statement-layer 5) is the compiler's job when a
 real family list exists; the kernel does not care.
 """
@@ -35,11 +38,13 @@ comptime CHAL = 3       # derivation table row: op, a, b
 comptime CHAL_ADD = 0
 comptime CHAL_MUL = 1
 comptime CHAL_ONE = 255 # operand: the constant 1
-comptime ACC = 40       # accumulator descriptor bytes (accumulate.mojo)
+comptime ACC = 42       # accumulator descriptor bytes (accumulate.mojo); family u16 at [40, 42) for every kind
 comptime ACC_W_MAX = 8
 comptime KIND_PERM = 0
 comptime KIND_LOOKUP = 1
-# TODO(memory): KIND_MEMORY = 2 when spec 6.4 lands.
+comptime KIND_HORNER = 2    # the spec's {start, ingest, scale, end} record: R(next) = scale R + sum weight read (polynomial-mulmod 5)
+# TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
+comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -126,11 +131,13 @@ struct Families:
     var bytes: List[UInt8]
     var count: Int
     var accs: List[UInt8]
+    var ends: List[UInt8]
 
     def __init__(out self):
         self.bytes = List[UInt8]()
         self.count = 0
         self.accs = List[UInt8]()
+        self.ends = List[UInt8]()
 
     def accumulator(mut self, family: Int, z_col: Int, num: List[Int], den: List[Int]) raises:
         """A permutation accumulator (spec 6.2) on witness columns: N = gamma + fp(num), D = gamma +
@@ -145,7 +152,7 @@ struct Families:
             self.add(family, 126, z_col + t, mult=1, chal=3, basis=t)
             for j in range(len(num)):
                 self.add(family, 126, z_col + t, col_b=num[j], mult=1, basis=t, basis2=j)
-        self._descriptor(z_col, num, den, KIND_PERM, 0)
+        self._descriptor(family, z_col, num, den, KIND_PERM, 0)
 
     def lookup(mut self, family: Int, z_col: Int, f: List[Int], s: List[Int], table: Int) raises:
         """A lookup accumulator (spec 6.3) of records f against table `table` (Shape.tables), s the sorted
@@ -161,15 +168,55 @@ struct Families:
             self.add(family, 126, z_col + t, mult=1, chal=5, basis=t)
             for j in range(len(f)):
                 self.add(family, 126, z_col + t, col_b=f[j], mult=1, chal=4, basis=t, basis2=j)
-        self._descriptor(z_col, f, s, KIND_LOOKUP, table)
+        self._descriptor(family, z_col, f, s, KIND_LOOKUP, table)
+
+    def horner(mut self, family: Int, z_col: Int, start: Int, scale: Int, ingest: List[Tuple[Int, Int, Int, Int]]) raises:
+        """The second Z kind (polynomial-mulmod 5): R(1, X2) = start, R(omega1 x1, x2) = scale R(x1, x2) + sum_i
+        coef_i chal_i c_i(omega1^k1_i x1, x2) with `scale` a stage-1 element index (-1: 1) and `ingest` the
+        terms (column, k1, coef, chal index or -1). The transition (X1 - e1) (R(next) - scale R - sum) is
+        2 e + |ingest| linear entries; the descriptor names the ingest entries by range so the kernel and the
+        residual read one definition."""
+        if start < 0 or start > 1 or scale < -1 or scale > 254 or len(ingest) == 0 or len(ingest) > 65535:
+            raise Error("horner accumulator: start in {0, 1}, scale an element index, at least one ingest term")
+        for t in range(16):
+            self.add(family, 1, z_col + t, k1_a=1, mult=1, basis=t)
+            self.add(family, 126, z_col + t, mult=1, chal=scale + 1, basis=t)
+        var first = self.count
+        for it in ingest:
+            self.add(family, ((-it[2] % 127) + 127) % 127, it[0], k1_a=it[1], mult=1, chal=it[3] + 1)
+        var a = List[UInt8](length=ACC, fill=0)
+        set_u16(a, 0, z_col)
+        set_u16(a, 2, first)
+        set_u16(a, 4, len(ingest))
+        a[6] = UInt8(start)
+        a[7] = UInt8(scale + 1)
+        a[38] = UInt8(KIND_HORNER)
+        set_u16(a, 40, family)
+        self.accs.extend(a^)
+
+    def chain_end(mut self, family: Int, coef: Int, col_a: Int, col_b: Int, chal: Int, gate: Bool) raises:
+        """One term of a chain-end family (spec 7.4, statement-layer 3): coef chal A(e1, X2) [B(e1, X2)] on H2,
+        optionally gated by (X2 - e2); A, B are Z blocks by their first coordinate column. Summed into R2 with
+        the family's alpha power."""
+        if chal < -1 or chal > 254 or col_a < 0 or col_a > 65535 or col_b > 65535:
+            raise Error("chain-end term: chal an element index, columns u16")
+        var e = List[UInt8](length=END, fill=0)
+        set_u16(e, 0, col_a)
+        set_u16(e, 2, NONE if col_b < 0 else col_b)
+        set_u16(e, 4, family)
+        e[6] = UInt8(((coef % 127) + 127) % 127)
+        e[7] = UInt8(chal + 1)
+        e[8] = UInt8(1 if gate else 0)
+        self.ends.extend(e^)
 
     # TODO(memory): `memory(family, z_col, addr, ts, value)` for spec 6.4: the sort key is (addr, ts), the
     # adjacency families (same address: value carried and timestamp increasing; new address: initial value)
     # are residual entries over the sorted columns, and the descriptor is KIND_MEMORY. Waits for a
     # profile with memory (configuration.md 3).
 
-    def _descriptor(mut self, z_col: Int, num: List[Int], den: List[Int], kind: Int, table: Int):
+    def _descriptor(mut self, family: Int, z_col: Int, num: List[Int], den: List[Int], kind: Int, table: Int):
         var a = List[UInt8](length=ACC, fill=0)
+        set_u16(a, 40, family)
         set_u16(a, 0, z_col)
         set_u16(a, 2, len(num))
         set_u16(a, 4, len(den))

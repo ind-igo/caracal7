@@ -3,7 +3,14 @@ per chain, and Z2 across chains, for permutation accumulators on witness columns
 
 Accumulator descriptor (ACC bytes, u16 little-endian): z_col [0, 2) the global index of coordinate
 column 0 of Z; w_num [2, 4), w_den [4, 6); num columns [6, 22); den columns [22, 38); kind u8 [38]
-(KIND_PERM, KIND_LOOKUP); table id u8 [39] (lookup: the index into Shape.tables).
+(KIND_PERM, KIND_LOOKUP, KIND_HORNER); table id u8 [39] (lookup: the index into Shape.tables); family u16 [40, 42).
+A KIND_HORNER descriptor (polynomial-mulmod 5, the spec's {start, ingest, scale, end}) reuses [2, 8): first
+ingest entry u16 [2, 4), ingest count [4, 6), start u8 [6], scale u8 [7] (0 none, else element + 1). Its
+ingest terms are the family entries themselves (ir.Families.horner), so the kernel and the residual read
+one definition: R(1, x2) = start, R(omega1 x1, x2) = scale R - sum_entries coef chal c(omega1^k1 x1, x2)
+(the entries carry the transition's sign). No Z2, N, or D: chain ends meet in chain-end families
+(smallgrid.mojo). ponytail: one thread per chain for the scan (h1 steps); the segmented affine scan of
+10.1 when a client grid measures it.
 fp(c) = sum_j c_j b_j is the fingerprint of 6.1 (b_j the unit vector j of E: no multiplication, the
 column bytes are the coordinates). The factors per kind:
     KIND_PERM (6.2)     N = gamma + fp(num),  D = gamma + fp(den)
@@ -39,11 +46,11 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import E, f_add, ext_mul, ext_inv0, ext_one
+from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv0, ext_one
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
-from caracal7.relations.ir import ACC, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
+from caracal7.relations.ir import ACC, ENTRY, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
 from caracal7.core.arena import Arena
 
 
@@ -163,6 +170,59 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
         z2.store(base, x2, z)
         z = ext_mul[4](z, chain_prod.load(base, x2))
     z2.store(base, p.h2(), ext_one[4]())
+
+
+def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], acc: Buf[1], chals: Buf[16], num: Buf[16]):
+    """One thread per row: sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the
+    read cyclic inside the chain (fields of ir.mojo; kappa at [0, 16) is not read, it is folded later)."""
+    comptime N = p.N()
+    comptime h1 = p.h1()
+    var row = global_idx.x
+    if row >= N:
+        return
+    var x2 = row // h1
+    var x1 = row % h1
+    var first = u16(base, acc.at(2))
+    var count = u16(base, acc.at(4))
+    var s = E(0)
+    for i in range(first, first + count):
+        var o = i * ENTRY
+        var col = u16(base, families.at(o + 16))
+        var k1 = u16(base, families.at(o + 18)) // 2
+        var v = E(0)
+        v[0] = trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1)
+        v = f_mul(v, E(families.load(base, o + 29)))
+        var chal = Int(families.load(base, o + 32))
+        if chal != 0:
+            v = ext_mul[4](v, chals.load(base, chal - 1))
+        s = f_add(s, v)
+    num.store(base, row, s)
+
+
+def k_horner_scan[p: Params](base: Base, acc: Buf[1], chals: Buf[16], num: Buf[16], zval: Buf[16]):
+    """One thread per chain: R(1) = start, R(next) = scale R - ingest(row)."""
+    comptime h1 = p.h1()
+    var x2 = global_idx.x
+    if x2 >= p.h2():
+        return
+    var r = E(0)
+    r[0] = acc.load(base, 6)
+    var scale = ext_one[4]()
+    if acc.load(base, 7) != 0:
+        scale = chals.load(base, Int(acc.load(base, 7)) - 1)
+    for x1 in range(h1):
+        var row = x2 * h1 + x1
+        zval.store(base, row, r)
+        r = f_sub(ext_mul[4](scale, r), num.load(base, row))
+
+
+def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, acc: Int, chals: Int, num: Int, zval: Int) raises:
+    """One KIND_HORNER accumulator: R into zval (row, e)."""
+    comptime B = BACKEND.block
+    ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](acc), Buf[16](chals), Buf[16](num),
+                                      grid_dim=ceildiv(p.N(), B), block_dim=B)
+    ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](acc), Buf[16](chals), Buf[16](num), Buf[16](zval),
+                                           grid_dim=ceildiv(p.h2(), B), block_dim=B)
 
 
 def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows: Int) raises:

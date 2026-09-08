@@ -14,7 +14,7 @@ from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CH
 from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
-from caracal7.relations.synthetic import Synthetic
+from caracal7.relations.synthetic import Synthetic, SyntheticHorner, horner_statement, horner_trace
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
@@ -346,6 +346,32 @@ def test_prove_and_verify_with_tail() raises:
         stopped = String(e)
     assert_equal(stopped, "sumcheck fails at a tail level")
 
+
+
+def test_prove_and_verify_with_horner_accumulators() raises:
+    """The second Z kind: three Horner accumulators and a chain-end family, no Z2 in the clear; one wrong
+    coefficient fails the small grid."""
+    var ctx = DeviceContext()
+    var w = SyntheticHorner(1)
+    var c = horner_statement().compile[p]()
+    assert_equal(c.shape.accumulators(), 3)
+    assert_equal(c.shape.products(), 0)
+    var proof = prove_workload[p, Blake3](ctx, w)
+    assert_true(len(proof) > c.shape.fixed_bytes[p, 32](0), "proof shorter than its fixed part")
+    print("horner proof bytes:", len(proof))
+    assert_true(verify_workload[p, Blake3](proof^, w, List[UInt8]()))
+    var shape = horner_statement().compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, horner_statement().compile[p]().take_shape(), c.families.copy())
+    var trace = horner_trace[p](1)
+    trace[2 * p.N() + p.h1() - 5] = UInt8((Int(trace[2 * p.N() + p.h1() - 5]) + 1) % 127)
+    load_trace[p, Blake3](ctx, prover, trace)
+    var bad = prover.prove(ctx, List[UInt8]())
+    var stopped = String("")
+    try:
+        _ = verify[p, Blake3](bad^, shape, List[UInt8](), c.families)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "small grid identity fails at z2")
 
 
 def test_workload_driver_round_trips_every_synthetic_variant() raises:

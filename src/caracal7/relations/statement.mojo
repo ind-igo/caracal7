@@ -17,7 +17,7 @@ from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
 from caracal7.proof import Shape
 
 comptime BIT = 0
@@ -68,9 +68,19 @@ struct _Family(Copyable, Movable):
 struct _Acc(Copyable, Movable):
     var name: String
     var kind: Int
-    var num: List[String]
+    var num: List[String]       # KIND_HORNER: unused
     var den: List[String]
     var table: Int
+    var start: Int              # KIND_HORNER: R(1, X2); scale the element index (-1: 1); ingest the weighted linear reads
+    var scale: Int
+    var ingest: List[Term]
+
+
+@fieldwise_init
+struct _End(Copyable, Movable):
+    var name: String
+    var terms: List[Term]       # reads name Z blocks; coef chal a [b]
+    var gated: Bool
 
 
 struct Layout(Copyable, Movable):
@@ -141,7 +151,8 @@ struct Statement(Movable):
     var col_group: List[String]
     var fams: List[_Family]
     var accs: List[_Acc]
-    var order: List[Tuple[Int, Int]]    # (0 family i | 1 accumulator i) in call order: the position is the family index
+    var ends: List[_End]
+    var order: List[Tuple[Int, Int]]    # (0 family i | 1 accumulator i | 2 chain-end family i) in call order: the position is the family index
     var pubs: List[UInt8]               # PUB records
     var pub_names: List[String]
     var res: List[UInt8]                # RES records, column resolved at compile
@@ -157,6 +168,7 @@ struct Statement(Movable):
         self.col_group = List[String]()
         self.fams = List[_Family]()
         self.accs = List[_Acc]()
+        self.ends = List[_End]()
         self.order = List[Tuple[Int, Int]]()
         self.pubs = List[UInt8]()
         self.pub_names = List[String]()
@@ -215,7 +227,31 @@ struct Statement(Movable):
         if kind == KIND_LOOKUP and len(num) != self.widths[table]:
             raise Error("lookup record width differs from its table's")
         self.order.append((1, len(self.accs)))
-        self.accs.append(_Acc(name, kind, num.copy(), den.copy(), table))
+        self.accs.append(_Acc(name, kind, num.copy(), den.copy(), table, 0, -1, List[Term]()))
+
+    def horner(mut self, name: String, ingest: List[Term], scale: Int = -1, start: Int = 0) raises:
+        """The second Z kind (polynomial-mulmod 5): R(1, X2) = start and R(omega1 x1, x2) = scale R + sum of the
+        ingest terms, each coef chal read of a W column inside the chain (k2 = 0, linear, no basis). `scale` is a
+        stage-1 element index (-1: 1). Chain ends meet in `chain_end` families."""
+        self._fresh(name)
+        if len(ingest) == 0 or (start != 0 and start != 1) or scale < -1:
+            raise Error("horner accumulator needs ingest terms, start in {0, 1}, and a scale element: " + name)
+        for t in ingest:
+            if t.b or t.a.k2 != 0 or t.basis >= 0 or t.basis2 >= 0:
+                raise Error("horner ingest terms are linear same-chain reads without basis factors: " + name)
+        self.order.append((1, len(self.accs)))
+        self.accs.append(_Acc(name, KIND_HORNER, List[String](), List[String](), -1, start, scale, ingest.copy()))
+
+    def chain_end(mut self, name: String, terms: List[Term], gated: Bool = False) raises:
+        """A family on the small grid (spec 7.4): sum of coef chal A(e1, X2) [B(e1, X2)] = 0 on H2, the reads
+        naming accumulators; `gated` multiplies by (X2 - e2) so the last chain is exempt."""
+        if len(terms) == 0:
+            raise Error("chain-end family needs terms: " + name)
+        for t in terms:
+            if t.a.k1 != 0 or t.a.k2 != 0 or t.basis >= 0 or t.basis2 >= 0 or (t.b and (t.b.value().k1 != 0 or t.b.value().k2 != 0)):
+                raise Error("chain-end terms read accumulators at (e1, X2) with no shift or basis: " + name)
+        self.order.append((2, len(self.ends)))
+        self.ends.append(_End(name, terms.copy(), gated))
 
     def pub(mut self, name: String, m: Int = 1) raises:
         """A public column (docs/public-columns.md): a polynomial in (X1, X2^m), a column periodic along axis 2
@@ -260,6 +296,12 @@ struct Statement(Movable):
                 raise Error("basis is a coordinate of E: -1 or [0, 16)")
         self.order.append((0, len(self.fams)))
         self.fams.append(_Family(name, terms.copy(), gate))
+
+    def _acc_index(self, name: String) raises -> Int:
+        for i in range(len(self.accs)):
+            if self.accs[i].name == name:
+                return i
+        raise Error("unknown accumulator " + name)
 
     def _wcol(self, index: Dict[String, Int], name: String) raises -> Int:
         if name in index:
@@ -331,6 +373,22 @@ struct Statement(Movable):
                         raise Error("a next-chain read (k2 = 1) needs a linear family with the axis-2 gate: " + fam.name)
                     f.add(k, ((t.coef % 127) + 127) % 127, ca, k1_a=t.a.k1, k2_a=t.a.k2, col_b=cb, k1_b=k1b, k2_b=k2b,
                           mult=fam.gate, chal=0 if t.chal < 0 else t.chal + 1, basis=t.basis, basis2=t.basis2)
+            elif it[0] == 2:
+                var en = self.ends[it[1]].copy()
+                for t in en.terms:
+                    var cb = -1
+                    if t.b:
+                        cb = w + self._acc_index(t.b.value().col) * p.e
+                    f.chain_end(k, t.coef, w + self._acc_index(t.a.col) * p.e, cb, t.chal, en.gated)
+            elif self.accs[it[1]].kind == KIND_HORNER:
+                var a = self.accs[it[1]].copy()
+                var ingest = List[Tuple[Int, Int, Int, Int]]()
+                for t in a.ingest:
+                    var c = self._wcol(index, t.a.col)
+                    touched[c] = True
+                    read[c] = True
+                    ingest.append((c, t.a.k1, t.coef, t.chal))
+                f.horner(k, w + it[1] * p.e, a.start, a.scale, ingest)
             else:
                 var a = self.accs[it[1]].copy()
                 var num = List[Int]()
@@ -388,7 +446,7 @@ struct Statement(Movable):
             if sorted_of[i] >= 0 and (read[i] or acc_uses[i] != 1):   # the sort overwrites it: one lookup's, read by nothing
                 raise Error("a sorted column belongs to one lookup and is read by nothing else: " + names[i])
         var points = shift_points(f.bytes, res, len(f.accs) > 0)
-        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals)
+        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends)
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
         return Compiled(shape^, f.bytes.copy(), layout^)
 

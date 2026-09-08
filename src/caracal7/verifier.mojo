@@ -20,7 +20,7 @@ from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow
 from caracal7.core.tables import Domains, RsDomain
 from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -65,8 +65,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if shape.accumulators() > 0:                       # no Z tree without accumulators
         root_z = r.take(H.DIGEST)
         t.absorb(DS_TREE_Z, root_z)
-        z2v = r.take(shape.accumulators() * p.h2() * p.e)
-        t.absorb(DS_TREE_Z, z2v)
+        if shape.products() > 0:
+            z2v = r.take(shape.products() * p.h2() * p.e)
+            t.absorb(DS_TREE_Z, z2v)
     var alpha = t.elements(1)
     var root_q = r.take(H.DIGEST)
     t.absorb(DS_TREE_Q, root_q)
@@ -91,14 +92,20 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     # (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2).
     # The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
+    var pi = 0                                           # product index into Z2
     for k in range(shape.accumulators()):
         var z_col = get_u16(shape.accs, k * ACC)
+        if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:   # 7.1 with the record's start; its chain ends are chain-end terms
+            if _coords_at[p](openings, shape, at_start, z_col) != ext_embed[4](SIMD[DType.uint8, 1](shape.accs[k * ACC + 6])):
+                raise Error("accumulator chain start is not its start value")
+            continue
         if _coords_at[p](openings, shape, at_start, z_col) != one:
             raise Error("accumulator chain start is not 1")
-        if list_e(z2v, k * p.h2()) != one:
+        if list_e(z2v, pi * p.h2()) != one:
             raise Error("Z2(1) is not 1")
-        var lhs = ext_mul[4](ext_mul[4](list_e(z2v, k * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, at_end, z_col)),
+        var lhs = ext_mul[4](ext_mul[4](list_e(z2v, pi * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, at_end, z_col)),
                              _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, False))
+        pi += 1
         if Int(shape.accs[k * ACC + 38]) == KIND_LOOKUP:
             # 6.3: the last row has no pair factor, so the product closes on the table constant
             var w = get_u16(shape.accs, k * ACC + 2)
@@ -127,14 +134,28 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var e2 = ext_embed[4](ext_pow[1](d.omega2, p.h2() - 1))
         var w2 = ext_embed[4](d.omega2)
         var r2 = E(0)
+        pi = 0
         for k in range(shape.accumulators()):
-            var za = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, z2)
-            var zb = interp_cyclic(z2v, k * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
+            if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:
+                continue
+            var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
+            var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
             var c = _coords_at[p](openings, shape, at_e1, get_u16(shape.accs, k * ACC))
             var n_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, False)
             var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
             var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
-            r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), k), term))
+            r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), shape.family_of(k)), term))
+            pi += 1
+        for i in range(len(shape.ends) // END):           # chain-end terms (smallgrid.mojo): coef chal alpha^family A [B] [(z2 - e2)]
+            var v = ext_mul[4](ext_pow[4](list_e(alpha, 0), get_u16(shape.ends, i * END + 4)), _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END)))
+            v = f_mul(v, E(shape.ends[i * END + 6]))
+            if shape.ends[i * END + 7] != 0:
+                v = ext_mul[4](v, list_e(stage1, Int(shape.ends[i * END + 7]) - 1))
+            if get_u16(shape.ends, i * END + 2) != NONE:
+                v = ext_mul[4](v, _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END + 2)))
+            if shape.ends[i * END + 8] != 0:
+                v = ext_mul[4](v, f_sub(z2, e2))
+            r2 = f_add(r2, v)
         var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)
         if r2 != ext_mul[4](q3z, f_sub(ext_pow[4](z2, p.h2()), one)):
             raise Error("small grid identity fails at z2")

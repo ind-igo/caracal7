@@ -20,7 +20,7 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
-from caracal7.relations import ENTRY, POINT, ACC, CHAL, KIND_LOOKUP, value_bytes, tile_values, accumulate, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_values
+from caracal7.relations import ENTRY, POINT, ACC, END, CHAL, KIND_LOOKUP, KIND_HORNER, value_bytes, tile_values, accumulate, horner, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_accumulator, small_grid_end, small_grid_values
 from caracal7.core.bytes import Buf
 from caracal7.core.backend import BACKEND
 
@@ -70,7 +70,7 @@ struct ProverLayout:
     var zscratch: Int
     var zval: Int                   # (accumulator, row, e) Z values, the Z tree's trace before the coordinate split
     var chain_prod: Int             # (x2, e)
-    var z2: Int                     # (accumulator, x2, e) + e  Z2 in the clear; one trailing 1 (accumulate.k_z2)
+    var z2: Int                     # (product accumulator, x2, e) + e  Z2 in the clear; one trailing 1 (accumulate.k_z2)
     var n_end: Int                  # (accumulator, x2, e)  N(e1, x2), D(e1, x2)
     var d_end: Int
     var idx: Int                    # (lookup, row, u32)    advice indices, one list per lookup descriptor in order (sort.mojo)
@@ -128,7 +128,7 @@ struct ProverLayout:
         self.zscratch = bump.alloc(N * p.e)
         self.zval = bump.alloc(shape.accumulators() * N * p.e)
         self.chain_prod = bump.alloc(p.h2() * p.e)
-        self.z2 = bump.alloc((shape.accumulators() * p.h2() + 1) * p.e)
+        self.z2 = bump.alloc((shape.products() * p.h2() + 1) * p.e)
         self.n_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
         self.d_end = bump.alloc(shape.accumulators() * p.h2() * p.e)
         self.idx = bump.alloc(shape.lookups() * N * 4)
@@ -283,9 +283,14 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, profile, "transcript W", t0)
 
         # 4-7. the Z stage and commit Z with Z2 -> alpha
+        var pi = 0                                       # product index: Z2, n_end, d_end are per grand product
         for k in range(S.accumulators()):
+            if Int(S.accs[k * ACC + 38]) == KIND_HORNER:
+                horner[Self.p](ctx, self.arena, L.enc_w.trace, L.families, L.accs + k * ACC, L.stage1, L.num, L.zval + k * N * e)
+                continue
             accumulate[Self.p](ctx, self.arena, L.enc_w.trace, L.accs + k * ACC, L.stage1, L.num, L.den, L.zscratch,
-                               L.zval + k * N * e, L.chain_prod, L.z2 + k * Self.p.h2() * e, L.n_end + k * Self.p.h2() * e, L.d_end + k * Self.p.h2() * e)
+                               L.zval + k * N * e, L.chain_prod, L.z2 + pi * Self.p.h2() * e, L.n_end + pi * Self.p.h2() * e, L.d_end + pi * Self.p.h2() * e)
+            pi += 1
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](L.zval), Buf[1](L.enc_z.trace), Int32(S.accumulators()),
                                                             grid_dim=ceildiv(S.columns_z * N, BACKEND.block), block_dim=BACKEND.block)
@@ -296,18 +301,26 @@ struct Prover[p: Params, H: Hash]:
             self._mark(ctx, profile, "merkle Z", t0)
             absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Z, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
             self.proof.stage(self.arena, root_offset[Self.H](L.tree_z, Self.p.L()), Self.H.DIGEST)
-            absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Z, L.z2, S.accumulators() * Self.p.h2() * e)
-            self.proof.stage(self.arena, L.z2, S.accumulators() * Self.p.h2() * e)
+            if S.products() > 0:
+                absorb[Self.p, Self.H](ctx, self.arena, T, DS_TREE_Z, L.z2, S.products() * Self.p.h2() * e)
+                self.proof.stage(self.arena, L.z2, S.products() * Self.p.h2() * e)
         squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.alpha, 1)
         self._mark(ctx, profile, "transcript Z", t0)
 
         # 7.4: the small grid, Q3 in the clear (sent with the Q root)
         comptime h2 = Self.p.h2()
         var e2 = ext_pow[1](self.domains.omega2, h2 - 1)
+        pi = 0
         for k in range(S.accumulators()):
-            small_grid_accumulator[Self.p](ctx, self.arena, L.tables, L.z2 + k * h2 * e, L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e,
-                                           L.n_end + k * h2 * e, L.d_end + k * h2 * e, L.sg, L.sg + 5 * h2 * e, L.sg + 7 * h2 * e, L.sg + 9 * h2 * e,
-                                           L.alpha, k, e2, L.sg + 12 * h2 * e, k == 0)
+            if Int(S.accs[k * ACC + 38]) == KIND_HORNER:
+                continue
+            small_grid_accumulator[Self.p](ctx, self.arena, L.tables, L.z2 + pi * h2 * e, L.zval + k * N * e + (Self.p.h1() - 1) * e, Self.p.h1() * e,
+                                           L.n_end + pi * h2 * e, L.d_end + pi * h2 * e, L.sg, L.sg + 5 * h2 * e, L.sg + 7 * h2 * e, L.sg + 9 * h2 * e,
+                                           L.alpha, S.family_of(k), e2, L.sg + 12 * h2 * e, pi == 0)
+            pi += 1
+        for i in range(len(S.ends) // END):
+            small_grid_end[Self.p](ctx, self.arena, L.tables, L.zval, S.columns_w, S.ends, i, L.sg, L.sg + 5 * h2 * e, L.alpha, L.stage1, e2,
+                                   L.sg + 12 * h2 * e, pi == 0 and i == 0)
         if S.accumulators() > 0:
             small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg + 12 * h2 * e, L.q3)
             self._mark(ctx, profile, "small grid", t0)

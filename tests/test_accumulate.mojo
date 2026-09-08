@@ -5,14 +5,14 @@ Z(1, x2) = 1, and the grand product Z2(e2) chain_prod(e2) = 1 (c8 is a permutati
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import E, f_add, ext_mul, ext_inv, ext_one
+from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_one
 from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
-from caracal7.relations.accumulate import ACC, accumulate, derive_chals
-from caracal7.relations.ir import Families, CHAL, CHAL_MUL, KIND_LOOKUP, lookup_constant, derived_chals, standard_chals, chal_count
+from caracal7.relations.accumulate import ACC, accumulate, horner, derive_chals
+from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
+from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()
@@ -221,3 +221,67 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
+
+
+def host_horner[p: Params](families: List[UInt8], accs: List[UInt8], k: Int, trace: List[UInt8], chals: List[UInt8]) -> List[UInt8]:
+    """R as (row, e) bytes by the definition in accumulate.mojo."""
+    comptime h1 = p.h1()
+    comptime N = p.N()
+    var out = List[UInt8](length=N * 16, fill=0)
+    var first = get_u16(accs, k * ACC + 2)
+    var count = get_u16(accs, k * ACC + 4)
+    var scale = ext_one[4]()
+    if accs[k * ACC + 7] != 0:
+        scale = list_e(chals, Int(accs[k * ACC + 7]) - 1)
+    for x2 in range(p.h2()):
+        var r = E(0)
+        r[0] = accs[k * ACC + 6]
+        for x1 in range(h1):
+            var row = x2 * h1 + x1
+            for t in range(16):
+                out[row * 16 + t] = r[t]
+            var s = E(0)
+            for i in range(first, first + count):
+                var en = entry(families, i)
+                var v = E(0)
+                v[0] = trace[en.col_a * N + x2 * h1 + (x1 + en.dj1_a // 2) % h1]
+                v = f_mul(v, E(UInt8(en.coef)))
+                if en.chal != 0:
+                    v = ext_mul[4](v, list_e(chals, en.chal - 1))
+                s = f_add(s, v)
+            r = f_sub(ext_mul[4](scale, r), s)
+    return out^
+
+
+def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
+    """Device R against the host definition for the three accumulators of the mulmod instance, and
+    R_A R_B = 3 delta gamma R_C at every chain end."""
+    var c = horner_statement().compile[p]()
+    assert_equal(len(c.shape.accs), 3 * ACC)
+    var table = c.shape.chals.copy()
+    var chals = _chals(table)
+    var trace = horner_trace[p](1)
+    var ctx = DeviceContext()
+    var bump = Bump()
+    var o_trace = bump.alloc(3 * N)
+    var o_fam = bump.alloc(len(c.families))
+    var o_acc = bump.alloc(3 * ACC)
+    var o_chals = bump.alloc(len(chals))
+    var o_num = bump.alloc(N * 16)
+    var o_z = bump.alloc(3 * N * 16)
+    var arena = Arena(ctx, bump.used)
+    arena.upload(ctx, o_trace, _host(ctx, trace))
+    arena.upload(ctx, o_fam, _host(ctx, c.families))
+    arena.upload(ctx, o_acc, _host(ctx, c.shape.accs))
+    arena.upload(ctx, o_chals, _host(ctx, chals))
+    var ends = List[E]()
+    for k in range(3):
+        assert_equal(Int(c.shape.accs[k * ACC + 38]), KIND_HORNER)
+        horner[p](ctx, arena, o_trace, o_fam, o_acc + k * ACC, o_chals, o_num, o_z + k * N * 16)
+        var got = _down(ctx, arena, o_z + k * N * 16, N * 16)
+        assert_true(got == host_horner[p](c.families, c.shape.accs, k, trace, chals), "R differs from the host for accumulator " + String(k))
+        for x2 in range(h2):
+            ends.append(list_e(got, x2 * h1 + h1 - 1))
+    var w = f_mul(ext_mul[4](list_e(chals, 1), list_e(chals, 2)), E(3))     # 3 delta gamma
+    for x2 in range(h2):
+        assert_true(ext_mul[4](ends[x2], ends[h2 + x2]) == ext_mul[4](w, ends[2 * h2 + x2]), "chain end fails at x2 = " + String(x2))

@@ -3,7 +3,7 @@ over ten columns, two permutation accumulators, and a trace that satisfies them.
 
 from caracal7.core.field import F2, f_add, f_mul
 from caracal7.core.params import Params
-from caracal7.relations.ir import FIX_E, KIND_PERM, KIND_LOOKUP, PUB
+from caracal7.relations.ir import FIX_E, KIND_PERM, KIND_LOOKUP, PUB, CHAL_MUL
 from caracal7.relations.statement import Statement, Layout, Term, BIT, BYTE, GATE_1, GATE_2, restriction_line, chain_values
 from caracal7.workload import Workload
 from caracal7.core.bytes import append_u32, set_u16
@@ -169,4 +169,69 @@ def synthetic_trace[p: Params](seed: Int, with_lookup: Bool = False, with_public
                 t[9 * N + i] = t[N + (SYNTHETIC_PERM * i + 5) % N]                                     # c9 = c1 under the same permutation
             if with_public:
                 t[10 * N + i] = f_mul(c0, SIMD[DType.uint8, 1](synthetic_public_value[p](x1, x2)))[0]
+    return t^
+
+
+# ---- the second Z kind: polynomial-mulmod 5 in miniature ----
+
+comptime HORNER_DEGREE = 8      # a and b carry weights 0..8, c weights 0..16; weight m lives at row h1 - 2 - m (h1 >= 24)
+
+
+@fieldwise_init
+struct SyntheticHorner(Workload, Copyable, Movable):
+    """Per chain, bits a and b and coefficients c = a * b as polynomials, checked as A(gamma) B(gamma) = C(gamma)
+    through three Horner accumulators and one chain-end family; no public inputs."""
+    var seed: Int
+
+    def statement(self) raises -> Statement:
+        return horner_statement()
+
+    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
+        return horner_trace[p](self.seed)
+
+    def public_inputs[p: Params](self) raises -> List[UInt8]:
+        return List[UInt8]()
+
+    @staticmethod
+    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
+        return List[UInt8]()
+
+
+def horner_statement() raises -> Statement:
+    """R_A = gamma A(gamma) ingesting a one row on (the cyclic read k1 = 1); R_B = 3 delta B(gamma) ingesting b with
+    the weight 3 delta; R_C = C(gamma); all with scale gamma, high weight first. The chain-end check
+    R_A R_B - 3 delta gamma R_C = 0 on H2 is ungated: an idle chain is all zero."""
+    var st = Statement()
+    st.col("a", BIT)
+    st.col("b", BIT)
+    st.col("c", BYTE)
+    var dg = st.derived(CHAL_MUL, 1, 2)                          # delta gamma
+    st.horner("ra", [Term(1, st.read("a", k1=1))], scale=2)
+    st.horner("rb", [Term(3, st.read("b"), chal=1)], scale=2)
+    st.horner("rc", [Term(1, st.read("c"))], scale=2)
+    st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb")), Term(-3, st.read("rc"), chal=dg)])
+    return st^
+
+
+def horner_trace[p: Params](seed: Int) -> List[UInt8]:
+    """Columns a, b, c (column, x2, x1): random bits at weights 0..HORNER_DEGREE, c their product's coefficients."""
+    comptime h1 = p.h1()
+    comptime N = p.N()
+    var t = List[UInt8](length=3 * N, fill=0)
+    var s = seed
+    for x2 in range(p.h2()):
+        var a = List[Int](length=HORNER_DEGREE + 1, fill=0)
+        var b = List[Int](length=HORNER_DEGREE + 1, fill=0)
+        for m in range(HORNER_DEGREE + 1):
+            s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+            a[m] = (s >> 8) & 1
+            b[m] = (s >> 9) & 1
+            t[x2 * h1 + h1 - 2 - m] = UInt8(a[m])
+            t[N + x2 * h1 + h1 - 2 - m] = UInt8(b[m])
+        for k in range(2 * HORNER_DEGREE + 1):
+            var c = 0
+            for i in range(HORNER_DEGREE + 1):
+                if k - i >= 0 and k - i <= HORNER_DEGREE:
+                    c += a[i] * b[k - i]
+            t[2 * N + x2 * h1 + h1 - 2 - k] = UInt8(c)
     return t^

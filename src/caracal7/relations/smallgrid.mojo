@@ -17,19 +17,25 @@ its values on G2 in generator order, the proof's clear vector.
 
 The lookup (6.3) needs no term of its own: its chain-end D_end(x2) is the factor kernel's cyclic
 row + 1 read (accumulate.mojo), so its line is the same (W) pair.
+
+Chain-end terms (Shape.ends, END bytes: col_a, col_b, family u16; coef, chal, gate u8): coef chal
+A(e1, X2) [B(e1, X2)] [(X2 - e2)] with A, B Z blocks (their line is zval at the chain's last row, stride
+h1 e), weighted by alpha^family like the (W) pairs by theirs. The mulmod check R_A R_B = R_C is three
+such terms. Degree < 3 h2 as for (W), so the same division into Q3.
 TODO(memory): the memory chain-end rule of 6.4 adds a term to R2 here when a profile has memory.
 """
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_one
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_one
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
 
 comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
-from caracal7.core.bytes import Base, Buf
+from caracal7.core.bytes import Base, Buf, get_u16
+from caracal7.relations.ir import END, NONE
 from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
@@ -110,6 +116,54 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, arena: Arena, tab: Tab
     ctx.enqueue_function[k_polymul](arena.buf, Buf[16](pac), Int32(2 * h2 - 1), Buf[16](n), Int32(h2), Buf[16](p2), grid_dim=ceildiv(3 * h2, B), block_dim=B)
     ctx.enqueue_function[k_q3[p]](arena.buf, Buf[16](p1), Buf[16](p2), e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](q3c), Int32(0 if first else 1),
                                   grid_dim=ceildiv(2 * h2, B), block_dim=B)
+
+
+def k_end_term[p: Params](base: Base, src: Buf[16], n: Int32, e2a: UInt8, e2b: UInt8, gate: Int32, alpha: Buf[16], power: Int32,
+                          chals: Buf[16], chal: Int32, coef: Int32, dst: Buf[16], accumulate: Int32):
+    """q_k += coef chal alpha^power (r_{k + h2} + r_{k + 2 h2}), r = [(X2 - e2)] P with P the n coefficients
+    at src; k < 2 h2."""
+    comptime h2 = p.h2()
+    var k = global_idx.x
+    if k >= 2 * h2:
+        return
+    var kappa = f_mul(ext_pow[4](alpha.load(base, 0), Int(power)), E(UInt8(coef)))
+    if chal != 0:
+        kappa = ext_mul[4](kappa, chals.load(base, Int(chal) - 1))
+    var e2 = ext_embed[4](F2(e2a, e2b))
+    var r = E(0)
+    for m in [k + h2, k + 2 * h2]:
+        var v = src.load(base, m) if m < Int(n) else E(0)
+        if gate != 0:
+            v = f_sub(src.load(base, m - 1) if m - 1 < Int(n) else E(0), ext_mul[4](e2, v))
+        r = f_add(r, v)
+    var q = ext_mul[4](kappa, r)
+    if accumulate != 0:
+        q = f_add(q, dst.load(base, k))
+    dst.store(base, k, q)
+
+
+def small_grid_end[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, zval: Int, columns_w: Int,
+                              ends: Span[UInt8, _], i: Int, lines: Int, pac: Int, alpha: Int, chals: Int, e2: F2, q3c: Int, first: Bool) raises:
+    """Add chain-end term i of `ends` into q3c (coefficients)."""
+    comptime h2 = p.h2()
+    comptime h1 = p.h1()
+    comptime B = BACKEND.block
+    var w = tab.base + tab.winv2
+    var ca = get_u16(ends, i * END)
+    var cb = get_u16(ends, i * END + 2)
+    var line_of = zval + (h1 - 1) * p.e
+    lane_dft[p](ctx, arena, line_of + (ca - columns_w) * p.N(), h1 * p.e, w, h2, h2, lines)
+    var src = lines
+    var n = h2
+    if cb != NONE:
+        lane_dft[p](ctx, arena, line_of + (cb - columns_w) * p.N(), h1 * p.e, w, h2, h2, lines + h2 * p.e)
+        ctx.enqueue_function[k_polymul](arena.buf, Buf[16](lines), Int32(h2), Buf[16](lines + h2 * p.e), Int32(h2), Buf[16](pac),
+                                        grid_dim=ceildiv(2 * h2, B), block_dim=B)
+        src = pac
+        n = 2 * h2 - 1
+    ctx.enqueue_function[k_end_term[p]](arena.buf, Buf[16](src), Int32(n), e2[0], e2[1], Int32(ends[i * END + 8]), Buf[16](alpha),
+                                        Int32(get_u16(ends, i * END + 4)), Buf[16](chals), Int32(ends[i * END + 7]), Int32(ends[i * END + 6]),
+                                        Buf[16](q3c), Int32(0 if first else 1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
 def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, q3c: Int, q3: Int) raises:

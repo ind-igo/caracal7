@@ -559,3 +559,30 @@ per product. The device path keeps the recursive schoolbook until measured (`is_
 
 Verify, Keccak-256, tail levels now ~15 ms of which ~10 ms is the Merkle multiproof: 128 B 75 -> 30 ms,
 1024 B 109 -> 45 ms, 2048 B 120 -> 50 ms. Warm prove unchanged.
+
+## The second Z kind: Horner accumulators and chain-end families (2026-09-08)
+
+The spec's accumulator record `{start, ingest, scale, end}` (statement-layer 2; polynomial-mulmod 5) as
+`KIND_HORNER`: `R(1, X2) = start`, `R(omega1 x1, x2) = scale R + sum coef chal c(omega1^k1 x1, x2)`, a linear
+transition with the axis-1 gate. Decisions:
+
+- **The ingest terms are the transition's own family entries.** `Families.horner` emits `2 e` entries for
+  `R(next)` and `-scale R` and then the ingest entries; the descriptor names the ingest range `(first, count)`.
+  The Z-stage kernel (`k_ingest`) and the residual read the same bytes, so a weight cannot drift between
+  the prover's recurrence and the relation the verifier checks. No second table of weights.
+- **No Z2 for this kind.** Chains restart at `start` (checked from the opening at `(1, z2)`), and chain ends
+  meet in chain-end families. `Shape.products()` counts the grand-product accumulators; Z2 is indexed by
+  product, so a Horner accumulator adds no clear bytes.
+- **Chain-end families are records, not entries.** `Shape.ends` (END bytes: two Z blocks, family, coef, chal,
+  gate) sits next to the (W) pairs on the small grid: `coef chal alpha^family A(e1, X2) [B(e1, X2)] [(X2 - e2)]`,
+  degree < 3 h2 like (W), the same division into Q3. The verifier evaluates them from the openings at
+  `(e1, z2)`. The (W) pairs now take `alpha^family` too (`ACC` grew to 42 bytes with the family index) so the
+  two kinds of term never share a power.
+- **One thread per chain for the Horner scan** (`ponytail:` in accumulate.mojo). h1 steps of one E product
+  each; the segmented affine scan of 10.1 when a client grid measures it.
+- Merged chains (milestone-3-lookup.md) stay deferred: a builder transformation that needs a workload with
+  two lookups to measure.
+
+Synthetic instance `SyntheticHorner`: per chain bits a, b and coefficients c = a b as polynomials, three
+accumulators (one with a shifted ingest, one with a challenge weight), the check `R_A R_B = 3 delta gamma R_C`.
+Reference grid 72 x 32: 156,600 proof bytes at 3 + 48 columns; a wrong coefficient fails the small grid.

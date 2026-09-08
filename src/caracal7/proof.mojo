@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, KIND_LOOKUP, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import append_u32, get_u16, host_base
 
@@ -85,21 +85,22 @@ struct Shape(Writable):
     var columns_p: Int          # public columns: on the LDE buffer after W and Z, never committed (docs/public-columns.md)
     var publics: List[UInt8]    # m per public column (PUB bytes each), part of the artifact
     var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact
+    var ends: List[UInt8]       # chain-end terms on the small grid (END bytes each, smallgrid.mojo), part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
     def __init__[p: Params](out self, columns_w: Int, families: List[UInt8], accs: List[UInt8] = List[UInt8](),
                             tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
                             restrictions: List[UInt8] = List[UInt8](), points: List[UInt8] = List[UInt8](),
-                            chals: List[UInt8] = standard_chals()) raises:
+                            chals: List[UInt8] = standard_chals(), ends: List[UInt8] = List[UInt8]()) raises:
         """The entry count comes from the family table (residual.mojo). `points` is the opening list (an empty
         list means the default, ir.shift_points); it must hold every point of ir.required_points. `chals` is the
         challenge derivation table. A lookup descriptor names its table by index; the table's row width is the
         record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0:
-            raise Error("family, accumulator, public, restriction, point or challenge table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0:
+            raise Error("family, accumulator, public, restriction, point, challenge or chain-end table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
@@ -112,6 +113,7 @@ struct Shape(Writable):
         self.tables = tables.copy()
         self.publics = publics.copy()
         self.restrictions = restrictions.copy()
+        self.ends = ends.copy()
         var opened = self.columns_w + self.columns_z
         if get_u16(self.point_list, 0) != 0 or get_u16(self.point_list, 2) != 0:
             raise Error("opening point 0 must be z")
@@ -165,6 +167,16 @@ struct Shape(Writable):
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
+            if Int(accs[k * ACC + 38]) == KIND_HORNER:   # the ingest range is what the kernel reads: linear W reads inside the chain
+                var first = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
+                var count = Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
+                if count == 0 or first + count > self.entries or Int(accs[k * ACC + 6]) > 1 or Int(accs[k * ACC + 7]) > chal_count(chals):
+                    raise Error("horner descriptor: ingest range inside the family table, start in {0, 1}, scale a stage-1 element")
+                for i in range(first, first + count):
+                    var en = entry(families, i)
+                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.basis != NO_BASIS or en.family != get_u16(accs, k * ACC + 40):
+                        raise Error("horner ingest entries are gated linear reads of witness columns in the accumulator's family")
+                continue
             var w_num = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
             var w_den = Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
             if w_num == 0 or w_num > ACC_W_MAX or w_den == 0 or w_den > ACC_W_MAX:
@@ -184,11 +196,29 @@ struct Shape(Writable):
                     for j in range(w_num):
                         if accs[k * ACC + 6 + 2 * i] == accs[k * ACC + 22 + 2 * j] and accs[k * ACC + 7 + 2 * i] == accs[k * ACC + 23 + 2 * j]:
                             raise Error("lookup record and sorted columns must be distinct")
+        for i in range(len(ends) // END):
+            var ca = get_u16(ends, i * END)
+            var cb = get_u16(ends, i * END + 2)
+            var ok_a = ca >= columns_w and ca < opened and (ca - columns_w) % p.e == 0
+            var ok_b = cb == NONE or (cb >= columns_w and cb < opened and (cb - columns_w) % p.e == 0)
+            if not ok_a or not ok_b or Int(ends[i * END + 6]) >= 127 or Int(ends[i * END + 7]) > chal_count(chals) or Int(ends[i * END + 8]) > 1:
+                raise Error("chain-end term reads Z blocks by their first column, with a canonical coefficient, a stage-1 element, and a gate flag")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
     def accumulators(self) -> Int:
         return len(self.accs) // ACC
+
+    def products(self) -> Int:
+        """Grand-product accumulators (KIND_PERM, KIND_LOOKUP): the ones with a Z2 line in the clear."""
+        var n = 0
+        for k in range(self.accumulators()):
+            n += 0 if Int(self.accs[k * ACC + 38]) == KIND_HORNER else 1
+        return n
+
+    def family_of(self, k: Int) -> Int:
+        """The family index of accumulator k: its alpha power on the small grid."""
+        return get_u16(self.accs, k * ACC + 40)
 
     def chal_count(self) -> Int:
         """Stage-1 elements: the sampled ones and one per derivation row."""
@@ -229,8 +259,8 @@ struct Shape(Writable):
         """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
         opened (three at level 1: W, Z, Q). Mirrors ProofWriter's order exactly."""
         var n = 4 + 4 + public_bytes + 2 * digest
-        if self.accumulators() > 0:                    # Z root, Z2, Q3 exist only with accumulators
-            n += digest + self.accumulators() * p.h2() * p.e + 2 * p.h2() * p.e
+        if self.accumulators() > 0:                    # Z root, Z2 (products only), Q3 exist only with accumulators
+            n += digest + self.products() * p.h2() * p.e + 2 * p.h2() * p.e
         n += self.points * self.columns() * p.e
         for i in range(len(self.tail)):
             n += digest + (self.trees() if i == 0 else 1) * 4 + 9 * p.e
@@ -271,6 +301,8 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.publics.copy())
     append_u32(bytes, len(shape.restrictions))
     bytes.extend(shape.restrictions.copy())
+    append_u32(bytes, len(shape.ends))
+    bytes.extend(shape.ends.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())

@@ -56,6 +56,8 @@ st.col("a0", BIT, group="keccak")              # W column; kinds BIT, LIMB6, BYT
 st.acc("z", KIND_PERM, num=[...], den=[...])   # Z block; KIND_LOOKUP takes table=st.table(rows)
 st.pub("m", m=4)                               # public column, block (d2, h1); d2 = 0 means h2 / m
 st.restrict("s0", FIX_E)                       # a public line on the last chain; count = 0 means h1 coefficients
+st.horner("ra", [Term(1, st.read("a", k1=1))], scale=2, start=0)   # the second Z kind: R(next) = scale R + sum coef chal read; scale, chal are element indices
+st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb")), Term(-1, st.read("rc"))], gated=False)   # a family on H2 over accumulators at (e1, X2)
 var r = st.read("a0", k1=3)                    # cyclic read (omega1^3 x1, x2); k2=1 is the next-chain read
 st.family("chi", [Term(1, r, st.read("a1")), Term(-1, st.read("a2"))], GATE_NONE)
 var el = st.derived(CHAL_MUL, 3, 1)            # a challenge derivation row; the element index for Term.chal
@@ -114,8 +116,8 @@ Tests that need a wrong trace or a wrong advice call the pieces directly.
 | challenge expressions | derivation table on `Shape.chals` (op, a, b rows; `standard_chals` is the two accumulator rows); `k_derive_chals` and `derived_chals` walk it; `chal` is a u8 index into the list | nothing (done 2026-09-07) |
 | opening points from the checks | `Shape.point_list` is an input, hashed; `required_points` is the set it must contain (boundary points only with accumulators); the verifier finds boundary points by lookup | nothing (done 2026-09-07) |
 | public columns, restrictions | planned (`docs/public-columns.md`) | that plan first |
-| accumulator `{start, ingest, scale, end}` | KIND_PERM, KIND_LOOKUP grand products | the second Z kind: a Horner factor kernel, its chain-end rule, its boundary. Later, with mulmod |
-| chain-end families into Q3 | small grid hardwired to accumulator chain ends | later, with the second Z kind |
+| accumulator `{start, ingest, scale, end}` | KIND_HORNER (done 2026-09-08): `horner`, ingest terms are the transition's own entries | nothing |
+| chain-end families into Q3 | `chain_end` terms (Shape.ends) next to the (W) pairs, alpha powers by family index (done 2026-09-08) | nothing |
 | wiring, public factors | absent | later, with ECDSA |
 | memory | absent, `TODO(memory)` slots | later |
 | names, groups, kinds, padding | no IR concept | builder only, no IR change |

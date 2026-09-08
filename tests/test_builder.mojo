@@ -96,6 +96,21 @@ def test_every_check_has_a_failing_case() raises:
     st.family("bad", [Term(1, st.read("nope"))])
     assert_equal(_fails(st^), "unknown column nope")
     st = synthetic_statement()
+    var err = String("")
+    try:
+        st.horner("bad", [Term(1, st.read("c2"), st.read("c3"))], scale=2)
+    except e:
+        err = String(e)
+    assert_equal(err, "horner ingest terms are linear same-chain reads without basis factors: bad")
+    try:
+        st.chain_end("bad", [Term(1, st.read("z0", k1=1))])
+    except e:
+        err = String(e)
+    assert_equal(err, "chain-end terms read accumulators at (e1, X2) with no shift or basis: bad")
+    st = synthetic_statement()
+    st.chain_end("bad", [Term(1, st.read("nope"))])
+    assert_equal(_fails(st^), "unknown accumulator nope")
+    st = synthetic_statement()
     st.restrict("c1", FIX_E, p.h1() + 1)
     assert_equal(_fails(st^), "restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
     st = synthetic_statement()
