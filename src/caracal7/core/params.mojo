@@ -68,7 +68,7 @@ struct Profile(TrivialRegisterPassable, Writable):
 
 
 # The client-side target: 103-bit queries, three-digit tail folds, 2,500 elements in the clear.
-comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=103)   # fold while digits remain: the tensor verifier's clear check costs units x clear length
 
 
 @fieldwise_init

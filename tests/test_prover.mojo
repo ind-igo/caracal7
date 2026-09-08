@@ -5,7 +5,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
+from caracal7.core.params import CLIENT, Params, Profile
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
@@ -17,31 +17,44 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.relations.synthetic import Synthetic
 from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime p = CLIENT.grid(72, 32)
+comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime p = FLAT.grid(72, 32)
 
 
 def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var s = tail_schedule[p]()
-    assert_equal(len(s), 0)          # N = 2304 <= tail_clear_max: y_2 is the clear vector
+    assert_equal(len(s), 0)          # N = 2304 <= FLAT's tail_clear_max: y_2 is the clear vector
     var shape = synthetic_statement(53).compile[p]().take_shape()
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 32 + 48)
+    # CLIENT folds while binary digits remain: 8 -> two folds -> 36 = 9 x 4 in the clear
+    comptime client = CLIENT.grid(72, 32)
+    var f = tail_schedule[client]()
+    assert_equal(len(f), 2)
+    assert_equal(f[0].rows, 288)
+    assert_equal(f[0].L, 9216)
+    assert_equal(f[0].cosets, 2)
+    assert_equal(f[1].rows, 36)
+    assert_equal(f[1].L, 1152)
 
 
 def test_tail_schedule_folds_a_larger_grid() raises:
-    # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32) -> clear
+    # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32)
+    # -> 72 on 2304 -> 9 on 288 -> clear (14 binary digits, four folds, the odd digit 9 plus two binary digits remain)
     comptime big = CLIENT.grid(288, 128)
     var s = tail_schedule[big]()
-    assert_equal(len(s), 2)
+    assert_equal(len(s), 4)
     assert_equal(s[0].rows, 4608)
     assert_equal(s[0].L, 161280)
     assert_equal(s[0].cosets, 1)
     assert_equal(s[1].rows, 576)
     assert_equal(s[1].L, 18432)
     assert_equal(s[1].cosets, 4)
+    assert_equal(s[2].rows, 72)
+    assert_equal(s[3].rows, 9)
     assert_true(s[0].queries >= 100 and s[0].queries <= 115)
     var shape = synthetic_statement(357).compile[big]().take_shape()
-    assert_equal(shape.clear_length, 576)
+    assert_equal(shape.clear_length, 9)
 
 
 def test_tail_schedule_stops_when_binary_digits_run_out() raises:
@@ -304,12 +317,12 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
 
 
 def test_prove_and_verify_with_tail() raises:
-    """288 x 128: two committed tail levels (4608 rows on 161280, 576 rows on 4 x 4608), 576 in the clear."""
+    """288 x 128: four committed tail levels (4608 rows on 161280, 576 on 4 x 4608, 72, 9), 9 in the clear."""
     comptime big = CLIENT.grid(288, 128)
     var ctx = DeviceContext()
     var c = synthetic_statement().compile[big]()
     var shape = synthetic_statement().compile[big]().take_shape()
-    assert_equal(len(shape.tail), 2)
+    assert_equal(len(shape.tail), 4)
     var prover = Prover[big, Blake3](ctx, synthetic_statement().compile[big]().take_shape(), c.families.copy())
     load_trace[big, Blake3](ctx, prover, synthetic_trace[big](1))
     var t0 = perf_counter_ns()
@@ -318,7 +331,7 @@ def test_prove_and_verify_with_tail() raises:
     assert_true(verify[big, Blake3](proof.copy(), shape, List[UInt8](), c.families))
     var t2 = perf_counter_ns()
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
-          " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, direct form)")
+          " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, tensor form)")
     # a flipped byte in the first level's sumcheck messages: after its root and the three level-1 multiproofs
     var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + 2 * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
     for _ in range(3):

@@ -18,9 +18,10 @@ from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
 from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain
-from caracal7.pcs import pack_slot, pack_index, slot_weight, host_table, check_multiproof, distinct_sorted, e_mul_f4, host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
+from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
+from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
 from caracal7.relations import ENTRY, NONE, ACC, KIND_LOOKUP, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
-from caracal7.core.bytes import get_u16, list_e, host_base, Buf
+from caracal7.core.bytes import get_u16, list_e
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
@@ -159,9 +160,13 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         res_off += count * 2
 
     _vmark(profile, "restrictions", tv)
-    # step 7: the tail. The running claim starts as <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}.
+    # step 7: the tail in tensor form (pcs/tensor.mojo). The running claim starts as
+    # <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}; the query is a list of digit products,
+    # folded per level at the sumcheck challenges, and no vector of length N is ever held.
     comptime assert p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
-    var running = List[UInt8](length=p.N() * p.e, fill=0)
+    comptime D = p.a1 + p.a2
+    comptime M = p.m1 * p.m2
+    var units = List[Unit]()
     var running_val = E(0)
     for pt in range(shape.points):
         var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
@@ -169,15 +174,15 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var z1p = point_coord(z1, dj1, d.g1, p.h1())
         var z2p = point_coord(z2, dj2, d.g2, p.h2())
         var gamma = list_e(beta_gamma, shape.columns() + pt)
-        var tab = host_table[p](z1p, z2p, d.rho1, d.rho2)
-        for slot in range(p.N()):
-            _add_e(running, slot, ext_mul[4](gamma, slot_weight[p](slot, host_base(tab), Buf[16](0), 0, d.rho1, d.rho2)))
+        query_units[p](z1p, z2p, gamma, d.rho1, d.rho2, units)
         var claim = E(0)
         for c in range(shape.columns()):
             claim = f_add(claim, ext_mul[4](list_e(beta_gamma, c), _opening[p](openings, shape, pt, c)))
         running_val = f_add(running_val, ext_mul[4](gamma, claim))
-
     _vmark(profile, "running claim", tv)
+
+    var dual = f4_dual()
+    var folded = 0                             # binary digits folded so far
     var y_len = p.N()
     var r_prev = List[UInt8]()                 # r of the last committed level, empty while that is level 1
     var roots = List[List[UInt8]]()
@@ -202,7 +207,19 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         var claim = ext_mul[4](list_e(batch, 0), running_val)
         for k in range(v_count):
             claim = f_add(claim, ext_mul[4](list_e(batch, 1 + k), list_e(v, k)))
-        var w_tilde = _materialize[p](i == 0, running, y_len, batch, prev, count, d.level1 if i == 0 else doms[i - 1])
+        # w~ = batch_0 running + sum_q batch_q g_q, as units
+        var b0 = list_e(batch, 0)
+        for k in range(len(units)):
+            units[k].scalar = ext_mul[4](units[k].scalar, b0)
+        if i == 0:
+            for q in range(count):
+                var weights = InlineArray[E, 4](fill=E(0))
+                for tau in range(4):
+                    weights[tau] = list_e(batch, 1 + 4 * q + tau)
+                consistency_units[p](d.level1.point(prev.positions[q]), weights, dual, units)
+        else:
+            for q in range(count):
+                row_units(doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q), folded, D, M, units)
         var rounds = r.take(9 * p.e)
         var r_l = List[UInt8]()
         for dgt in range(3):
@@ -214,15 +231,17 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             t.absorb(DS_TAIL_ROUND, msg)
             var rd = t.elements(1)
             claim = quadratic_at(rounds, 3 * dgt, list_e(rd, 0))
+            for k in range(len(units)):
+                units[k].fold(folded + dgt, list_e(rd, 0))
             r_l.extend(rd^)
-        running = fold8_host(w_tilde, lvl.rows, r_l)
+        folded += 3
         running_val = claim
         r_prev = r_l^
         y_len = lvl.rows
         roots.append(root^)
         doms.append(RsDomain(lvl.L // lvl.cosets, lvl.cosets))
-
     _vmark(profile, "tail levels", tv)
+
     # the clear vector: consistency against the last committed level, then the evaluation claim directly
     if shape.clear_length != y_len:
         raise Error("shape.clear_length does not match the tail schedule")
@@ -240,10 +259,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             var dom = doms[len(doms) - 1]
             if tail_encode_at(y, y_len, dom.point(last.opened[idx])) != _tail_symbol(last, idx, r_prev):
                 raise Error("consistency fails at an opened position")
-    var lhs = E(0)
-    for slot in range(y_len):
-        lhs = f_add(lhs, ext_mul[4](list_e(running, slot), list_e(y, slot)))
-    if lhs != running_val:
+    if clear_value(units, y, folded, D) != running_val:
         raise Error("evaluation claim fails")
     _vmark(profile, "clear vector", tv)
     return True
@@ -329,55 +345,9 @@ def _tail_symbol(o: Opened, idx: Int, r_prev: Span[UInt8, _]) -> E:
     return acc
 
 
-def _materialize[p: Params](level1: Bool, running: Span[UInt8, _], length: Int, batch: Span[UInt8, _], o: Opened, count: Int, dom: RsDomain) -> List[UInt8]:
-    """w~ = batch_0 running + sum_q batch_q g_q as a vector (tail.mojo's kernels on the host)."""
-    var w = List[UInt8](length=length * p.e, fill=0)
-    var b0 = list_e(batch, 0)
-    for n in range(length):
-        _add_e(w, n, ext_mul[4](b0, list_e(running, n)))
-    if level1:
-        comptime K = p.N() // 4
-        var pw_all = List[UInt8](length=count * K * 4, fill=0)     # pt_q^i for every q and i
-        for q in range(count):
-            var pt = dom.point(o.positions[q])
-            var pw = F4(1, 0, 0, 0)
-            for i in range(K):
-                for c in range(4):
-                    pw_all[(q * K + i) * 4 + c] = pw[c]
-                pw = ext_mul[2](pw, pt)
-        for slot in range(length):
-            var i: Int
-            var j: Int
-            i, j = pack_index[p](slot)
-            var bj = F4(0)
-            bj[j] = 1
-            var acc = E(0)
-            for q in range(count):
-                var at = (q * K + i) * 4
-                var m = ext_mul[2](bj, F4(pw_all[at], pw_all[at + 1], pw_all[at + 2], pw_all[at + 3]))
-                for tau in range(4):
-                    acc = f_add(acc, f_mul(list_e(batch, 1 + 4 * q + tau), E(m[tau])))
-            _add_e(w, slot, acc)
-    else:
-        for q in range(count):
-            var pt = dom.point(o.positions[q])
-            var bq = list_e(batch, 1 + q)
-            var pw = F4(1, 0, 0, 0)
-            for row in range(length):
-                _add_e(w, row, e_mul_f4(bq, pw))
-                pw = ext_mul[2](pw, pt)
-    return w^
-
-
 def _push_e(mut l: List[UInt8], v: E):
     for t in range(16):
         l.append(v[t])
-
-
-def _add_e(mut l: List[UInt8], i: Int, v: E):
-    var s = f_add(list_e(l, i), v)
-    for t in range(16):
-        l[i * 16 + t] = s[t]
 
 
 def encode_at[p: Params](y: Span[UInt8, _], pt: F4) -> InlineArray[E, 4]:

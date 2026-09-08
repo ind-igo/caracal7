@@ -518,3 +518,28 @@ residual at z 11, small grid 3, restrictions 0, running claim 999, tail levels 3
 128 B the same two items are 67 and 0 of 95 ms. The verifier is the direct form: `w_z` materialized as an
 N-vector per point (`slot_weight`, O(P N)) and folded as a vector per level. The twelve-term tensor form
 of spec 9.1 (the ponytail ceiling noted at the openings decision) is the fix.
+
+## Verifier tail in tensor form (2026-09-08)
+
+The direct form materialized `w_z` per point as an N-vector (`slot_weight`, O(P N)) and folded vectors
+per level: 1.4 s of the 1.5 s verify at Keccak-2048. `pcs/tensor.mojo` is the spec's form (9.1, paper
+6.6): per odd index r, every batched functional is a sum of products over the binary slot digits, one
+`Unit` each (r, a scalar, a factor pair per digit). Sixteen units per point and r reproduce
+`slot_weight` once the slot cases are split (Mon I + Par J on x1' != 0 with Par_l = K_l q_l^x_l plus a
+delta at x_l = 0; the slab x1' = 0 subtracted and rebuilt from its four cases); the level-1 consistency
+rows use the trace form of the coordinate functional, sum_tau beta_tau coord_tau(V) = sum_j mu_j
+sigma_j(V) over the four conjugates of F4, so they are four plain products per position and r; tail rows
+are one. A fold multiplies every scalar by (1 - rho) f(0) + rho f(1); the clear check sums the units
+against the clear vector. `test_tensor` checks the units against `slot_weight`, the coordinate
+functionals, and `fold8_host` on two grids. The clear check costs units x clear length, so CLIENT now
+folds while binary digits remain (`tail_clear_max = 0`; the reference grid in test_prover keeps a flat
+profile for its byte-offset tests). ponytail: host `ext_mul[4]` is the recursive schoolbook (625 base
+products, ~0.3 us); a wide-SIMD E product is the next verifier lever.
+
+Measured (`bench_keccak`, profile on): verify 2048 B 1,422 -> 120 ms (residual 10, running claim 18, tail
+levels 68, clear 5); 1024 B 922 -> 109; 128 B 95 -> 75. Warm prove unchanged (545 ms; the two extra
+levels are ~15 ms). Proof 327 -> 357 KB at 2048 B and 234 -> 271 KB at 128 B: each extra level is a
+108-row opening plus its multiproof, ~15 KB. Cold prove 546 ms -> 6.3 s at 2048 B: the small levels
+instantiate encoder kernels for new domains, compiled at first use (a one-time cost per process; the
+128 B grid, whose domains were already in use, is unchanged). Of the tail levels, the Merkle
+multiproofs are ~10 ms; the rest is unit folding, ~100K host E products.
