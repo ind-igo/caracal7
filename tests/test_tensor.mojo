@@ -13,6 +13,7 @@ from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units,
 
 comptime p = CLIENT.grid(72, 32)      # a1 = 3, m1 = 9, a2 = 5, m2 = 1
 comptime q = CLIENT.grid(64, 24)      # a1 = 6, m1 = 1, a2 = 3, m2 = 3
+comptime b = CLIENT.grid(24, 24)      # both odd parts: m1 = m2 = 3
 
 
 def _e(seed: Int) -> E:
@@ -52,6 +53,8 @@ def _check_query[pp: Params](z1: E, z2: E) raises:
 def test_query_units_match_slot_weight() raises:
     _check_query[p](_e(1), _e(2))
     _check_query[q](_e(3), _e(4))
+    _check_query[b](_e(7), _e(8))
+    _check_query[b](E(0), _e(8))      # a zero coordinate: ext_inv0 keeps every product right
 
 
 def test_trace_form_gives_the_coordinates() raises:
@@ -96,6 +99,7 @@ def _check_consistency[pp: Params]() raises:
 def test_consistency_units_match_the_coordinate_functionals() raises:
     _check_consistency[p]()
     _check_consistency[q]()
+    _check_consistency[b]()
 
 
 def test_row_units_are_powers() raises:

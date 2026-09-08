@@ -24,7 +24,7 @@ struct Params:
     comptime m_cosets: Int   # 1, 2, or 4 (9.1)
     comptime leaf_bytes: Int # 1,024, one Blake3 chunk
     comptime tail_digits: Int    # 3 per level (9.3)
-    comptime tail_clear_max: Int # ~2,500 E elements (9.3)
+    comptime tail_clear_max: Int # 0: fold while binary digits remain (the tensor verifier's clear check)
 ```
 
 Derived at comptime: `h1`, `h2`, `N = h1 * h2`, `L = m_cosets * L0`, the rate, the query count `|S|` from the formula of section 9, `n_cw`. `P` (opening points) and the column count are runtime values of the IR program, not parameters.

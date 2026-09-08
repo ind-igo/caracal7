@@ -543,3 +543,9 @@ levels are ~15 ms). Proof 327 -> 357 KB at 2048 B and 234 -> 271 KB at 128 B: ea
 instantiate encoder kernels for new domains, compiled at first use (a one-time cost per process; the
 128 B grid, whose domains were already in use, is unchanged). Of the tail levels, the Merkle
 multiproofs are ~10 ms; the rest is unit folding, ~100K host E products.
+
+Audit (Opus, Codex): the decomposition, dual basis, fold order, and checks verified; fixed: `ext_inv0` for
+the point coordinates (a zero coordinate now yields the right products instead of raising), a test grid
+with both odd parts (24 x 24) and a zero-coordinate case, the design.md field comment. Deferred, marked
+in tensor.mojo: the unit count and factor storage scale with M = m1 m2 (the 2016 x 576 client grid has
+M = 567, ~440K units); share factor lists across r and widen the host E product when that grid is built.

@@ -9,9 +9,12 @@ A `Unit` is one product: its r, a scalar, and a factor pair per binary digit. Fo
 multiplies the scalar by (1 - rho) f(0) + rho f(1) (the fold weight of tail.mojo); the odd digit is
 never folded, so the clear check sums the units per r against the clear vector. The verifier never
 holds a vector of length N.
+ponytail: units are per odd index, so their count and their factor lists scale with M = m1 m2 (the client
+grid 2016 x 576 has M = 567: ~440K units, ~90 MB); share factor lists between units that differ only by
+an r scalar, and widen the host E product, when that grid is measured.
 """
 
-from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv, ext_embed, ext_one
+from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
 from caracal7.core.params import Params
 from caracal7.pcs.open import host_table
 from caracal7.core.bytes import list_e
@@ -64,7 +67,7 @@ def _scal(x: UInt8, n: Int) -> UInt8:
     return f_pow(SIMD[DType.uint8, 1](x), n)[0]
 
 
-def query_units[p: Params](z1: E, z2: E, weight: E, rho1: UInt8, rho2: UInt8, mut out: List[Unit]) raises:
+def query_units[p: Params](z1: E, z2: E, weight: E, rho1: UInt8, rho2: UInt8, mut out: List[Unit]):
     """weight * w_z as units (spec 9.1, the slot cases of `slot_weight`). Digits: t, the a1 - 1 bits of
     x1', the a2 bits of x2 (the top one last). On x1' != 0 the weight is Mon (x) I + Par (x, r) J with
     I = (1, i), J = (1, -i) on t; Par_l(x_l) = K_l q_l^(x_l) for x_l != 0 and 1 at x_l = 0, so Par is a
@@ -79,8 +82,8 @@ def query_units[p: Params](z1: E, z2: E, weight: E, rho1: UInt8, rho2: UInt8, mu
     var im = E(0)
     im[1] = 1
     var nim = _neg(im)
-    var z1inv = ext_inv[4](z1)
-    var z2inv = ext_inv[4](z2)
+    var z1inv = ext_inv0[4](z1)                  # 0 -> 0: every use of z^-1 multiplies a factor that is 0 when z is
+    var z2inv = ext_inv0[4](z2)
     var z1a = ext_pow[4](z1, A1)
     var z2a = ext_pow[4](z2, A2)
     var z1h = ext_pow[4](z1, H1)
