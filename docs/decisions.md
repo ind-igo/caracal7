@@ -480,3 +480,12 @@ Budget at 2048 B now: `open` 129, `encode W` 82, `lde` 81, `residual` 77, `encod
 inside the encoders (20 ms, the dense O(h2^2) axis) and the odd stages (27 ms). ponytail: the gather
 fuses into the first radix step (one pass fewer, about 10 ms); `idft2` and `lde` share the dense-axis
 fix (mixed-radix stages, spec 10.2) when they are the largest items.
+
+## Host setup measured (2026-09-08)
+
+`bench_keccak` now times the setup steps before the first prove. At 2048 B (64 x 384): statement
+compile 0, trace 3, public blocks 23,034, advice 0, prover construction (arena, tables) 325, loads 15,
+cold prove 580 ms, warm prove 503 ms, verify 25,014 ms. At 128 B: public blocks 161 ms against a 44 ms
+prove. The end-to-end prove is the public blocks: 17 host interpolations of O(N (h1 + h2)) each, run again
+by the verifier. Everything else on the host is under a second, and the prover construction is per shape.
+Next: the public blocks in factored form on both sides.
