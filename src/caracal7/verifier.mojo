@@ -10,6 +10,8 @@ vector, three sumcheck checks, and the fold of the query; then the clear vector,
 at the last opened positions, and <y_ell, w~_ell>. ponytail: O(|y_l|) host work per level; the
 tensor form of 9.3 when a verifier budget exists."""
 
+from std.time import perf_counter_ns
+
 from caracal7.core.params import Params
 from caracal7.core.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
@@ -22,7 +24,7 @@ from caracal7.core.bytes import get_u16, list_e, host_base, Buf
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
-                               public: List[UInt8] = List[UInt8]()) raises -> Bool:
+                               public: List[UInt8] = List[UInt8](), profile: Bool = False) raises -> Bool:
     """`public` is the data both sides derive from the public inputs (docs/public-columns.md): one period of
     values of every public column, then the polynomial of every restriction; the verifier never hashes it.
     ponytail: soundness rests on the caller deriving `public` from `public_inputs` (which the prefix hashes);
@@ -42,6 +44,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
 
+    var tv = perf_counter_ns()
     # step 1: header, prefix, W root, stage-1 challenges
     if r.u32() != Int(VERSION):
         raise Error("bad version")
@@ -83,6 +86,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var at_e1 = point_index(pts, FIX_E, 0)               # (e1, z2)
     var at_next = point_index(pts, FIX_ONE, 2)           # (1, omega2 z2)
     var at_end = point_index(pts, FIX_E, FIX_E)          # (e1, e2)
+    _vmark(profile, "transcript and openings", tv)
     # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     # (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2).
     # The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
@@ -103,6 +107,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             raise Error("accumulator grand product is not 1")
         # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
 
+    _vmark(profile, "boundaries", tv)
     # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
     var d = Domains.__init__[p]()
     var z1 = list_e(z, 0)
@@ -114,6 +119,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         reads.append(preads.read(openings, point_index(pts, en.dj1_a, en.dj2_a), en.col_a))
         reads.append(E(0) if en.col_b == NONE else preads.read(openings, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
 
+    _vmark(profile, "residual at z", tv)
     # step 3, the small grid (spec 7.4): R2(z2) = Q3(z2) (z2^h2 - 1), R2 from Z2 interpolated at z2 and
     # omega2 z2, Q3 interpolated on G2, and the openings at (e1, z2) (point 3)
     if shape.accumulators() > 0:
@@ -141,6 +147,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if rz != rhs:
         raise Error("residual identity fails at z")
 
+    _vmark(profile, "small grid", tv)
     # restrictions (docs/public-columns.md): the opening of the column on its line equals the public polynomial at z1
     var res_off = value_bytes(shape.publics, p.h1(), p.h2())
     for i in range(len(shape.restrictions) // RES):
@@ -151,6 +158,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             raise Error("restriction fails")
         res_off += count * 2
 
+    _vmark(profile, "restrictions", tv)
     # step 7: the tail. The running claim starts as <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}.
     comptime assert p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
     var running = List[UInt8](length=p.N() * p.e, fill=0)
@@ -169,6 +177,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
             claim = f_add(claim, ext_mul[4](list_e(beta_gamma, c), _opening[p](openings, shape, pt, c)))
         running_val = f_add(running_val, ext_mul[4](gamma, claim))
 
+    _vmark(profile, "running claim", tv)
     var y_len = p.N()
     var r_prev = List[UInt8]()                 # r of the last committed level, empty while that is level 1
     var roots = List[List[UInt8]]()
@@ -213,6 +222,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         roots.append(root^)
         doms.append(RsDomain(lvl.L // lvl.cosets, lvl.cosets))
 
+    _vmark(profile, "tail levels", tv)
     # the clear vector: consistency against the last committed level, then the evaluation claim directly
     if shape.clear_length != y_len:
         raise Error("shape.clear_length does not match the tail schedule")
@@ -235,7 +245,16 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         lhs = f_add(lhs, ext_mul[4](list_e(running, slot), list_e(y, slot)))
     if lhs != running_val:
         raise Error("evaluation claim fails")
+    _vmark(profile, "clear vector", tv)
     return True
+
+
+def _vmark(profile: Bool, name: String, mut t0: Int):
+    """With profile on: print the ms since the last mark. Off: nothing."""
+    if profile:
+        var now = perf_counter_ns()
+        print("  verify ", (now - t0) // 1000000, " ms  ", name)
+        t0 = now
 
 
 @fieldwise_init

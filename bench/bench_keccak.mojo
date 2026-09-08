@@ -61,7 +61,7 @@ def run[p: Params](bytes: Int) raises:
     var warm = (perf_counter_ns() - t0) // 1000000
     _ = prover.prove(ctx, inputs, profile=True)
     t0 = perf_counter_ns()
-    var ok = verify_workload[p, Blake3, Keccak](proof.copy(), w, inputs)
+    var ok = verify_workload[p, Blake3, Keccak](proof.copy(), w, inputs, profile=True)
     var vms = (perf_counter_ns() - t0) // 1000000
     print("keccak-256 of ", bytes, " B  ", p, " proof ", len(proof), " B, warm prove ", warm, " ms, verify ", vms, " ms ", ok)
     for i in range(len(prover.profile_names)):

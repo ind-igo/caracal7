@@ -47,7 +47,7 @@ comptime FIX_E = 65535      # a point coordinate fixed at e_l
 
 
 comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
-comptime PUB = 2        # public column spec (docs/public-columns.md): m u16; the column is a polynomial in (X1, X2^m), its public data the h1 x (h2 / m) values of one period, row x2 then x1
+comptime PUB = 2        # public column spec (docs/public-columns.md): m u16; the column is a polynomial in (X1, X2^m), its public data the (h2 / m, h1) values of one period, x2 major
 comptime RES = 6        # restriction: column u16, axis-2 coordinate u16 (FIX_ONE or FIX_E), coefficient count u16 (the line has degree < count); opened at (z1, coordinate)
 
 

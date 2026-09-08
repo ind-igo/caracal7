@@ -512,3 +512,9 @@ mechanism (docs/public-columns.md).
 Measured at 2048 B (64 x 384): public values 10 ms (was 23,034), loads 23 ms (the idft2 on 17 columns
 included, was 15), cold prove 546, warm prove 508, verify 1,493 ms (was 25,014). The verify is now the
 openings and tail checks; the public reads are one column-point each at z.
+
+Verify profiled (`verify(profile=True)`, `bench_keccak`) at 2048 B: transcript and openings 0, boundaries 0,
+residual at z 11, small grid 3, restrictions 0, running claim 999, tail levels 391, clear vector 5 ms. At
+128 B the same two items are 67 and 0 of 95 ms. The verifier is the direct form: `w_z` materialized as an
+N-vector per point (`slot_weight`, O(P N)) and folded as a vector per level. The twelve-term tensor form
+of spec 9.1 (the ponytail ceiling noted at the openings decision) is the fix.

@@ -33,7 +33,7 @@ trait Workload:
 
     @staticmethod
     def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
-        """One period of values per public column (h1 x h2 / m), then every restriction line (`restriction_line`), from the
+        """One period of values per public column ((h2 / m, h1) F bytes), then every restriction line (`restriction_line`), from the
         public inputs alone."""
         ...
 
@@ -56,8 +56,8 @@ def prove_workload[p: Params, H: Hash, W: Workload](ctx: DeviceContext, w: W) ra
     return prover.prove(ctx, inputs)
 
 
-def verify_workload[p: Params, H: Hash, W: Workload](var proof: List[UInt8], w: W, public_inputs: List[UInt8]) raises -> Bool:
+def verify_workload[p: Params, H: Hash, W: Workload](var proof: List[UInt8], w: W, public_inputs: List[UInt8], profile: Bool = False) raises -> Bool:
     var c = w.statement().compile[p]()
     var data = W.public_data[p](c.layout, public_inputs)
     var families = c.families.copy()
-    return verify[p, H](proof^, c.shape, public_inputs, families, data)
+    return verify[p, H](proof^, c.shape, public_inputs, families, data, profile)

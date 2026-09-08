@@ -475,6 +475,9 @@ def load_public[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H]
     tiled to H and transformed to the coefficients the LDE reads with the trace's `idft2` (ltmp as scratch)."""
     if len(values) != value_bytes(prover.shape.publics, p.h1(), p.h2()):
         raise Error("public values have the wrong size")
+    for v in values:
+        if v >= 127:
+            raise Error("public values are F bytes below 127")
     _upload(ctx, prover.arena, prover.layout.pub_vals, tile_values(prover.shape.publics, values, p.h1(), p.h2()))
     if prover.shape.columns_p > 0:
         idft2[p](ctx, prover.arena, prover.layout.pub_vals, prover.layout.ltmp, prover.layout.pub_coeff, prover.shape.columns_p, prover.layout.tables)
