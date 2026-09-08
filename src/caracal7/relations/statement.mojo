@@ -384,6 +384,8 @@ struct Statement(Movable):
                 var a = self.accs[it[1]].copy()
                 var ingest = List[Tuple[Int, Int, Int, Int]]()
                 for t in a.ingest:
+                    if t.a.k1 < 0 or t.a.k1 >= p.h1():
+                        raise Error("read shift: k1 in [0, h1), k2 in {0, 1}")
                     var c = self._wcol(index, t.a.col)
                     touched[c] = True
                     read[c] = True

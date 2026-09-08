@@ -174,7 +174,7 @@ struct Shape(Writable):
                     raise Error("horner descriptor: ingest range inside the family table, start in {0, 1}, scale a stage-1 element")
                 for i in range(first, first + count):
                     var en = entry(families, i)
-                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.basis != NO_BASIS or en.family != get_u16(accs, k * ACC + 40):
+                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.dj1_a % 2 != 0 or en.basis != NO_BASIS or en.basis2 != NO_BASIS or en.family != get_u16(accs, k * ACC + 40):
                         raise Error("horner ingest entries are gated linear reads of witness columns in the accumulator's family")
                 continue
             var w_num = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
@@ -203,6 +203,19 @@ struct Shape(Writable):
             var ok_b = cb == NONE or (cb >= columns_w and cb < opened and (cb - columns_w) % p.e == 0)
             if not ok_a or not ok_b or Int(ends[i * END + 6]) >= 127 or Int(ends[i * END + 7]) > chal_count(chals) or Int(ends[i * END + 8]) > 1:
                 raise Error("chain-end term reads Z blocks by their first column, with a canonical coefficient, a stage-1 element, and a gate flag")
+            for k in range(len(accs) // ACC):              # R2 sums every term with alpha^family: a (W) pair and a chain-end family never share one
+                if Int(accs[k * ACC + 38]) != KIND_HORNER and get_u16(accs, k * ACC + 40) == get_u16(ends, i * END + 4):
+                    raise Error("chain-end family index collides with a grand-product accumulator's")
+        var products = 0
+        for k in range(len(accs) // ACC):
+            if Int(accs[k * ACC + 38]) == KIND_HORNER:
+                continue
+            products += 1
+            for j in range(k):                             # one alpha power per (W) pair
+                if Int(accs[j * ACC + 38]) != KIND_HORNER and get_u16(accs, j * ACC + 40) == get_u16(accs, k * ACC + 40):
+                    raise Error("grand-product accumulators must carry distinct family indices")
+        if len(accs) > 0 and products == 0 and len(ends) == 0:
+            raise Error("horner accumulators need a chain-end family (nothing else writes Q3)")
         self.tail = tail_schedule[p]()
         self.clear_length = p.N() if len(self.tail) == 0 else self.tail[len(self.tail) - 1].rows
 
