@@ -786,3 +786,24 @@ is exact), then `cinv2` to coefficients and `wfwd2` to the clear vector on G2. T
 `cinv2` (4 MB at h2 = 576). Small grid 261 -> 22 ms, warm prove 1,985 -> 1,733 ms. The small-grid test
 now makes its lines satisfy `b d = a c n` on H2, since the device no longer computes the quotient of the
 vanishing part of an arbitrary R2.
+
+## Host arithmetic on limbs; the dual-product MUL op rejected (2026-09-09)
+
+The prover's wall time was 2.5 s of trace, 0.7 s of public data and 1.7 s of proving, and the verifier
+spent 0.7 of its 0.9 s in the same public-data walk: every curve operation ran Fermat inversions on
+`Big` (32-bit limbs, binary long division per product), and the trace generator looked every cell's
+column up by name. Now `workloads/fp.mojo` holds secp256k1's field on four 64-bit limbs (UInt128
+products, the `2^256 = 2^32 + 977` fold twice, one subtraction); `Curve.fmul`, `fpow`, `finv` convert
+at the call, so `Point` and the workloads stay on `Big`. `Big.divmod` shifts and subtracts from the
+quotient's top bit (five steps for the add lanes' `q`), `inv_mod` is the binary extended Euclid.
+`circuit_trace` precomputes the column indices per lane and gets each piece's coefficients by walking the
+set bits of `a` against the set bits of `b`, keeping the pile per slot as it writes. Trace 2,492 -> 165
+ms, public data 678 -> 49 ms, verify 928 -> 309 ms; the GPU profile is unchanged.
+
+The dual-product MUL op (`a b + c d = s`, docs/ecdsa.md section 6) was the planned next circuit step:
+it makes a doubling 3 MUL, `h2 = 448`, and the add lanes drop to 516 ops. It is rejected: `domain_for`
+keeps the 4 cosets of 161,280 down to 10,080 rows per column, so the RS domain, the Merkle work and the
+tail do not move at `h2 = 448`, while the second operand set (pieces, `b'`, its own coefficient set, three
+accumulators) adds about 150 columns: the encoder, the openings and the proof grow by 30% against a 22%
+smaller grid. The remaining prover budget is the RS stages (600 ms), the residual gather (430) and the
+openings (200); the next step is there, or an MMA backend for all GEMM-shaped stages.

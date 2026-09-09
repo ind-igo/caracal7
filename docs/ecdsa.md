@@ -133,8 +133,15 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 
 ## 6. Open
 
-- A MUL op certifying `a b - c d = 0` makes a doubling 3 MUL: `378 + 68 = 446` MUL fits `h2 = 448`, and
-  `N / 4 = 16,128` symbols then take 2 cosets (RS domain halved). Costs a second operand set of columns.
+- A MUL op certifying `a b + c d = s mod p` (the second product with `d = p - 1` turns an EQ into a
+  product with an output: a doubling is 3 MUL and 3 add-lane ops, an addition 3 MUL and 6) would make
+  446 MUL, `h2 = 448`, 516 add-lane ops. Rejected on 2026-09-09: the RS domain does not shrink with it.
+  `domain_for` needs `L >= 32 rows`, and `N / 4 = 16,128` rows still take the 4 cosets of 161,280 (2
+  cosets would be rate 1/20; the domain halves only below 10,080 rows, `h2 <= 280`). Against a 22%
+  smaller grid the second operand set costs about 100 W columns (pieces, `b'`, a second coefficient
+  set: a shared set would put coefficients above 95, outside the certificate's range in F_127) and 3
+  accumulators (48 Z columns), so the RS stages, the openings and the proof grow by about 30%. It flips
+  if the rate rule ever accepts 1/20.
 - secp256r1: `a = -3` (one more op per doubling), no endomorphism (256 doublings), a different fold.
 - The hash-to-curve for `B`: which hash, and whether the encoding of `(Q, r, s, e)` it takes is the
   public-input byte string as is.
@@ -156,10 +163,16 @@ Deviations from sections 4 and 5:
   1,512 ops on 572 chains of the `144 x 576` grid (each public point's coordinate is a factor at every
   operand that reads it, `x2` twice per addition). `q` is `b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`.
 - No circuit header: `mulmod_statement(pin=False)`. The public inputs are the 160 bytes.
-- The four digit tables (66 multiples each of `Q`, `phi(Q)`, `G`, `phi(G)`) are built per signature; with
-  the 130 doublings for the blinding constants a live walk is about 500 affine operations at a few
-  milliseconds each. The `G` tables could be constants.
+- The four digit tables (66 multiples each of `Q`, `phi(Q)`, `G`, `phi(G)`) are built per signature. The
+  field is `workloads/fp.mojo` (four 64-bit limbs, UInt128 products, the fold twice, Fermat inversion);
+  `Curve` converts from `Big` at each field operation, so a curve operation is about 50 us and a live
+  walk (the tables, the 130 doublings for the blinding constants, the chain) about 45 ms. `Big` keeps
+  the scalars, with a shift-subtract division and a binary extended Euclid for `s^-1`. The `G` tables
+  could be constants.
+- The trace generator addresses columns by precomputed indices and gets the coefficient piles from the
+  set bits of both operands: 165 ms for the 1,512 ops (was 2.5 s through string-keyed lookups).
 
 Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 576)`, `e = 16`: proof 631,856 bytes; warm prove
-2,794 ms, verify 922 ms (before Straus-Shamir on the `144 x 896` grid: 683,392 bytes, 4,503 ms, 1,358 ms);
+1,733 ms, trace 165 ms, public data 49 ms, verify 309 ms (host work 47 of it; the tail levels about 170). Before
+Straus-Shamir on the `144 x 896` grid: 683,392 bytes, 4,503 ms, 1,358 ms;
 the prover round trip test (two live walks, prove, verify) 10.2 s.
