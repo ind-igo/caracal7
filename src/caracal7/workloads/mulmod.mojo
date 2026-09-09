@@ -808,16 +808,24 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         var bb = vals[mul_at[x2]].y.bits(WIDTH) if live else List[Int]()
         _put(trace, N, base, ca, ab, True)
         _put(trace, N, base, cb, bb, False)
+        var ones_b = List[Int]()
+        for j in range(len(bb)):
+            if bb[j] != 0:
+                ones_b.append(j)
+        var pile = List[Int](length=SLOTS + CBITS + Q, fill=0)     # certified bits stored per slot
         for t in range(PIECES):
             var lo = t * PIECE
             var hi = min((t + 1) * PIECE, len(ab)) if t < PIECES - 1 else len(ab)
-            for w in range(lo, lo + PIECE + len(bb) + Q):
-                var c = 0
-                for i in range(lo, min(hi, w + 1)):
-                    if ab[i] != 0 and w - i < len(bb):
-                        c += bb[w - i]
+            var coef = List[Int](length=PIECE + len(bb) + Q, fill=0)   # the coefficient at weight lo + k
+            for i in range(lo, hi):
+                if ab[i] != 0:
+                    for j in ones_b:
+                        coef[i - lo + j] += 1
+            for k in range(len(coef)):
+                var c = coef[k]
                 if c == 0:
                     continue
+                var w = lo + k
                 var b6 = 1 if c >= 64 else 0
                 var b5 = 1 if c >= 32 and c < 64 else 0
                 var v = c - 64 * b6 - 32 * b5
@@ -825,6 +833,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
                     var bit = b6 if m == 6 else (b5 if m == 5 else (v >> m) & 1)
                     if bit == 1:
                         trace[cc[(t * CBITS + m) * Q + (w + m) % Q] * N + base + _row(w + m)] = 1
+                        pile[w + m] += 1
         var carry = 0
         if x2 == cheat:
             var off = base + h1 - 1
@@ -833,11 +842,8 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
             trace[cy[Q - 1] * N + off] = 1
             carry = 1
         for w in range(SLOTS):
-            var s = carry
+            var s = carry + pile[w]
             var at_w = base + _row(w)
-            for t in range(PIECES):
-                for m in range(CBITS):
-                    s += Int(trace[cc[(t * CBITS + m) * Q + w % Q] * N + at_w])
             trace[cr[w % Q] * N + at_w] = UInt8(s & 1)
             carry = s >> 1
             for k in range(CARRY):

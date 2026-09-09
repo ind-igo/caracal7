@@ -253,15 +253,16 @@ struct Big(Copyable, Movable, Equatable, Writable):
         return Big(False, v^)
 
     def divmod(self, m: Big) raises -> Tuple[Big, Big]:
-        """Floor division: self = q m + r with 0 <= r < m, for m > 0."""
+        """Floor division: self = q m + r with 0 <= r < m, for m > 0. Shift-and-subtract from the top bit of
+        the quotient down: bit_length(self) - bit_length(m) + 1 steps."""
         if m.neg or m.is_zero():
             raise Error("division by a non-positive modulus")
         var q = List[UInt32](length=len(self.mag), fill=0)
-        var r = Big()
-        for i in range(self.bit_length() - 1, -1, -1):
-            r = r.shl(1) + Big(self.bit(i))
-            if Big._cmp_mag(r.mag, m.mag) >= 0:
-                r = Big(False, Big._sub_mag(r.mag, m.mag))
+        var r = Big(False, self.mag.copy())
+        for i in range(self.bit_length() - m.bit_length(), -1, -1):
+            var s = m.shl(i)
+            if Big._cmp_mag(r.mag, s.mag) >= 0:
+                r = Big(False, Big._sub_mag(r.mag, s.mag))
                 q[i // 32] |= UInt32(1) << UInt32(i % 32)
         var quo = Big(False, q^)
         if self.neg and not r.is_zero():
@@ -286,7 +287,28 @@ struct Big(Copyable, Movable, Equatable, Writable):
         return r^
 
     def inv_mod(self, m: Big) raises -> Big:
-        """For prime m."""
-        if self.mod(m).is_zero():
+        """For an odd prime m: the binary extended Euclid, the cofactors kept in [0, m)."""
+        var u = self.mod(m)
+        if u.is_zero():
             raise Error("zero has no inverse")
-        return self.pow_mod(m - Big(2), m)
+        var v = m.copy()
+        var x1 = Big(1)
+        var x2 = Big()
+        while u != Big(1) and v != Big(1):
+            while u.bit(0) == 0:
+                u = u.shr(1)
+                x1 = (x1 + m if x1.bit(0) == 1 else x1.copy()).shr(1)
+            while v.bit(0) == 0:
+                v = v.shr(1)
+                x2 = (x2 + m if x2.bit(0) == 1 else x2.copy()).shr(1)
+            if u >= v:
+                u = u - v
+                x1 = x1 - x2
+                if x1.neg:
+                    x1 = x1 + m
+            else:
+                v = v - u
+                x2 = x2 - x1
+                if x2.neg:
+                    x2 = x2 + m
+        return x1^ if u == Big(1) else x2^
