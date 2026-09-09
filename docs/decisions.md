@@ -690,3 +690,17 @@ and checked by the verifier (`Statement.pin`). And the plain fingerprint `ha` bi
 pieces of `a`, so a prover could pile every bit into one piece and reach a convolution coefficient of 127,
 zero in F_127; three public piece selectors (`s{t}`, 88-bit row-aligned pieces) force each piece's columns
 to its rows. The public factor on `ra` had pinned the pieces before wiring.
+
+## Add lanes: signed three-operand ops, masks, per-chain modulus (2026-09-09)
+
+The ECDSA design (`docs/ecdsa.md`) needs per addition eight add-lane ops of the shapes `x - y`,
+`x - y - z`, `x = y`, `x < p`, `x >= 1`, and two of them mod `n`. The single addition chain kind becomes
+two add lanes per chain, each `x + sy y + sz z = s + q m` with the signs as public columns multiplied
+into the family, `q` four signed bits in `[-2, 7]`, the carry four signed bits, and two per-chain masks:
+`qz` (q forced to zero: the canonical check and the guard, whose second operand the host solves for) and
+`sm` (s forced to zero: equality). The modulus bits `pb{j}` become per-chain blocks, so a chain's add ops
+share one modulus (`p` or `n`) and placement groups them. The circuit is a list of ops rather than chains;
+placement of ops onto chains and lanes is automatic, and the circuit header carries 13 bytes per op. Host
+arithmetic moves from bit lists to a small big-integer type (`relations/bigint.mojo`), which the ECDSA
+host module needs anyway. A test with a negative quotient caught the fourth `q` bit shifted three slots
+instead of one in both the family and the trace writer; the signed test now forces `q = -2`.
