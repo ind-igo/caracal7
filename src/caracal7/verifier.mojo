@@ -20,7 +20,7 @@ from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -33,7 +33,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if len(families) != shape.entries * ENTRY:
         raise Error("family table does not match the shape")
     # Shape validated its own family table; bind this one to the list and the challenge count before any index is used
-    var need = required_points(families, shape.restrictions, shape.accumulators() > 0)
+    var need = required_points(families, shape.restrictions, shape.accumulators() > 0, shape.zeros)
     for i in range(len(need) // POINT):
         if point_index(shape.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
             raise Error("family table reads a point outside the shape's opening list")
@@ -118,6 +118,11 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         elif lhs != _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
         # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
+    # zero rows (polynomial-mulmod 4): the column is zero on row 0 or the last row of every chain, so its
+    # opening at (coordinate, z2), a polynomial in X2 of degree < h2, vanishes at random z2
+    for i in range(len(shape.zeros) // ZERO):
+        if _opening[p](openings, shape, point_index(pts, get_u16(shape.zeros, i * ZERO + 2), 0), get_u16(shape.zeros, i * ZERO)) != E(0):
+            raise Error("chain row is not zero")
     # the wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
     # factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)
     var kappa = f2_primitive()

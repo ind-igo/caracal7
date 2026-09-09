@@ -622,3 +622,28 @@ value; one product, two slots, one public factor. Its `full` variant adds a perm
 line before the wiring lines) and a third slot in a one-slot second product with cycles across the two. A
 moved bit keeps every family and fails the joint boundary. Shape rejects a sigma that is not a permutation
 of the slot and public factor ids, and a short product anywhere but last (slot index 2 g + s indexes sigma).
+
+## The 256-bit product: polynomial-mulmod 1 to 6 on the builder, the zero row (2026-09-09)
+
+`relations/mulmod.mojo`, `docs/mulmod.md`: `a b = r` on one chain of 144 rows, 124 bit columns, four Horner
+accumulators, 27 derivation rows, a chain-end family, four ripple and twelve alias families, three public
+factors. Decisions:
+
+- **Global weights, no piece shifts.** `R_A = sum_t rho^t A_t(zeta)` with the pieces of `a` at their global
+  bit weights (each piece in its own columns so the `rho^t` weight is a column constant), and the coefficient
+  bits of `A_t B` likewise; then `R_C = zeta^6 R_A R_B` with the bit weights `rho^t 2^m zeta^{j + 6 - m}`, all
+  exponents in `[0, 9]`, and no `zeta^{s_t}` constants anywhere.
+- **The ripple reads the pile.** The 21 coefficient bits at a slot plus the carry out of the slot below equal
+  `r + 2 carry`, a five-bit carry stored at the slot: no level-1 certificate (the spec's third review), 16
+  columns fewer, one family per position.
+- **The zero row is an IR record.** The spec's row 0 "certified by the chain-start opening every column has":
+  this IR opened only Z columns at the boundaries, and without the check the ripple is unsound (the idle last
+  row, which no accumulator ingests, can carry a one into weight 0; `test_mulmod` builds that trace, every
+  family holds, and the statement without zero rows accepts it, on the public chain and on an idle one). `Statement.zero(column, FIX_ONE | FIX_E)` emits a `ZERO` record; the verifier checks the
+  column's opening at `(coordinate, z2)` is zero, which every column already has. Five records on the carry
+  columns of position 3.
+- **Public factors as the test oracle.** `a`, `b`, `r` ride the wiring machinery of step 7 as three virtual
+  slots against `ra`, `rb`, `rr`; the derived public data is the factors' ingest columns. A claimed `r` off by
+  one fails the joint boundary; the idle-row carry fails the zero row.
+
+Not done: the fold (spec 7) and the wiring between chains (spec 8) wait for the ECDSA composition.

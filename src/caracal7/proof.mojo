@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.tables import F2_ORDER, Domains, f2_primitive
 from caracal7.core.field import ext_mul, ext_pow
@@ -91,6 +91,7 @@ struct Shape(Writable):
     var wires: List[UInt8]      # wiring products (WIRE bytes each, accumulate.mojo), part of the artifact
     var sigma: List[UInt8]      # the wiring permutation: F2 per slot and chain, slot-major, part of the artifact
     var pubf: List[UInt8]       # public factors (PUBF bytes each): virtual slots whose value the verifier fingerprints from the public data
+    var zeros: List[UInt8]      # zero rows (ZERO bytes each): a column's opening at (1, z2) or (e1, z2) is zero, part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
@@ -98,20 +99,20 @@ struct Shape(Writable):
                             tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
                             restrictions: List[UInt8] = List[UInt8](), points: List[UInt8] = List[UInt8](),
                             chals: List[UInt8] = standard_chals(), ends: List[UInt8] = List[UInt8](), wires: List[UInt8] = List[UInt8](),
-                            sigma: List[UInt8] = List[UInt8](), pubf: List[UInt8] = List[UInt8]()) raises:
+                            sigma: List[UInt8] = List[UInt8](), pubf: List[UInt8] = List[UInt8](), zeros: List[UInt8] = List[UInt8]()) raises:
         """The entry count comes from the family table (residual.mojo). `points` is the opening list (an empty
         list means the default, ir.shift_points); it must hold every point of ir.required_points. `chals` is the
         challenge derivation table. A lookup descriptor names its table by index; the table's row width is the
         record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0 or len(wires) % WIRE != 0 or len(pubf) % PUBF != 0:
-            raise Error("family, accumulator, public, restriction, point, challenge, chain-end, wiring or public factor table is not whole entries")
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0 or len(wires) % WIRE != 0 or len(pubf) % PUBF != 0 or len(zeros) % ZERO != 0:
+            raise Error("family, accumulator, public, restriction, point, challenge, chain-end, wiring, public factor or zero-row table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
         self.columns_q = 3 * p.e
         self.columns_p = len(publics) // PUB
-        self.point_list = points.copy() if len(points) > 0 else shift_points(families, restrictions, len(accs) > 0)
+        self.point_list = points.copy() if len(points) > 0 else shift_points(families, restrictions, len(accs) > 0, zeros)
         self.points = len(self.point_list) // POINT
         self.chals = chals.copy()
         self.entries = len(families) // ENTRY
@@ -123,6 +124,7 @@ struct Shape(Writable):
         self.wires = wires.copy()
         self.sigma = sigma.copy()
         self.pubf = pubf.copy()
+        self.zeros = zeros.copy()
         var opened = self.columns_w + self.columns_z
         if get_u16(self.point_list, 0) != 0 or get_u16(self.point_list, 2) != 0:
             raise Error("opening point 0 must be z")
@@ -133,7 +135,7 @@ struct Shape(Writable):
                 raise Error("opening point is outside the grid")
             if point_index(self.point_list, dj1, dj2) != i:
                 raise Error("opening points repeat")
-        var need = required_points(families, restrictions, len(accs) > 0)
+        var need = required_points(families, restrictions, len(accs) > 0, zeros)
         for i in range(len(need) // POINT):
             if point_index(self.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
                 raise Error("opening points must include every read shift, restriction line, and accumulator boundary point")
@@ -159,6 +161,10 @@ struct Shape(Writable):
             var count = Int(restrictions[i * RES + 4]) | Int(restrictions[i * RES + 5]) << 8
             if col >= opened or (coord != FIX_ONE and coord != FIX_E) or count == 0 or count > p.h1():
                 raise Error("restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
+        for i in range(len(zeros) // ZERO):
+            var coord = Int(zeros[i * ZERO + 2]) | Int(zeros[i * ZERO + 3]) << 8
+            if (Int(zeros[i * ZERO]) | Int(zeros[i * ZERO + 1]) << 8) >= opened or (coord != FIX_ONE and coord != FIX_E):
+                raise Error("zero row needs an opened column and a fixed axis-1 coordinate")
         for k in range(self.entries):
             var en = entry(families, k)
             var pub_a = en.col_a >= opened
@@ -395,6 +401,8 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.sigma.copy())
     append_u32(bytes, len(shape.pubf))
     bytes.extend(shape.pubf.copy())
+    append_u32(bytes, len(shape.zeros))
+    bytes.extend(shape.zeros.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())

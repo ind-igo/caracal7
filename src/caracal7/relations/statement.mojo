@@ -17,7 +17,7 @@ from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
 from caracal7.core.field import F2, ext_mul, ext_pow
 from caracal7.core.tables import Domains, f2_primitive, F2_ORDER
 from caracal7.proof import Shape
@@ -165,6 +165,7 @@ struct Statement(Movable):
     var slots: List[Int]                # wiring slots: accumulator index each (accumulate.mojo, "Wiring")
     var edges: List[Tuple[Int, Int, Int, Int]]   # (slot, chain, slot, chain) equalities
     var factors: List[Tuple[String, Int, Int, Int]]   # public factors: (name, accumulator, slot, chain)
+    var zeros: List[Tuple[String, Int]]   # zero rows: (column, FIX_ONE row 0 | FIX_E the last row)
 
     def __init__(out self):
         self.cols = List[String]()
@@ -185,6 +186,7 @@ struct Statement(Movable):
         self.slots = List[Int]()
         self.edges = List[Tuple[Int, Int, Int, Int]]()
         self.factors = List[Tuple[String, Int, Int, Int]]()
+        self.zeros = List[Tuple[String, Int]]()
 
     def _fresh(self, name: String) raises:
         if name in self.col_index:
@@ -308,6 +310,13 @@ struct Statement(Movable):
         set_u16(r, 4, count)
         self.res.extend(r^)
         self.res_names.append(name)
+
+    def zero(mut self, name: String, coord: Int) raises:
+        """W column `name` is zero on row 0 (FIX_ONE) or the last row (FIX_E) of every chain: the spec's zero
+        row (polynomial-mulmod 4), checked from the column's opening at (coordinate, z2)."""
+        if coord != FIX_ONE and coord != FIX_E:
+            raise Error("zero row coordinate is FIX_ONE or FIX_E")
+        self.zeros.append((name, coord))
 
     def read(self, name: String, k1: Int = 0, k2: Int = 0) -> Read:
         return Read(name, k1, k2)
@@ -476,6 +485,14 @@ struct Statement(Movable):
                 set_u16(res, i * RES + 4, p.h1())
             touched[c] = True
             read[c] = True
+        var zeros = List[UInt8]()
+        for z in self.zeros:
+            var c = self._wcol(index, z[0])
+            touched[c] = True
+            var n = len(zeros)
+            zeros.extend(List[UInt8](length=ZERO, fill=0))
+            set_u16(zeros, n, c)
+            set_u16(zeros, n + 2, z[1])
         for i in range(w):
             if not touched[i]:
                 raise Error("column is read by nothing and constrained by nothing: " + names[i])
@@ -537,8 +554,8 @@ struct Statement(Movable):
                 sigma.extend([ids[succ[n]][0], ids[succ[n]][1]])
             for i in range(nf):
                 pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]]))
-        var points = shift_points(f.bytes, res, len(f.accs) > 0)
-        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf)
+        var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)
+        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros)
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
         return Compiled(shape^, f.bytes.copy(), layout^)
 

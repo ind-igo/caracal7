@@ -56,6 +56,7 @@ comptime FIX_E = 65535      # a point coordinate fixed at e_l
 
 comptime POINT = 4      # bytes per opening point: (dj1, dj2) as u16
 comptime PUB = 2        # public column spec (docs/public-columns.md): m u16; the column is a polynomial in (X1, X2^m), its public data the (h2 / m, h1) values of one period, x2 major
+comptime ZERO = 4       # zero row: column u16, axis-1 coordinate u16 (FIX_ONE row 0, FIX_E the last row); the opening at (coordinate, z2) is zero
 comptime RES = 6        # restriction: column u16, axis-2 coordinate u16 (FIX_ONE or FIX_E), coefficient count u16 (the line has degree < count); opened at (z1, coordinate)
 
 
@@ -68,11 +69,11 @@ def chal_count(table: Span[UInt8, _]) -> Int:
     return SAMPLED + len(table) // CHAL
 
 
-def required_points(fam: Span[UInt8, _], restrictions: List[UInt8], accumulators: Bool) -> List[UInt8]:
+def required_points(fam: Span[UInt8, _], restrictions: List[UInt8], accumulators: Bool, zeros: List[UInt8] = List[UInt8]()) -> List[UInt8]:
     """The points every opening list must contain: z, then with accumulators the boundary points the
     verifier reads ((1, z2), (e1, z2), (1, omega2 z2), (e1, e2); (1, 1) of spec section 3 is implied by
-    Z(1, z2) = 1 at random z2), then the restriction lines (z1, coordinate), then every distinct read
-    shift of the family table in first-seen order."""
+    Z(1, z2) = 1 at random z2), then the restriction lines (z1, coordinate), the zero rows (coordinate, z2),
+    then every distinct read shift of the family table in first-seen order."""
     var pts = List[UInt8]()
     var fixed: List[Tuple[Int, Int]] = [(0, 0)]
     if accumulators:
@@ -89,6 +90,13 @@ def required_points(fam: Span[UInt8, _], restrictions: List[UInt8], accumulators
             pts.extend(List[UInt8](length=POINT, fill=0))
             set_u16(pts, n, 0)
             set_u16(pts, n + 2, coord)
+    for i in range(len(zeros) // ZERO):
+        var coord = get_u16(zeros, i * ZERO + 2)
+        if point_index(pts, coord, 0) < 0:
+            var n = len(pts)
+            pts.extend(List[UInt8](length=POINT, fill=0))
+            set_u16(pts, n, coord)
+            set_u16(pts, n + 2, 0)
     for k in range(len(fam) // ENTRY):
         var en = entry(fam, k)
         for side in range(2):
@@ -104,9 +112,9 @@ def required_points(fam: Span[UInt8, _], restrictions: List[UInt8], accumulators
     return pts^
 
 
-def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8](), accumulators: Bool = True) -> List[UInt8]:
+def shift_points(fam: Span[UInt8, _], restrictions: List[UInt8] = List[UInt8](), accumulators: Bool = True, zeros: List[UInt8] = List[UInt8]()) -> List[UInt8]:
     """The default opening list: exactly the required points, nothing gated off."""
-    return required_points(fam, restrictions, accumulators)
+    return required_points(fam, restrictions, accumulators, zeros)
 
 
 def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:

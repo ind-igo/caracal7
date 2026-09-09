@@ -160,6 +160,16 @@ def test_every_check_has_a_failing_case() raises:
     assert_equal(stopped, "name in use: v")
     ws.wire(0, p.h2(), 1, 0)
     assert_equal(_fails(ws^), "wire chain index is outside the grid")
+    ws = wiring_statement(p.h2())
+    try:
+        ws.zero("a", 3)
+    except e:
+        stopped = String(e)
+    assert_equal(stopped, "zero row coordinate is FIX_ONE or FIX_E")
+    ws.zero("a", FIX_E)
+    var wz = ws^.compile[p]()
+    assert_equal(len(wz.shape.zeros), 4)
+    assert_equal(wz.shape.points, wiring_statement(p.h2()).compile[p]().shape.points)   # (e1, z2) is a boundary point already
     ws = Statement()
     ws.col("a", BIT)
     ws.horner("ra", [Term(1, ws.read("a"))], scale=2)
