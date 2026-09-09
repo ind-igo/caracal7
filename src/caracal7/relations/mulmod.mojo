@@ -496,11 +496,13 @@ def _values(kind: Int, a: List[Int], b: List[Int]) raises -> ChainValues:
         var q = 0
         var b2 = b.copy()
         b2.resize(n, 0)
-        for _ in range(4):
+        for _ in range(3):
             if ge_bits(x, b2):
                 break
             x = add_bits(x, pb, n)
             q += 1
+        if not ge_bits(x, b2):
+            raise Error("subtraction needs q above 3")
         return ChainValues(kind, _trim(sub_bits(x, b2, n)), b.copy(), a.copy(), q)
     var pm1 = sub_bits(pb, [1], n)     # CANON: x = a, s = p - 1, y = p - 1 - a
     var a2 = a.copy()

@@ -71,10 +71,12 @@ the coefficient bit's weight is `rho^t 2^m zeta^{j + 6 - m}`, exponents 0 to 9. 
 ## Additions, subtractions, the canonical check
 
 One chain kind serves all three, because `x + y = s + q p` is symmetric in which value is free. An addition
-takes `x`, `y` and outputs `s`, with `q` the largest in 0..3 keeping `s >= 0`, so `s < p`. A subtraction
-`x - y` is the same chain read backwards: the minuend is wired to `s`, `y` to `y`, and the output is `x`,
-with `q` the smallest making it non-negative, so the output is below `p`. `q` goes to 3 because a public
-input below `2^257` can exceed `2 p`. The canonical check of `f` is the chain with `s` the public constant
+takes `x`, `y` and outputs `s`, with `q` the largest in 0..3 keeping `s >= 0`. A subtraction `x - y` is
+the same chain read backwards: the minuend is wired to `s`, `y` to `y`, and the output is `x`, with `q` the
+smallest making it non-negative. Outputs are below `p` when the inputs are below `2 p`; a public input
+below `2^257` can exceed `2 p` (that is why `q` goes to 3), and then an output can reach past `p`. Only the
+canonical check makes a value canonical; the relation `x + y = s + q p` with `s < 2^260` is all the chain
+proves. The canonical check of `f` is the chain with `s` the public constant
 `p - 1` (a public factor the verifier fingerprints from the constant), `y` the witness `p - 1 - f`, and `q`
 forced to zero by the mask `cn`: then `f + y = p - 1` with `y >= 0` as bits is `f < p`. Without the mask a
 prover would take `q = 1` and `y = 2 p - 1 - f`; the test does that and is rejected.
