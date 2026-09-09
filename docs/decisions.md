@@ -765,3 +765,12 @@ prover uploads a second family table without those entries (`families_g`) for th
 the accumulator kernels and the verifier keep the full table. ECDSA residual 650 -> 520 ms, warm prove
 2,346 -> 2,216 ms. Also from the audit of the Straus-Shamir change (one opus reviewer, Codex: no
 soundness findings): the recoding test now covers the shipped `(QW, WINDOWS)` and the table bound.
+
+## Residual on three quadrants; opening loads along k (2026-09-09)
+
+R vanishes on H x H for a satisfied statement, so the residual GEMM runs on the odd rows and on the
+odd columns of the even rows (the Family loader maps (n_hi, n_lo) to the point by `sb_lo`), and the
+Horner kernel writes zeros on H x H: 520 -> 443 ms. The opening GEMM read `stored[column, slot]` with
+adjacent threads a column apart (N bytes); the Loader trait now carries `kfast` (the tile load walks k
+in adjacent threads) and `real` (no imaginary plane: two tile products instead of four), `Bytes[kfast_=True]`
+for the openings: open 356 -> 212 ms. Warm prove 2,151 -> 1,985 ms.

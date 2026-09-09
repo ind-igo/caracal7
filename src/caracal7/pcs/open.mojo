@@ -209,7 +209,7 @@ def open[p: Params](ctx: DeviceContext, arena: Arena,
     comptime e = p.e
     var splits = open_splits[p]()
     var K = N // splits
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, arena, strided(
+    launch_gemm_f2[BACKEND, LANE_TILE, Bytes[kfast_=True], 1](ctx, arena, strided(
         a=w_z, sa_m=2, sa_k=e, sa_z=K * e, sa_zz=splits * K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
         c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e, sc_zz=splits * columns * e, zd=splits), e // 2, columns, K, batch=points * splits)
     var total = points * columns * e
@@ -223,6 +223,6 @@ def fold[p: Params, acc: Bool](ctx: DeviceContext, arena: Arena,
     GEMV per tree, every tree after the first accumulating."""
     comptime N = p.N()
     comptime e = p.e
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1, acc=acc](ctx, arena, strided(
+    launch_gemm_f2[BACKEND, LANE_TILE, Bytes[], 1, acc=acc](ctx, arena, strided(
         a=beta, sa_m=2, sa_k=e, b=stored, sb_k=N, sb_hi=1, sb_lo=0,
         c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns)

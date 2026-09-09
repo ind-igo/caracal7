@@ -80,6 +80,8 @@ struct Family[p: Params](Loader):
     """B[entry, point] of the residual GEMM, gathered from the LDE. The point of (n_hi, n_lo) by sb_lo:
     0 all of G (D = G1: j2 = n_hi, j1 = n_lo); 1 the odd rows (D = G1: j2 = 2 n_hi + 1); 2 the odd
     columns of the even rows (D = h1: j2 = 2 n_hi, j1 = 2 n_lo + 1). aux0 = lde, aux1 = gate1, aux2 = gate2."""
+    comptime real = False
+    comptime kfast = False
 
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:

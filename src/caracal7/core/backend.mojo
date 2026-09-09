@@ -117,6 +117,9 @@ struct Operands(TrivialRegisterPassable, DevicePassable):
 
 
 trait Loader:
+    comptime real: Bool     # the imaginary part is always zero: half the tile products
+    comptime kfast: Bool    # B is contiguous along k, not n: the tile load walks k in adjacent threads
+
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         """B[k, n] with n = n_hi * D + n_lo; z is the batch byte offset."""
@@ -124,13 +127,19 @@ trait Loader:
 
 
 struct Strided(Loader):
+    comptime real = False
+    comptime kfast = False
+
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z)
 
 
-struct Bytes(Loader):
+struct Bytes[kfast_: Bool = False](Loader):
     """F values, one byte each, as F2 with a zero imaginary part."""
+    comptime real = True
+    comptime kfast = Self.kfast_
+
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var v = F2(0)
@@ -188,23 +197,32 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             As1.ptr.unsafe_store(kk * BM + r, v[1])
         comptime for i in range(0, BK * BN, THREADS):
             var idx = i + tid
-            var kk = idx // BN
-            var n = bcol + idx % BN
+            var kk: Int
+            var nn: Int
+            comptime if L.kfast:
+                nn = idx // BK
+                kk = idx % BK
+            else:
+                kk = idx // BN
+                nn = idx % BN
+            var n = bcol + nn
             var v = F2(0)
             if n < Ni and kt * BK + kk < Ki:
                 v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
-            Bs0.ptr.unsafe_store(kk * BN + idx % BN, v[0])
-            Bs1.ptr.unsafe_store(kk * BN + idx % BN, v[1])
+            Bs0.ptr.unsafe_store(kk * BN + nn, v[0])
+            comptime if not L.real:
+                Bs1.ptr.unsafe_store(kk * BN + nn, v[1])
         barrier()
         comptime for kk in range(BK):
             var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
             var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
             var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
             tile_mac[B](a0, b0, re)
-            tile_mac[B, neg=True](a1, b1, re)
-            tile_mac[B](a0, b1, im)
             tile_mac[B](a1, b0, im)
+            comptime if not L.real:
+                var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                tile_mac[B, neg=True](a1, b1, re)
+                tile_mac[B](a0, b1, im)
         barrier()
         if ((kt + 1) * BK) % B.max_terms == 0:
             tile_reduce(re)
