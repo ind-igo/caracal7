@@ -743,3 +743,13 @@ grid `144 x 576`: proof 683,392 -> 631,856 bytes, warm prove 4,503 -> 2,794 ms, 
 The RS domain did not shrink (20,736 symbols per column still take 4 cosets of 161,280), so the RS
 stages, Merkle and tail costs are unchanged; the next step down needs `N / 4 <= 16,128`, which a
 `a b - c d = 0` MUL op (3 MUL per doubling, `h2 = 448`) would reach.
+
+## Encoder arithmetic in the subfields (2026-09-09)
+
+Three kernels did full F4 work where the algebra lives in a subfield. `to_stored` summed 63 terms per
+slot (m1 m2 at ECDSA's 9 x 7); the sum is separable, so the y1 digit is now an m1-point DFT run through
+the radix kernel of `dft.mojo` with a `rho1t` table, and the slot kernel sums the m2 terms: 194 -> 30 ms
+at 236 columns. The 2-adic stages read `gA^(2^(b - 6) x)`, of order at most 64, so in F2: two complex
+products per MAC instead of a full F4 product. The radix 3, 7, 9 twiddles have orders dividing 126, so
+they are in F: one broadcast product. Radix 5 stays in F4. `_fill_rs` checks both facts on the host
+tables. ECDSA at `144 x 576`: encode W 483 -> 275 ms, encode Z 428 -> 242, warm prove 2,794 -> 2,346 ms.

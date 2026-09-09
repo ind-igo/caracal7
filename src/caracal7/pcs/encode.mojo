@@ -6,7 +6,8 @@ base pointer plus width-typed regions of it (rule 2, bytes.mojo) and are paramet
 
 Buffers (bytes; shapes slowest ... fastest):
     trace   (column, x2, x1)          F
-    ctmp    (column, x2, k1, 2)       F2, after the axis-1 inverse DFT
+    ctmp    (column, x2, k1, 2)       F2, after the axis-1 inverse DFT; then (column, k2, x1 + 2^a1 r1, 2),
+                                      the coefficients after the m1-point DFT on the y1 digit
     coeff   (column, k2, k1, 2)       F2 monomial coefficients
     stored  (column, slot)            F, Frobenius-real slots (t, x1', x2, r)
     packed  (i, column, 4)            F4, coordinate basis (1, i, j, ij)
@@ -38,14 +39,14 @@ from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
+from caracal7.core.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f4_mac_f2_wide, f4_mac_real_wide, f_reduce_signed, F4_MAC_MAX
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
-from caracal7.core.dft import dft_axis
+from caracal7.core.dft import dft_axis, Radix, _stage as radix_stage
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
@@ -73,8 +74,7 @@ struct EncLayout(TrivialRegisterPassable):
         self.code = bump.alloc(p.L() * columns * 4)
 
 
-# ---- idft2: inverse 2D DFT over F2, one dense pass per axis ----
-# ponytail: dense O(h^2) per axis on the F2 skeleton; mixed-radix stages (spec 10.2) when h_l grows past a few hundred.
+# ---- idft2: inverse 2D DFT over F2, three radix stages per axis (dft.mojo) ----
 
 def idft2[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, ctmp: Int, coeff: Int,
                      columns: Int, tab: TableLayout) raises:
@@ -110,8 +110,9 @@ def slot_target[p: Params](slot: Int) -> Tuple[Int, Int, Int, Int]:
     return (H1, x2 - H2, r, t)
 
 
-def k_to_stored[p: Params](base: Base, coeff: Buf[2], stored: Buf[1], rho1: Buf[1], rho2: Buf[1], columns: Int32):
-    """stored[c, slot] = coord of c_x(r) = sum_y coeff[c, x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2)."""
+def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1], columns: Int32):
+    """stored[c, slot] = coord of c_x(r) = sum_y coeff[c, x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2),
+    the y1 sum already taken by the radix pass of `to_packed` into tmp[c, k2, x1 + 2^a1 r1]."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
@@ -127,15 +128,12 @@ def k_to_stored[p: Params](base: Base, coeff: Buf[2], stored: Buf[1], rho1: Buf[
     x1, x2, r, coord = slot_target[p](slot)
     var r1 = r % p.m1
     var r2 = r // p.m1
+    var k1 = x1 + (1 << p.a1) * r1
     var acc = F2(0)
     for y2 in range(p.m2):
         var s2 = rho2.load(base, (y2 * r2) % p.m2)
-        for y1 in range(p.m1):
-            var s1 = rho1.load(base, (y1 * r1) % p.m1)
-            var k1 = x1 + (1 << p.a1) * y1
-            var k2 = x2 + (1 << p.a2) * y2
-            var v = coeff.load(base, (c * h2 + k2) * h1 + k1)
-            acc = f_add(acc, f_mul(v, F2(f_mul(SIMD[DType.uint8, 1](s1), SIMD[DType.uint8, 1](s2))[0])))
+        var k2 = x2 + (1 << p.a2) * y2
+        acc = f_add(acc, f_mul(tmp.load(base, (c * h2 + k2) * h1 + k1), F2(s2)))
     stored.store(base, gid, acc[coord])
 
 
@@ -262,7 +260,7 @@ def k_rs_gather(base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt: Buf[1], 
 def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
     """One decimation-in-frequency step of size S = 2^s on the B1 digits: for each block of S positions
     (stride B2) and each n_lo < T = S / r, y[e] = sum_k x[n_lo + T k] W_r^(k e) W_S^(n_lo e), stored at
-    n_lo + T e. Both factors are one gA power: gA^((B / S) e (n_lo + T k))."""
+    n_lo + T e. Both factors are one gA power: gA^((B / S) e (n_lo + T k)), of order at most 64, so in F2."""
     var c: Int
     var row: Int
     var ok: Bool
@@ -289,14 +287,15 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     comptime for e in range(r):
         var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
-            f4_mac_wide(wide, ga.load(base, ((e * (n_lo + (k << t))) << shift) & mask), xs[k])
+            f4_mac_f2_wide(wide, base.unsafe_load[width=2](ga.at(((e * (n_lo + (k << t))) << shift) & mask)), xs[k])
         etmp.store(base, first + e * step, f_reduce_signed(wide))
 
 
 def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
                                     columns: Int32, b: Int32, M: Int32):
     """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
-    The stride is comptime: a runtime division here costs a quarter of the encoder."""
+    The stride is comptime: a runtime division here costs a quarter of the encoder. The twiddles of
+    radix 3, 7, 9 lie in F (their orders divide 126); radix 5 needs F4."""
     comptime final = stride == 1
     var c: Int
     var rest: Int
@@ -318,7 +317,10 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     comptime for t in range(r):
         var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
-            f4_mac_wide(wide, wr.load(base, t * r + k), xs[k])
+            comptime if r == 5:
+                f4_mac_wide(wide, wr.load(base, t * r + k), xs[k])
+            else:
+                f4_mac_real_wide(wide, base[unsafe_offset=wr.at(t * r + k)], xs[k])
         var acc = f_reduce_signed(wide)
         var lin = first_lin + t * st
         comptime if final:
@@ -347,8 +349,20 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
     var cols = Int32(e.columns)
     var n_grid = e.columns * p.N()
     idft2[p](ctx, arena, e.trace, e.ctmp, e.coeff, e.columns, tab)
+    # the y1 digit: an m1-point DFT with rho1 twiddles per (column, k2, x1), coeff -> ctmp
+    comptime B1 = 1 << p.a1
+    comptime m1 = p.m1
+    var src: Int
+    comptime if m1 > 1:
+        radix_stage[m1, m1, False](ctx, arena, Radix(
+            src=e.coeff, so_line=p.h1() * 2, so_pre=0, sk=B1 * 2, si=2,
+            dst=e.ctmp, to_line=p.h1() * 2, to_pre=0, tj=B1 * 2, ti=2,
+            tab=tab.base + tab.rho1t, od=1, tabmod=1, inner=B1, total=e.columns * p.h2() * B1))
+        src = e.ctmp
+    else:
+        src = e.coeff
     comptime k3 = k_to_stored[p]
-    ctx.enqueue_function[k3](arena.buf, Buf[2](e.coeff), Buf[1](e.stored), Buf[1](tab.base + tab.rho1), Buf[1](tab.base + tab.rho2), cols,
+    ctx.enqueue_function[k3](arena.buf, Buf[2](src), Buf[1](e.stored), Buf[1](tab.base + tab.rho2), cols,
                              grid_dim=grid(n_grid), block_dim=BACKEND.block)
     pack[p](ctx, arena, e)
 

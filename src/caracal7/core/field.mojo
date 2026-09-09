@@ -69,6 +69,23 @@ def f4_mac_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 4], b: SIMD[
 
 
 @always_inline
+def f4_mac_f2_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 2], b: SIMD[DType.uint8, 4]):
+    """acc += a * b for a in F2 (coordinates (a0, a1, 0, 0)): two complex products, 8 base products."""
+    var x = a.cast[DType.int32]()
+    var y = b.cast[DType.int32]()
+    acc[0] += x[0] * y[0] - x[1] * y[1]
+    acc[1] += x[0] * y[1] + x[1] * y[0]
+    acc[2] += x[0] * y[2] - x[1] * y[3]
+    acc[3] += x[0] * y[3] + x[1] * y[2]
+
+
+@always_inline
+def f4_mac_real_wide(mut acc: SIMD[DType.int32, 4], a: UInt8, b: SIMD[DType.uint8, 4]):
+    """acc += a * b for a in F: 4 base products."""
+    acc += b.cast[DType.int32]() * Int32(a)
+
+
+@always_inline
 def f_add[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
     var s = a + b                                   # < 254, no overflow
     return min(s, s - 127)

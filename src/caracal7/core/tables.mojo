@@ -192,10 +192,15 @@ def _fill_rs(h: HostBuffer[DType.uint8], at: Int, rs: RsTables, dom: RsDomain, K
     var gB = ext_pow[2](dom.g, 1 << b)
     for n in range(1 << b):
         _put(h, at + rs.ga + n * 4, ext_pow[2](gA, n))
+    for n in range(0, 1 << b, 1 << max(b - 6, 0)):      # the 2-adic stages read gA^(2^(b - 6) x): in F2
+        if h[at + rs.ga + n * 4 + 2] != 0 or h[at + rs.ga + n * 4 + 3] != 0:
+            raise Error("2-adic stage twiddle outside F2")
     for pair in [(f5, rs.w5), (f7, rs.w7), (f9, rs.w9)]:
         var r = pair[0]
         if r > 1:
             var w = ext_pow[2](gB, M // r)
+            if r != 5 and (w[1] != 0 or w[2] != 0 or w[3] != 0):      # orders 3, 7, 9 divide 126: the stages read one byte
+                raise Error("odd radix twiddle outside F")
             for tt in range(r):
                 for k in range(r):
                     _put(h, at + pair[1] + (tt * r + k) * 4, ext_pow[2](w, (tt * k) % r))
@@ -231,6 +236,7 @@ struct TableLayout(TrivialRegisterPassable):
     var winv2: Int      # (h2, h2, 2)
     var rho1: Int       # (m1)          F: rho1^y
     var rho2: Int       # (m2)
+    var rho1t: Int      # (m1, m1, 2)   F2: rho1^(r y), the radix table of the to_stored digit pass (encode.mojo)
     var rs: RsTables    # level-1 RS domain, absolute offsets
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
     var g1p: Int        # (2 h1, 2)     g1^j
@@ -257,6 +263,7 @@ struct TableLayout(TrivialRegisterPassable):
         self.winv2 = off; off += p.h2() * p.h2() * 2
         self.rho1 = off; off += p.m1
         self.rho2 = off; off += p.m2
+        self.rho1t = off; off += p.m1 * p.m1 * 2
         off = (off + 3) & ~3                       # the F4 and u16 tables want 4-byte alignment
         self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
@@ -305,6 +312,9 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
         h[t.rho1 + y] = f_pow(SIMD[DType.uint8, 1](d.rho1), y)[0]
     for y in range(p.m2):
         h[t.rho2 + y] = f_pow(SIMD[DType.uint8, 1](d.rho2), y)[0]
+    for r in range(p.m1):
+        for y in range(p.m1):
+            _put(h, t.rho1t + (r * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), (r * y) % p.m1)[0], 0))
 
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
 
