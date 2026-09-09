@@ -91,7 +91,7 @@ struct ProverLayout:
     var w_tab: Int                  # (P, table_len, e)     per-point powers and Lagrange factors (open.mojo)
     var w_z: Int                    # (slot, P, e)          evaluation queries
     var openings: Int               # (P, column, e)
-    var open_partial: Int           # (P, splits, column, e) split-K partials of `open`
+    var open_partial: Int           # (splits, column, P, e) split-K partials of `open`
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message
     var running0: Int               # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
     var dom1: Int                   # DOM_BYTES             the level-1 domain

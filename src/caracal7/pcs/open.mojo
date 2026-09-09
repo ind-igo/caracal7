@@ -177,7 +177,7 @@ def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
                             grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
 
-comptime OPEN_SPLITS = 64   # K chunks of one opening GEMM; the grid is P x splits blocks instead of P
+comptime OPEN_SPLITS = 64   # K chunks of the opening GEMM: batch = splits, so the grid is not just the column and row blocks
 
 
 def open_splits[p: Params]() -> Int:
