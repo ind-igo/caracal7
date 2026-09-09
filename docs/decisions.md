@@ -658,3 +658,14 @@ the pile reads `lo * r_w`. One selector and two copy column sets replace four co
 The folds need no zero rows (their piles die above weight 290 and the idle row's pile is at most one bit);
 the output fingerprint is the plain one, the piece-weighted one is left to the wiring step where its need is
 decided. `docs/mulmod.md` has the argument. The public inputs change to `a`, `b`, `f`.
+
+## Mulmod circuits: wiring chains, tagged public inputs (2026-09-09)
+
+Polynomial-mulmod 8 on the mulmod relation: a circuit is one `(a, b)` per chain, a public operand or an
+earlier chain's output. Consumers fingerprint their own `a` plainly (`ha`) rather than producers emitting a
+piece-weighted output, which would need three selectors; same accumulator count. Chain ordering for
+next-chain edges is dropped: chain-end families cannot read the next chain and slots are grid-wide, so it
+saves nothing in this IR. The copy selector `cp` is one row wider than `lo` because folded operands can
+push a product past `2^512`. Public inputs are tagged values so the static `public_data` can derive each
+factor's ingest columns without the circuit. Test: three wired chains equal `x y z w mod p` by long
+division; a wrong operand on a middle chain fails the wiring.

@@ -11,7 +11,7 @@ from caracal7.core.hash import Blake3
 from caracal7.core.field import E, ext_mul
 from caracal7.core.bytes import list_e
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from caracal7.relations.mulmod import Mulmod, mulmod_statement, mulmod_trace, bits_of, bytes_of, product_bits, fold_bits, folded_bits, BITS, FOLDED
+from caracal7.relations.mulmod import Mulmod, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, single_chain, value_bytes_of, bits_of, bytes_of, product_bits, fold_bits, folded_bits, BITS, FOLDED, VALUE
 from caracal7.prover import Prover, load_trace, load_public
 from caracal7.relations import value_bytes
 from caracal7.verifier import verify
@@ -27,6 +27,11 @@ def operand(seed: Int) -> List[UInt8]:
         s = (s * 1103515245 + 12345) & 0x7FFFFFFF
         v.append(UInt8((s >> 8) & 255))
     return v^
+
+
+def single(a: List[UInt8], b: List[UInt8]) raises -> Mulmod:
+    var inputs: List[List[UInt8]] = [value_bytes_of(a), value_bytes_of(b)]
+    return Mulmod(inputs^, single_chain())
 
 
 def _chals() -> List[UInt8]:
@@ -82,7 +87,7 @@ def test_fold_is_congruent_mod_p() raises:
     for seed in range(1, 6):
         var a = operand(seed)
         var b = operand(seed + 7)
-        var f = folded_bits(a, b)
+        var f = folded_bits(bits_of(a, 0, BITS), bits_of(b, 0, BITS))
         assert_equal(len(f), FOLDED)
         var r = product_bits(bits_of(a, 0, BITS), bits_of(b, 0, BITS))
         assert_equal(_mod_p(f), _mod_p(r))
@@ -122,8 +127,8 @@ def test_trace_satisfies_every_bit_family() raises:
     comptime N = p.N()
     comptime h1 = p.h1()
     var c = mulmod_statement().compile[p]()
-    var w = Mulmod(operand(1), operand(2))
-    var trace = mulmod_trace[p](c.layout, w.a, w.b)
+    var w = single(operand(1), operand(2))
+    var trace = mulmod_trace[p](c.layout, operand(1), operand(2))
     var cw = c.layout.columns_w()
     var cz = c.shape.columns_z
     var data = Mulmod.public_data[p](c.layout, w.public_inputs[p]())
@@ -158,7 +163,7 @@ def test_trace_satisfies_every_bit_family() raises:
     var chals = _chals()
     derived_chals(chals, c.shape.chals)
     var r = List[E]()
-    for k in range(3):
+    for k in range(4):
         var first = Int(c.shape.accs[k * ACC + 2]) | Int(c.shape.accs[k * ACC + 3]) << 8
         var n = Int(c.shape.accs[k * ACC + 4]) | Int(c.shape.accs[k * ACC + 5]) << 8
         var cols = List[UInt8](capacity=n * h1)
@@ -168,8 +173,8 @@ def test_trace_satisfies_every_bit_family() raises:
                 cols.append(trace[col * N + x1])
         r.append(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals))
     var z6 = list_e(chals, Int(c.shape.ends[7]) - 1)
-    assert_equal(ext_mul[4](ext_mul[4](r[0], r[1]), z6), r[2])
-    var off = N
+    assert_equal(ext_mul[4](ext_mul[4](r[0], r[2]), z6), r[3])
+    var off = 2 * N
     for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "f0", "f1", "f2", "f3"]:
         for x1 in range(h1):
             assert_equal(data[off + x1], trace[c.layout.col(name) * N + x1])
@@ -189,16 +194,16 @@ def _at(trace: List[UInt8], data: List[UInt8], cw: Int, cz: Int, col: Int, k1: I
 
 def test_prover_round_trip() raises:
     var ctx = DeviceContext()
-    var w = Mulmod(operand(1), operand(2))
+    var w = single(operand(1), operand(2))
     var proof = prove_workload[p, Blake3, Mulmod](ctx, w)
     print("mulmod proof bytes:", len(proof))
     assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, w.public_inputs[p]()))
 
 
-def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True) raises -> String:
-    var c = mulmod_statement(zeros).compile[p]()
-    var shape = mulmod_statement(zeros).compile[p]().take_shape()
-    var cc = mulmod_statement(zeros).compile[p]()
+def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True, circuit: List[Tuple[Int, Int]] = List[Tuple[Int, Int]]()) raises -> String:
+    var c = mulmod_statement(zeros, circuit).compile[p]()
+    var shape = mulmod_statement(zeros, circuit).compile[p]().take_shape()
+    var cc = mulmod_statement(zeros, circuit).compile[p]()
     var data = Mulmod.public_data[p](cc.layout, claim)
     var blocks = List[UInt8]()
     for i in range(value_bytes(cc.layout.publics, p.h1(), p.h2())):
@@ -221,30 +226,60 @@ def test_wrong_product_and_idle_carry_are_rejected() raises:
     without zero rows; the same carry on an idle chain, where no public factor looks, is caught by the zero
     row alone. A claim past FOLDED bits is refused by the public data; a flipped copy bit fails a family."""
     var ctx = DeviceContext()
-    var w = Mulmod(operand(3), operand(4))
+    var w = single(operand(3), operand(4))
     var c = mulmod_statement().compile[p]()
     var claim = w.public_inputs[p]()
-    var bits = bits_of(claim, 64, FOLDED)
+    var bits = bits_of(claim, 2 * (VALUE + 1) + 1, FOLDED)
     var carry = 1
     for i in range(len(bits)):
         var s = bits[i] + carry
         bits[i] = s & 1
         carry = s >> 1
-    var wrong = w.a.copy()
-    wrong.extend(w.b.copy())
+    var wrong = List[UInt8]()
+    for i in range(2 * (VALUE + 1) + 1):
+        wrong.append(claim[i])
     wrong.extend(bytes_of(bits))
-    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b), wrong), "wiring grand product is not the public factor")
-    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 0), wrong), "chain row is not zero")
-    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 0), wrong, False), "accepted")
-    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 3), claim), "chain row is not zero")
-    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 3), claim, False), "accepted")
+    var a = w.inputs[0].copy()
+    var b = w.inputs[1].copy()
+    a.resize(BITS // 8, 0)
+    b.resize(BITS // 8, 0)
+    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, a, b), wrong), "wiring grand product is not the public factor")
+    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, a, b, 0), wrong), "chain row is not zero")
+    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, a, b, 0), wrong, False), "accepted")
+    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, a, b, 3), claim), "chain row is not zero")
+    assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, a, b, 3), claim, False), "accepted")
     var high = claim.copy()
     high[len(high) - 1] |= 2
     with assert_raises(contains="exceeds"):
         _ = Mulmod.public_data[p](c.layout, high)
-    var tampered = mulmod_trace[p](c.layout, w.a, w.b)
+    var tampered = mulmod_trace[p](c.layout, a, b)
     tampered[c.layout.col("h1") * p.N() + 100] ^= 1
     assert_true(_rejected(ctx, tampered, claim) != "accepted")
+
+
+def test_three_wired_chains() raises:
+    """Chains x y, then (x y) z with a from chain 0, then w (x y z) with b from chain 1: the output is x y z w mod p by
+    long division, the proof round-trips, and a chain fed a wrong operand (every family holds) fails the
+    wiring."""
+    var circuit: List[Tuple[Int, Int]] = [(-1, -1), (0, -1), (-1, 1)]
+    var inputs: List[List[UInt8]] = [value_bytes_of(operand(11)), value_bytes_of(operand(12)), value_bytes_of(operand(13)), value_bytes_of(operand(14))]
+    var w = Mulmod(inputs.copy(), circuit.copy())
+    var claim = w.public_inputs[p]()
+    assert_equal(len(claim), 5 * (VALUE + 1))
+    var f = bits_of(claim, 4 * (VALUE + 1) + 1, FOLDED)
+    var prod = product_bits(product_bits(bits_of(operand(11), 0, BITS), bits_of(operand(12), 0, BITS)),
+                            product_bits(bits_of(operand(13), 0, BITS), bits_of(operand(14), 0, BITS)))
+    assert_equal(_mod_p(f), _mod_p(prod))
+    var ctx = DeviceContext()
+    var proof = prove_workload[p, Blake3, Mulmod](ctx, w)
+    print("three-chain proof bytes:", len(proof))
+    assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, claim))
+    var c = mulmod_statement(True, circuit).compile[p]()
+    var vals = circuit_values(inputs, circuit)
+    var abits = vals[0].copy()
+    abits[1][5] ^= 1
+    var bbits = vals[1].copy()
+    assert_true(_rejected(ctx, circuit_trace[p](c.layout, abits, bbits), claim, True, circuit) != "accepted")
 
 
 def main() raises:

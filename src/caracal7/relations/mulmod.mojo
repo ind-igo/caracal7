@@ -16,7 +16,14 @@ selector keeps h zero everywhere else. Then the fold pile at slot w is lo r_w pl
 (same-row or a row below, k1 in 0..8), rippled into o with a 3-bit carry; o is below 2^290. The second fold
 does the same from o into f, which is below 2^257 < 2 p and congruent to a b mod p. Neither fold needs zero
 rows: the piles above weight 290 are zero, so the carry into the idle row is zero and the idle row's pile is at
-most one bit. a, b, f are public factors on the fingerprints R_A, R_B, R_f."""
+most one bit.
+
+Wiring (polynomial-mulmod 8): a circuit is a list of chains, each (a, b) an operand reference: -1 a public
+value, k >= 0 the output f of an earlier chain k. Every chain's f (plain fingerprint R_f), a (plain
+fingerprint H_A, one accumulator beside the piece-weighted R_A) and b (R_B) are wiring slots; an operand
+from chain k is an edge to that chain's R_f, a public operand and every unconsumed output a public factor.
+Operands and results are FOLDED-bit values (33 bytes, below 2^257): the copy selector `cp` covers weights
+below 260 so the fold takes a product below 2^516."""
 
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_E, CHAL_MUL
@@ -37,6 +44,10 @@ comptime FOLD = 3           # fold ripple carry bits: (8 + 7) / 2 < 8
 comptime FOLDED = BITS + 1  # the folded result is below 2^257
 comptime HI = ROWS - 2 - (BITS - 1) // Q    # first row of the low half: rows HI..ROWS-2 hold weights below 256
 comptime UP = (ROWS - BITS // Q) % ROWS     # k1 that reads 256 weights up (64 rows), cyclic
+comptime VALUE = FOLDED // 8 + 1            # bytes per operand or result
+comptime TAG_A = 0                          # public input tags: an a operand, a b operand, an output
+comptime TAG_B = 1
+comptime TAG_OUT = 2
 
 
 def _shifts() -> List[Int]:
@@ -55,6 +66,16 @@ def _lo_row(x1: Int) -> Bool:
     return x1 >= HI and x1 <= ROWS - 2
 
 
+def _cp_row(x1: Int) -> Bool:
+    """The copy's rows: weights below 260, one row more than the low half, for a high half of up to 260 bits."""
+    return x1 >= HI - 1 and x1 <= ROWS - 2
+
+
+def single_chain() -> List[Tuple[Int, Int]]:
+    var v: List[Tuple[Int, Int]] = [(-1, -1)]
+    return v^
+
+
 def _c(t: Int, m: Int, j: Int) -> String:
     return "c" + String(t) + String(m) + String(j)
 
@@ -67,8 +88,14 @@ def _row(w: Int) -> Int:
     return ROWS - 2 - w // Q
 
 
-def mulmod_statement(zeros: Bool = True) raises -> Statement:
-    """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against."""
+def mulmod_statement(zeros: Bool = True, circuit: List[Tuple[Int, Int]] = List[Tuple[Int, Int]]()) raises -> Statement:
+    """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
+    `circuit` (default one chain of public operands): per chain (a, b), -1 a public operand or the chain whose
+    output it is."""
+    var chains = circuit.copy() if len(circuit) > 0 else single_chain()
+    for j in range(len(chains)):
+        if chains[j][0] >= j or chains[j][1] >= j:
+            raise Error("a mulmod operand comes from an earlier chain")
     var st = Statement()
     for t in range(PIECES):
         for j in range(Q):
@@ -91,7 +118,8 @@ def mulmod_statement(zeros: Bool = True) raises -> Statement:
         for k in range(FOLD):
             for j in range(Q):
                 st.col(name + String(k) + String(j), BIT)
-    st.pub("lo", 1)     # ponytail: dense (h2, h1) block; m = h2 once the statement knows the grid
+    st.pub("lo", 1)     # ponytail: dense (h2, h1) blocks; m = h2 once the statement knows the grid
+    st.pub("cp", 1)
     # rz[10 t + k] = rho^t zeta^k as element indices, -1 for 1
     var rz = List[Int](length=10 * PIECES, fill=-1)
     rz[1] = ZETA
@@ -107,6 +135,11 @@ def mulmod_statement(zeros: Bool = True) raises -> Statement:
         for j in range(Q):
             ia.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[10 * t + j]))
     st.horner("ra", ia, scale=rz[Q])
+    var ih = List[Term]()
+    for t in range(PIECES):
+        for j in range(Q):
+            ih.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[j]))
+    st.horner("ha", ih, scale=rz[Q])
     var ib = List[Term]()
     for j in range(Q):
         ib.append(Term(1, st.read("b" + String(j)), chal=rz[j]))
@@ -144,20 +177,32 @@ def mulmod_statement(zeros: Bool = True) raises -> Statement:
             st.zero(_y(k, Q - 1), FIX_E)
     _fold_families(st, "r", "h", "o", "z")
     _fold_families(st, "o", "g", "f", "v")
-    var sa = st.slot("ra")
+    var sa = st.slot("ha")
     var sb = st.slot("rb")
     var sf = st.slot("rf")
-    st.public_factor("pa", "ra", sa, 0)
-    st.public_factor("pb", "rb", sb, 0)
-    st.public_factor("pf", "rf", sf, 0)
+    var consumed = List[Bool](length=len(chains), fill=False)
+    for j in range(len(chains)):
+        for side in range(2):
+            var src = chains[j][0] if side == 0 else chains[j][1]
+            var slot = sa if side == 0 else sb
+            var acc = String("ha") if side == 0 else String("rb")
+            if src < 0:
+                st.public_factor("p" + acc + String(j), acc, slot, j)
+            else:
+                st.wire(slot, j, sf, src)
+                consumed[src] = True
+    for j in range(len(chains)):
+        if not consumed[j]:
+            st.public_factor("prf" + String(j), "rf", sf, j)
     return st^
 
 
 def _fold_families(mut st: Statement, src: String, copy: String, dst: String, carry: String) raises:
-    """copy = lo src@UP (the high half, weight-aligned in the low rows); then per position lo src + seven copy
-    reads + carry in = out + 2 carry out. No zero rows: the pile is zero above weight 287 and on the idle row, so every carry above the live weights is forced to zero."""
+    """copy = cp src@UP (the high half, up to 260 bits, weight-aligned in the low rows); then per position
+    lo src + seven copy reads + carry in = out + 2 carry out. No zero rows: the pile is zero above weight 291
+    and on the idle row, so every carry above the live weights is forced to zero."""
     for j in range(Q):
-        st.family(copy + "hi" + String(j), [Term(1, st.read(copy + String(j))), Term(-1, st.read("lo"), st.read(src + String(j), k1=UP))])
+        st.family(copy + "hi" + String(j), [Term(1, st.read(copy + String(j))), Term(-1, st.read("cp"), st.read(src + String(j), k1=UP))])
     for j in range(Q):
         var terms: List[Term] = [Term(1, st.read("lo"), st.read(src + String(j)))]
         for s in _shifts():
@@ -187,7 +232,7 @@ def bytes_of(bits: List[Int]) -> List[UInt8]:
 
 
 def product_bits(a: List[Int], b: List[Int]) -> List[Int]:
-    """The 2 BITS-bit product of two bit vectors."""
+    """The product of two bit vectors, len(a) + len(b) bits."""
     var r = List[Int](length=len(a) + len(b), fill=0)
     for i in range(len(a)):
         if a[i] == 0:
@@ -225,9 +270,9 @@ def fold_bits(bits: List[Int]) -> List[Int]:
     return acc^
 
 
-def folded_bits(a: List[UInt8], b: List[UInt8]) raises -> List[Int]:
-    """The FOLDED bits of the chain's output for the operands."""
-    var f = fold_bits(fold_bits(product_bits(bits_of(a, 0, BITS), bits_of(b, 0, BITS))))
+def folded_bits(a: List[Int], b: List[Int]) raises -> List[Int]:
+    """The FOLDED bits of the chain's output for the operand bits."""
+    var f = fold_bits(fold_bits(product_bits(a, b)))
     for i in range(FOLDED, len(f)):
         if f[i] != 0:
             raise Error("the folded result exceeds " + String(FOLDED) + " bits")
@@ -246,58 +291,70 @@ def _columns(bits: List[Int], grouped: Bool) -> List[UInt8]:
 
 
 def mulmod_trace[p: Params](layout: Layout, a: List[UInt8], b: List[UInt8], cheat: Int = -1) raises -> List[UInt8]:
-    """Chain 0 from the 32-byte operands; the other chains idle. On chain `cheat` (if any) the idle row's slot 3
-    holds a pile of two and the ripple starts from carry 1, so r = a b + 1 there satisfies every family and
-    only the zero row catches it."""
+    """One chain from the 32-byte operands; see `circuit_trace`."""
+    var ab = List[List[Int]]()
+    var bb = List[List[Int]]()
+    ab.append(bits_of(a, 0, BITS))
+    bb.append(bits_of(b, 0, BITS))
+    return circuit_trace[p](layout, ab, bb, cheat)
+
+
+def circuit_trace[p: Params](layout: Layout, abits: List[List[Int]], bbits: List[List[Int]], cheat: Int = -1) raises -> List[UInt8]:
+    """Chain k from its operand bits (at most FOLDED each); the other chains idle. On chain `cheat` (if any)
+    the idle row's slot 3 holds a pile of two and the ripple starts from carry 1, so r = a b + 1 there
+    satisfies every family and only the zero row catches it."""
     comptime h1 = p.h1()
     comptime N = p.N()
-    if h1 != ROWS or cheat >= p.h2():
-        raise Error("the mulmod instance needs " + String(ROWS) + " rows per chain and a cheat chain on the grid")
-    if len(a) != BITS // 8 or len(b) != BITS // 8:
-        raise Error("mulmod operands are 32 bytes")
+    if h1 != ROWS or cheat >= p.h2() or len(abits) > p.h2() or len(abits) != len(bbits):
+        raise Error("the mulmod instance needs " + String(ROWS) + " rows per chain and every chain on the grid")
     var trace = List[UInt8](length=layout.columns_w() * N, fill=0)
-    var ab = bits_of(a, 0, BITS)
-    var bb = bits_of(b, 0, BITS)
-    var ac = _columns(ab, True)
-    for t in range(PIECES):
+    for x2 in range(p.h2()):
+        var live = x2 < len(abits)
+        if not live and x2 != cheat:
+            continue
+        var base = x2 * h1
+        var ab = abits[x2].copy() if live else List[Int]()
+        var bb = bbits[x2].copy() if live else List[Int]()
+        if len(ab) > FOLDED or len(bb) > FOLDED:
+            raise Error("mulmod operands are at most " + String(FOLDED) + " bits")
+        var ac = _columns(ab, True)
+        for t in range(PIECES):
+            for j in range(Q):
+                for x1 in range(h1):
+                    trace[layout.col("a" + String(t) + String(j)) * N + base + x1] = ac[(t * Q + j) * ROWS + x1]
+        var bc = _columns(bb, False)
         for j in range(Q):
             for x1 in range(h1):
-                trace[layout.col("a" + String(t) + String(j)) * N + x1] = ac[(t * Q + j) * ROWS + x1]
-    var bc = _columns(bb, False)
-    for j in range(Q):
-        for x1 in range(h1):
-            trace[layout.col("b" + String(j)) * N + x1] = bc[j * ROWS + x1]
-    for t in range(PIECES):
-        for w in range(t * PIECE, t * PIECE + PIECE + BITS - 1):
-            var c = 0
-            for i in range(t * PIECE, min((t + 1) * PIECE, BITS)):
-                if i <= w and w - i < BITS:
-                    c += ab[i] * bb[w - i]
-            var b6 = 1 if c >= 64 else 0
-            var b5 = 1 if c >= 32 and c < 64 else 0
-            var v = c - 64 * b6 - 32 * b5
-            for m in range(CBITS):
-                var bit = b6 if m == 6 else (b5 if m == 5 else (v >> m) & 1)
-                if bit == 1:
-                    trace[layout.col(_c(t, m, (w + m) % Q)) * N + _row(w + m)] = 1
-    if cheat >= 0:
-        var off = cheat * h1 + h1 - 1
-        trace[layout.col(_c(0, 0, Q - 1)) * N + off] = 1
-        trace[layout.col(_c(0, 1, Q - 1)) * N + off] = 1
-        trace[layout.col(_y(0, Q - 1)) * N + off] = 1
-    for x2 in range(p.h2()):
-        var carry = 1 if x2 == cheat else 0
-        if x2 != 0 and x2 != cheat:
-            continue
+                trace[layout.col("b" + String(j)) * N + base + x1] = bc[j * ROWS + x1]
+        for t in range(PIECES):
+            for w in range(t * PIECE, t * PIECE + PIECE + len(bb)):
+                var c = 0
+                for i in range(t * PIECE, min((t + 1) * PIECE, len(ab))):
+                    if i <= w and w - i < len(bb):
+                        c += ab[i] * bb[w - i]
+                var b6 = 1 if c >= 64 else 0
+                var b5 = 1 if c >= 32 and c < 64 else 0
+                var v = c - 64 * b6 - 32 * b5
+                for m in range(CBITS):
+                    var bit = b6 if m == 6 else (b5 if m == 5 else (v >> m) & 1)
+                    if bit == 1:
+                        trace[layout.col(_c(t, m, (w + m) % Q)) * N + base + _row(w + m)] = 1
+        var carry = 0
+        if x2 == cheat:
+            var off = base + h1 - 1
+            trace[layout.col(_c(0, 0, Q - 1)) * N + off] = 1
+            trace[layout.col(_c(0, 1, Q - 1)) * N + off] = 1
+            trace[layout.col(_y(0, Q - 1)) * N + off] = 1
+            carry = 1
         for w in range(SLOTS):
             var s = carry
             for t in range(PIECES):
                 for m in range(CBITS):
-                    s += Int(trace[layout.col(_c(t, m, w % Q)) * N + x2 * h1 + _row(w)])
-            trace[layout.col("r" + String(w % Q)) * N + x2 * h1 + _row(w)] = UInt8(s & 1)
+                    s += Int(trace[layout.col(_c(t, m, w % Q)) * N + base + _row(w)])
+            trace[layout.col("r" + String(w % Q)) * N + base + _row(w)] = UInt8(s & 1)
             carry = s >> 1
             for k in range(CARRY):
-                trace[layout.col(_y(k, w % Q)) * N + x2 * h1 + _row(w)] = UInt8((carry >> k) & 1)
+                trace[layout.col(_y(k, w % Q)) * N + base + _row(w)] = UInt8((carry >> k) & 1)
         _fold_chain[p](layout, trace, x2, "r", "h", "o", "z")
         _fold_chain[p](layout, trace, x2, "o", "g", "f", "v")
     return trace^
@@ -309,7 +366,7 @@ def _fold_chain[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, src:
     comptime N = p.N()
     var base = x2 * h1
     for x1 in range(h1):
-        if _lo_row(x1):
+        if _cp_row(x1):
             for j in range(Q):
                 trace[layout.col(copy + String(j)) * N + base + x1] = trace[layout.col(src + String(j)) * N + base + (x1 + UP) % h1]
     var cy = 0
@@ -325,38 +382,95 @@ def _fold_chain[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, src:
             trace[layout.col(carry + String(k) + String(w % Q)) * N + base + x1] = UInt8((cy >> k) & 1)
 
 
+def circuit_values(inputs: List[List[UInt8]], circuit: List[Tuple[Int, Int]]) raises -> Tuple[List[List[Int]], List[List[Int]], List[List[Int]]]:
+    """(a bits, b bits, f bits) per chain: public operands taken from `inputs` in circuit order."""
+    var abits = List[List[Int]]()
+    var bbits = List[List[Int]]()
+    var fbits = List[List[Int]]()
+    var next = 0
+    for j in range(len(circuit)):
+        for side in range(2):
+            var src = circuit[j][0] if side == 0 else circuit[j][1]
+            var v: List[Int]
+            if src < 0:
+                if next >= len(inputs) or len(inputs[next]) != VALUE or inputs[next][VALUE - 1] > 1:
+                    raise Error("mulmod public operands are " + String(VALUE) + " bytes below 2^" + String(FOLDED) + ", one per public reference")
+                v = bits_of(inputs[next], 0, FOLDED)
+                next += 1
+            elif src < j:
+                v = fbits[src].copy()
+            else:
+                raise Error("a mulmod operand comes from an earlier chain")
+            if side == 0:
+                abits.append(v^)
+            else:
+                bbits.append(v^)
+        fbits.append(folded_bits(abits[j], bbits[j]))
+    if next != len(inputs):
+        raise Error("mulmod has more public operands than the circuit references")
+    return (abits^, bbits^, fbits^)
+
+
 @fieldwise_init
 struct Mulmod(Workload, Copyable, Movable):
-    """a b = f mod p on chain 0 of a ROWS x h2 grid, f below 2^257. Public inputs: a, b (32 bytes each,
-    little-endian), f (33 bytes)."""
-    var a: List[UInt8]
-    var b: List[UInt8]
+    """A circuit of products mod p on chains 0 .. len(circuit) - 1 of a ROWS x h2 grid (`mulmod_statement`).
+    Public inputs: per public operand and per unconsumed output, in statement order, a tag byte (TAG_A, TAG_B,
+    TAG_OUT) then the VALUE-byte little-endian value."""
+    var inputs: List[List[UInt8]]
+    var circuit: List[Tuple[Int, Int]]
 
     def statement(self) raises -> Statement:
-        return mulmod_statement()
+        return mulmod_statement(circuit=self.circuit)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
-        return mulmod_trace[p](layout, self.a, self.b)
+        var vals = circuit_values(self.inputs, self.circuit)
+        return circuit_trace[p](layout, vals[0], vals[1])
 
     def public_inputs[p: Params](self) raises -> List[UInt8]:
-        var v = self.a.copy()
-        v.extend(self.b.copy())
-        v.extend(bytes_of(folded_bits(self.a, self.b)))
+        var vals = circuit_values(self.inputs, self.circuit)
+        var v = List[UInt8]()
+        var next = 0
+        var consumed = List[Bool](length=len(self.circuit), fill=False)
+        for j in range(len(self.circuit)):
+            for side in range(2):
+                var src = self.circuit[j][0] if side == 0 else self.circuit[j][1]
+                if src < 0:
+                    v.append(UInt8(TAG_A) if side == 0 else UInt8(TAG_B))
+                    v.extend(self.inputs[next].copy())
+                    next += 1
+                else:
+                    consumed[src] = True
+        for j in range(len(self.circuit)):
+            if not consumed[j]:
+                v.append(UInt8(TAG_OUT))
+                v.extend(bytes_of(vals[2][j]))
         return v^
 
     @staticmethod
     def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
-        """The selector block (1 on the low-half rows of every chain), then the three factors' ingest columns:
-        a in its pieces, b, f."""
-        if len(public_inputs) != BITS // 4 + FOLDED // 8 + 1 or p.h1() != ROWS:       # 32 + 32 + 33 bytes
-            raise Error("mulmod public inputs are a, b, f on " + String(ROWS) + " rows per chain")
-        if public_inputs[len(public_inputs) - 1] > 1:       # the fingerprint reads FOLDED bits: the top seven bits of the last byte must be zero
-            raise Error("mulmod result exceeds " + String(FOLDED) + " bits")
-        var data = List[UInt8](capacity=p.N() + (PIECES + 2) * Q * ROWS)
+        """The two selector blocks (the same on every chain), then every tagged value's ingest columns: an a
+        operand in its pieces (12 columns), a b operand or an output plain (4)."""
+        if len(public_inputs) % (VALUE + 1) != 0 or p.h1() != ROWS:
+            raise Error("mulmod public inputs are tagged " + String(VALUE) + "-byte values on " + String(ROWS) + " rows per chain")
+        var data = List[UInt8](capacity=2 * p.N() + len(public_inputs) // (VALUE + 1) * PIECES * Q * ROWS)
         for _ in range(p.h2()):
             for x1 in range(ROWS):
                 data.append(UInt8(1) if _lo_row(x1) else UInt8(0))
-        data.extend(_columns(bits_of(public_inputs, 0, BITS), True))
-        data.extend(_columns(bits_of(public_inputs, BITS // 8, BITS), False))
-        data.extend(_columns(bits_of(public_inputs, BITS // 4, FOLDED), False))
+        for _ in range(p.h2()):
+            for x1 in range(ROWS):
+                data.append(UInt8(1) if _cp_row(x1) else UInt8(0))
+        for i in range(len(public_inputs) // (VALUE + 1)):
+            var off = i * (VALUE + 1)
+            if public_inputs[off] > TAG_OUT or public_inputs[off + VALUE] > 1:       # the fingerprint reads FOLDED bits: the top seven bits of the last byte must be zero
+                raise Error("mulmod value tag or value exceeds " + String(FOLDED) + " bits")
+            data.extend(_columns(bits_of(public_inputs, off + 1, FOLDED), Int(public_inputs[off]) == TAG_A))
         return data^
+
+
+def value_bytes_of(v: List[UInt8]) raises -> List[UInt8]:
+    """A 32-byte value as a VALUE-byte operand."""
+    if len(v) != BITS // 8:
+        raise Error("a 32-byte value")
+    var w = v.copy()
+    w.append(0)
+    return w^
