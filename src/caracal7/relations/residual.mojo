@@ -77,20 +77,28 @@ def _read[p: Params](base: Base, lde: Buf[2], at: Int, j1: Int, j2: Int) -> F2:
 
 
 struct Family[p: Params](Loader):
-    """B[entry, point] of the residual GEMM, gathered from the LDE: D = G1, so n_hi = j2, n_lo = j1.
-    aux0 = lde, aux1 = gate1, aux2 = gate2."""
+    """B[entry, point] of the residual GEMM, gathered from the LDE. The point of (n_hi, n_lo) by sb_lo:
+    0 all of G (D = G1: j2 = n_hi, j1 = n_lo); 1 the odd rows (D = G1: j2 = 2 n_hi + 1); 2 the odd
+    columns of the even rows (D = h1: j2 = 2 n_hi, j1 = 2 n_lo + 1). aux0 = lde, aux1 = gate1, aux2 = gate2."""
 
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
+        var j1 = n_lo
+        var j2 = n_hi
+        if o.sb_lo == 1:
+            j2 = 2 * n_hi + 1
+        elif o.sb_lo == 2:
+            j2 = 2 * n_hi
+            j1 = 2 * n_lo + 1
         var ent = Int(o.b) + k * ENTRY
-        var v = _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 16, n_lo, n_hi)
+        var v = _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 16, j1, j2)
         if u16(base, ent + 22) != NONE:
-            v = ext_mul[1](v, _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 22, n_lo, n_hi))
+            v = ext_mul[1](v, _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 22, j1, j2))
         var mult = Buf[1](ent).load(base, 28)
         if mult == 1:
-            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + n_lo * 2))
+            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + j1 * 2))
         elif mult == 2:
-            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux2) + n_hi * 2))
+            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux2) + j2 * 2))
         return v
 
 
@@ -113,7 +121,8 @@ def k_horner_residual[p: Params](base: Base, lde: Buf[2], families: Buf[1], accs
                                  gate1: Buf[2], dst: Buf[16]):
     """dst[point] += sum over Horner accumulators of gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)), one
     thread per point; kappa_A = alpha^f and kappa_B = -alpha^f scale are the folded kappas of the basis-0
-    entries (ir.Families.horner puts the 2 e basis entries just before the ingest range)."""
+    entries (ir.Families.horner puts the 2 e basis entries just before the ingest range). On H x H the
+    residual of a satisfied statement is zero, so the GEMM skips that quadrant and this kernel writes it."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     var gid = Int(global_idx.x)
@@ -124,6 +133,11 @@ def k_horner_residual[p: Params](base: Base, lde: Buf[2], families: Buf[1], accs
     var jn = j1 + 2
     if jn >= G1:
         jn -= G1
+    if (j1 & 1) == 0 and (j2 & 1) == 0:
+        dst.store(base, gid, E(0))
+        return
+    if n_accs == 0:
+        return
     var g = gate1.load(base, j1)
     var acc = dst.load(base, gid)
     for k in range(Int(n_accs)):
@@ -187,19 +201,23 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
     if families_g != families:
         ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[16](alpha), Buf[16](chals),
                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
-    var o = strided(a=families_g, sa_m=2, sa_k=ENTRY, b=families_g, sb_k=0, sb_hi=0, sb_lo=0,
-                    c=dst, sc_m=2, sc_hi=G1 * p.e, sc_lo=p.e)
+    # the odd rows (coset x G1), then the odd columns of the even rows (H2 x coset): R = 0 on H x H
+    var o = strided(a=families_g, sa_m=2, sa_k=ENTRY, b=families_g, sb_k=0, sb_hi=0, sb_lo=1,
+                    c=dst + G1 * p.e, sc_m=2, sc_hi=2 * G1 * p.e, sc_lo=p.e)
     o.aux0 = Int64(lde_buf)
     o.aux1 = Int64(tab.base + tab.gate1)
     o.aux2 = Int64(tab.base + tab.gate2)
-    # ponytail: D = G1 is not a power of two, so the point split costs an integer division per gathered
+    # ponytail: D is not a power of two, so the point split costs an integer division per gathered
     # element; a (j2, j1) 2D launch removes it when the residual shows up in the profile.
-    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, arena, o, p.e // 2, G1 * G2, count_g)
-    if n_accs > 0:
-        comptime kh = k_horner_residual[p]
-        ctx.enqueue_function[kh](arena.buf, Buf[2](lde_buf), Buf[1](families), Buf[1](accs), Int32(n_accs),
-                                 Buf[2](tab.base + tab.gate1), Buf[16](dst),
-                                 grid_dim=ceildiv(G1 * G2, BACKEND.block), block_dim=BACKEND.block)
+    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, arena, o, p.e // 2, G1 * p.h2(), count_g)
+    o.sb_lo = 2
+    o.c = Int64(dst + p.e)
+    o.sc_lo = Int64(2 * p.e)
+    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], p.h1()](ctx, arena, o, p.e // 2, p.h1() * p.h2(), count_g)
+    comptime kh = k_horner_residual[p]
+    ctx.enqueue_function[kh](arena.buf, Buf[2](lde_buf), Buf[1](families), Buf[1](accs), Int32(n_accs),
+                             Buf[2](tab.base + tab.gate1), Buf[16](dst),
+                             grid_dim=ceildiv(G1 * G2, BACKEND.block), block_dim=BACKEND.block)
 
 
 def quotient[p: Params](ctx: DeviceContext, arena: Arena,
