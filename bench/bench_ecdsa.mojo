@@ -1,4 +1,4 @@
-"""One ECDSA signature on the 144 x 896 grid: setup by step (compile, the host walk, public data, advice),
+"""One ECDSA signature on the 144 x 576 grid: setup by step (compile, the host walk, public data, advice),
 prove warm, then profiled by stage; verify on the host with its profile."""
 
 from std.time import perf_counter_ns
@@ -75,4 +75,4 @@ def run[p: Params]() raises:
 
 
 def main() raises:
-    run[CLIENT.grid(144, 896)]()
+    run[CLIENT.grid(144, 576)]()

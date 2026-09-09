@@ -1,4 +1,4 @@
-"""The ECDSA circuit: op counts on the 144 x 896 grid, the live walk emitting the fixed circuit op for op,
+"""The ECDSA circuit: op counts on the 144 x 576 grid, the live walk emitting the fixed circuit op for op,
 the host solver closing on a valid signature and refusing a changed message, then the prover round trip,
 its proof size, and the proof rejected against a claim with a changed message."""
 
@@ -12,7 +12,7 @@ from caracal7.workloads.ecdsa import Curve, Point, Ecdsa, walk
 from caracal7.workloads.mulmod import MUL, chain_count, circuit_values
 from caracal7.workload import prove_workload, verify_workload
 
-comptime p = CLIENT.grid(144, 896)
+comptime p = CLIENT.grid(144, 576)
 
 
 def _signature() raises -> Tuple[Big, Big, Big, Point]:
@@ -32,8 +32,8 @@ def test_circuit_shape_and_host_walk() raises:
     for op in ops:
         if op.kind == MUL:
             muls += 1
-    assert_equal(muls, 786)
-    assert_equal(len(ops) - muls, 1520)
+    assert_equal(muls, 572)
+    assert_equal(len(ops) - muls, 940)
     assert_true(chain_count(ops) <= p.h2())
     print("ops:", len(ops), "chains:", chain_count(ops))
     var sig = _signature()

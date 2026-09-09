@@ -732,3 +732,14 @@ int32. Both axes, forward and inverse, use the same kernel (axis 1 with W = 1, t
 directly). ECDSA: lde 3126 -> 162 ms, encode W 1035 -> 697, encode Z 917 -> 525, warm prove 7.8 -> 4.5 s.
 `Operands` gained a two-level batch index on the way (`zd`, `s_zz`), which the split-K opening uses.
 Not done: the small grid and the quotient still use the dense `wfwd2`, `ginv2`, `winv2` tables.
+
+## One public addend per window (2026-09-09)
+
+The ECDSA walk added two public points per 4-bit window on the `Q` side and 32 fixed-base points after
+the doublings: 97 additions, 786 MUL. Every addend is public, so a window can add one point: GLV on
+`u1` as well as `u2`, four signed halves below `2^128`, 22 windows of 6 bits, `P_w = sum_i d_{i,w} T_i`
+built by the verifier from four 66-entry tables (Straus-Shamir). 126 doublings and 23 additions, 572 MUL,
+grid `144 x 576`: proof 683,392 -> 631,856 bytes, warm prove 4,503 -> 2,794 ms, verify 1,358 -> 922 ms.
+The RS domain did not shrink (20,736 symbols per column still take 4 cosets of 161,280), so the RS
+stages, Merkle and tail costs are unchanged; the next step down needs `N / 4 <= 16,128`, which a
+`a b - c d = 0` MUL op (3 MUL per doubling, `h2 = 448`) would reach.

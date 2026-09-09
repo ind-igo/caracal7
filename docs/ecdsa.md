@@ -27,14 +27,14 @@ operations plus one fixed multiple of the blinding point (section 3). The finger
 verifier anyway: about 200 of them at 256 `E` products each, against a few thousand field products for the
 curve work.
 
-- `Q` side: GLV split `u2 = k1 + k2 lambda mod n` with signed magnitudes below `2^128` (libsecp256k1's
-  split), bases `Q` and `phi(Q) = (beta x_Q, y_Q)`, the sign of a half absorbed into the base (`-T = (x, p -
-  y)`). 32 windows of 4 bits: 124 doublings (the accumulator starts at `16 B`, so window 31 needs none) and 64
-  additions.
-- `G` side: fixed base, 8-bit signed odd digits, tables `d 2^(8 w) G` for `w = 0..31`: 4,096 points of
-  constants (256 KiB) plus the window-0 correction entries. 32 additions, no doublings. The `G` additions
-  come after the last doubling, so nothing scales them.
-- Recoding of an odd magnitude `k` in base `2^b` (`b = 4` or `8`): for the low 31 digits, `d = (k mod 2^(b+1))
+- Straus-Shamir over four GLV halves (2026-09-09, replacing a `Q` side of two addends per 4-bit window and
+  a fixed-base `G` side of 32 8-bit additions): `u2 = k1 + k2 lambda`, `u1 = k3 + k4 lambda mod n`, signed
+  magnitudes below `2^128` (libsecp256k1's split), bases `Q`, `phi(Q) = (beta x_Q, y_Q)`, `G`, `phi(G)`, the
+  sign of a half absorbed into its base (`-T = (x, p - y)`). 22 windows of 6 bits; window `w` adds the one
+  public point `P_w = sum_i d_{i,w} T_i`, which the verifier builds from four tables of the multiples `T ..
+  65 T` (about 260 host additions, plus 3 per window). 126 doublings (the accumulator starts at `16 B`, so
+  window 21 needs none) and 22 additions.
+- Recoding of an odd magnitude `k` in base `2^b` (`b = 6`): for the low 31 digits, `d = (k mod 2^(b+1))
   - 2^b`, `k <- (k - d) / 2^b`, which keeps `k` odd; digit 31 is what remains. Every odd `|k| < 2^(32 b)`
   has exactly this representation (Codex checked the small lengths exhaustively). Without the terminal
   rule the recurrence never ends: `k = 1` emits `-15` forever.
@@ -42,14 +42,13 @@ curve work.
   with `c = 1` for even `k` and `c = 2` for odd `k`, and window 0 adds `(d_0 + c) T` instead of `d_0 T`.
   `k = 0` and `k = 1` both recode `-1` (terminal digit `-1`, the low digits `15`). The sign of the base is
   the GLV half's sign only; skewing the magnitude and then moving the sign into the base would reverse the
-  skew and make zero contribute `-2 T`. The window-0 entries are `(d_0 + c) T` for `d_0 + c` in `[-14, 17]`
-  (`Q` side) or `[-254, 257]` (`G` side); the verifier builds `T .. 17 T` for `Q` (one doubling, fifteen
-  additions) and `phi` of them (seventeen field products), or only the selected entry.
-- If a window-0 addend is the identity (`d_0 + c = 0`), the step adds `B` instead, and the closing constant
-  subtracts one more `B`. All such steps come after the last doubling, so the correction is exactly `t B`,
-  `t <= 3`: four closing constants `-(2^128 + t) B`.
-- Schedule: `acc = 16 B`; window 31 of the `Q` side (two additions); for `w = 30..0`: four doublings, two
-  additions; then the 32 `G` additions; then the closing constant; the last addition computes only `x`.
+  skew and make zero contribute `-2 T`. The window-0 entries are `(d_0 + c) T` for `d_0 + c` in `[-62, 65]`; the
+  verifier builds `T .. 65 T` per base.
+- If `P_w` is the identity (possible only for a `Q` that is a small-ratio multiple of `G`), the step adds `B`
+  instead and the closing constant subtracts `2^(6 w) B` more: `t = sum 2^(6 w)` over such windows, the
+  closing constant `-(2^130 + t) B`.
+- Schedule: `acc = 16 B`; window 21; for `w = 20..0`: six doublings, one addition; then the closing constant;
+  the last addition computes only `x`.
 
 ## 3. The blinding point and the denominator guard
 
@@ -65,8 +64,8 @@ step is.
 So `B` is per instance: `B = hash_to_curve(Q, r, s, e)` (try-and-increment on a hash of the canonical
 encoding). Then `R`, and every partial sum, is fixed before `B` is known, and an exceptional step is a
 relation between `log B` and public scalars: negligible in the random-oracle model, for the honest prover
-(completeness) and for any statement chooser. The verifier computes `16 B` and `2^128 B` (132 doublings)
-and the four closing constants; that is the "one fixed multiple" of section 2.
+(completeness) and for any statement chooser. The verifier computes `16 B` and `2^130 B` (130 doublings)
+and the closing constant; that is the "one fixed multiple" of section 2.
 
 Soundness does not rest on that argument. Each addition carries the guard `dx != 0 mod p`: CANON on `dx`
 (`dx < p`) and `dx = 1 + y` for a witness `y` bounded by `bd`, with the quotient masked to zero like CANON's
@@ -93,13 +92,16 @@ quotient `q` in `[-2, 6]` fits the 4-bit signed encoding).
 - closing: CANON `x_R`, then `x_R - r = q n` on the chain whose modulus block holds `n`: 2 add-lane ops. `x_R
   < p < 2 n` and `0 < r < n` force `q` into `{0, 1}`; `r + n >= p` just makes `q = 1` impossible.
 
-Counts: 124 doublings, `64 + 32 + 1 = 97` additions (the last without `x1 - x3` and `y3`): `496 + 290 =
-786` MUL; `124 x 6 + 97 x 8 - 2 + 2 = 1,520` add-lane ops, 760 chains' worth with two lanes. The MUL count
-sets the chain count: `h2 = 896 = 2^7 7`, grid `144 x 896`, 129,024 rows, about 110 idle MUL lanes. The spec's row for ECDSA is `144 x 1344` at 1,300
+Counts: 126 doublings, `22 + 1 = 23` additions (the last without `x1 - x3` and `y3`): `504 + 68 = 572` MUL;
+`126 x 6 + 23 x 8 - 2 + 2 = 940` add-lane ops, 470 chains' worth with two lanes. The MUL count sets the chain
+count: `h2 = 576 = 2^6 9`, grid `144 x 576`, 82,944 rows, 4 idle MUL lanes. (Before Straus-Shamir: 786 MUL,
+1,520 add-lane ops, `144 x 896`.) The RS domain does not shrink with the grid: 20,736 symbols per column
+still take the 4 cosets of order 161,280 (rate 1/31), so the RS stages, the Merkle work and the tail are
+unchanged; the grid stages are 36% smaller. The spec's row for ECDSA is `144 x 1344` at 1,300
 mulmods; the difference is the fixed-base comb (no doublings for `G`) and the public odd-multiple table of
-`Q` (no table chains). Public factors: 97 additions x 2 coordinates, `16 B`, the closing constant, `r`,
-the constants `1`, `p - 1`, `n`: about 200 fingerprints, one coset of the 18 at `h2 = 896` (11 are wiring
-slots: 3 on the MUL lane, 4 per add lane).
+`Q` (no table chains). Public factors: 23 additions x 2 coordinates, `16 B`, the closing constant, `r`,
+the constants `1`, `p - 1`, `n`: about 50 points, 18 public columns (11 are wiring slots: 3 on the MUL lane,
+4 per add lane).
 
 ## 5. Builder changes
 
@@ -130,8 +132,8 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 
 ## 6. Open
 
-- 16-bit windows for `G` (16 additions, about 32 MiB of constants) if the 32 `G` additions ever matter; they
-  are about 12% of the MUL count.
+- A MUL op certifying `a b - c d = 0` makes a doubling 3 MUL: `378 + 68 = 446` MUL fits `h2 = 448`, and
+  `N / 4 = 16,128` symbols then take 2 cosets (RS domain halved). Costs a second operand set of columns.
 - secp256r1: `a = -3` (one more op per doubling), no endomorphism (256 doublings), a different fold.
 - The hash-to-curve for `B`: which hash, and whether the encoding of `(Q, r, s, e)` it takes is the
   public-input byte string as is.
@@ -149,15 +151,14 @@ Deviations from sections 4 and 5:
 
 - The slope enters as a **hint operand** (`hint(h)` in `mulmod.mojo`): a witness with no factor, wired
   between its three occurrences (`l dx`, `l l`, `l (x1 - x3)`), bounded by the piece selectors on `a` and a
-  new `bbd` family on `b`. The op counts of section 4 assumed that and hold: 786 MUL, 1,520 add-lane ops,
-  2,306 ops on 786 chains of the `144 x 896` grid, 221 hints, 492 public factors (each public point's
-  coordinate is a factor at every operand that reads it, `x2` twice per addition; the count of section 4
-  was per point, not per read). `q` is `b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`.
+  new `bbd` family on `b`. The op counts of section 4 assumed that and hold: 572 MUL, 940 add-lane ops,
+  1,512 ops on 572 chains of the `144 x 576` grid (each public point's coordinate is a factor at every
+  operand that reads it, `x2` twice per addition). `q` is `b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`.
 - No circuit header: `mulmod_statement(pin=False)`. The public inputs are the 160 bytes.
-- The fixed-base tables are not constants yet: `walk` computes `2^(8 w) G` and the 32 selected multiples per
-  signature (about 800 curve operations, ponytail-marked). With the 132 doublings for the blinding constants
-  and the `Q` tables, a live walk is about 1,000 affine operations at a few milliseconds each.
+- The four digit tables (66 multiples each of `Q`, `phi(Q)`, `G`, `phi(G)`) are built per signature; with
+  the 130 doublings for the blinding constants a live walk is about 500 affine operations at a few
+  milliseconds each. The `G` tables could be constants.
 
-Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 896)`, `e = 16`: proof 683,392 bytes; the prover
-round trip test (two live walks, prove, verify) 30.5 s; the verifier's proof work under 0.4 s (the profile
-lines in the test output), the rest of its time the walk and the 492 fingerprints.
+Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 576)`, `e = 16`: proof 631,856 bytes; warm prove
+2,794 ms, verify 922 ms (before Straus-Shamir on the `144 x 896` grid: 683,392 bytes, 4,503 ms, 1,358 ms);
+the prover round trip test (two live walks, prove, verify) 10.2 s.

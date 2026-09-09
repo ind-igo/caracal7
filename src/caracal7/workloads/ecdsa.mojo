@@ -222,9 +222,8 @@ def skew(k: Big) -> Tuple[Big, Int]:
 
 # ---- the circuit ----
 
-comptime WINDOWS = 32
-comptime QW = 4             # window bits on the Q side (GLV halves below 2^128)
-comptime GW = 8             # window bits on the fixed base
+comptime QW = 6             # window bits; the four GLV halves are below 2^128
+comptime WINDOWS = 22       # ceil(128 / QW)
 comptime INPUT = 5 * 32     # r, s, e, x_Q, y_Q, 32 little-endian bytes each
 
 
@@ -373,11 +372,12 @@ def _signed(c: Curve, t: Point, k: Big) -> Point:
 
 def walk(var c: Curve, r: Big, s: Big, e: Big, q: Point, live: Bool) raises -> Walk:
     """The fixed circuit; with `live`, the verifier's checks on (r, s, e, Q), then the public factor values
-    and hints of that signature."""
+    and hints of that signature. Window w adds one public point P_w = sum over the four GLV halves
+    (u2 on Q, phi(Q); u1 on G, phi(G)) of d_w T (Straus-Shamir), built from four small tables."""
     var w = Walk(c^, live)
-    var pts1 = List[Point]()
-    var pts2 = List[Point]()
-    var ptsg = List[Point]()
+    var pts = List[Point]()
+    for _ in range(WINDOWS):
+        pts.append(Point.identity())
     var b16 = Point.identity()
     var b = Point.identity()
     if live:
@@ -386,62 +386,41 @@ def walk(var c: Curve, r: Big, s: Big, e: Big, q: Point, live: Bool) raises -> W
         if q.inf or not w.c.on_curve(q):
             raise Error("Q is a finite point of the curve with canonical coordinates")
         var inv = s.inv_mod(w.c.n)
-        var u1 = e.mulmod(inv, w.c.n)
-        var u2 = r.mulmod(inv, w.c.n)
-        var halves = w.c.split(u2)
-        for i in range(2):
-            var k = halves[0].copy() if i == 0 else halves[1].copy()
-            var base = q.copy() if i == 0 else w.c.phi(q)
-            var t = _signed(w.c, base, k)
-            var sk = skew(k.abs())
-            var pts = _digit_points(w.c, t, recode(sk[0], QW), sk[1])
-            if i == 0:
-                pts1 = pts^
-            else:
-                pts2 = pts^
-        # ponytail: the fixed-base tables recomputed per signature (about 800 curve operations); constants later
-        var sk = skew(u1)
-        var dg = recode(sk[0], GW)
-        var pw = w.c.g.copy()
-        for i in range(WINDOWS):
-            var d = dg[i] + (sk[1] if i == 0 else 0)
-            ptsg.append(w.c.mul(pw, Big(d)))
-            for _ in range(GW):
-                pw = w.c.double(pw)
+        var h1 = w.c.split(e.mulmod(inv, w.c.n))
+        var h2 = w.c.split(r.mulmod(inv, w.c.n))
+        var ks: List[Big] = [h2[0].copy(), h2[1].copy(), h1[0].copy(), h1[1].copy()]
+        var bases: List[Point] = [q.copy(), w.c.phi(q), w.c.g.copy(), w.c.phi(w.c.g)]
+        for i in range(4):
+            var t = _signed(w.c, bases[i], ks[i])
+            var sk = skew(ks[i].abs())
+            var half = _digit_points(w.c, t, recode(sk[0], QW, WINDOWS), sk[1])
+            for j in range(WINDOWS):
+                pts[j] = w.c.add(pts[j], half[j])
         b = w.c.blinding(public_bytes(r, s, e, q))
         b16 = b.copy()
         for _ in range(4):
             b16 = w.c.double(b16)
-    else:
-        for _ in range(WINDOWS):
-            pts1.append(Point.identity())
-            pts2.append(Point.identity())
-            ptsg.append(Point.identity())
-    var t = 0
+    var t = Big()                                  # sum of 2^(QW i) over the windows that added B
 
-    def addend(mut w: Walk, pt: Point, mut t: Int, b: Point) raises:
+    def addend(mut w: Walk, pt: Point, mut t: Big, i: Int, b: Point) raises:
         if w.live and pt.inf:
-            t += 1
+            t = t + Big(1).shl(QW * i)
             w.addition(b)
         else:
             w.addition(pt)
 
     w.start(b16)
-    addend(w, pts1[WINDOWS - 1], t, b)
-    addend(w, pts2[WINDOWS - 1], t, b)
+    addend(w, pts[WINDOWS - 1], t, WINDOWS - 1, b)
     for i in range(WINDOWS - 2, -1, -1):
         for _ in range(QW):
             w.doubling()
-        addend(w, pts1[i], t, b)
-        addend(w, pts2[i], t, b)
-    for i in range(WINDOWS):
-        addend(w, ptsg[i], t, b)
+        addend(w, pts[i], t, i, b)
     var close = Point.identity()
     if live:
-        var b128 = b16.copy()
-        for _ in range(WINDOWS * QW - 4):
-            b128 = w.c.double(b128)
-        close = w.c.neg(w.c.add(b128, w.c.mul(b, Big(t))))
+        var btop = b16.copy()
+        for _ in range((WINDOWS - 1) * QW):
+            btop = w.c.double(btop)
+        close = w.c.neg(w.c.add(btop, w.c.mul(b, t)))
     w.addition(close, x_only=True)
     w.closing(r)
     return w^
