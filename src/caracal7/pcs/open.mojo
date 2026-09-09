@@ -210,8 +210,8 @@ def open[p: Params](ctx: DeviceContext, arena: Arena,
     var splits = open_splits[p]()
     var K = N // splits
     launch_gemm_f2[BACKEND, LANE_TILE, Bytes, 1](ctx, arena, strided(
-        a=w_z, sa_m=2, sa_k=e, sa_z=K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K, sb_zd=splits,
-        c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e), e // 2, columns, K, batch=points * splits)
+        a=w_z, sa_m=2, sa_k=e, sa_z=K * e, sa_zz=splits * K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
+        c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e, sc_zz=splits * columns * e, zd=splits), e // 2, columns, K, batch=points * splits)
     var total = points * columns * e
     ctx.enqueue_function[k_sum_splits](arena.buf, Buf[1](partial), Int32(splits), Int32(columns * e), Buf[1](dst), Int32(row_columns * e), Int32(total),
                                        grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)

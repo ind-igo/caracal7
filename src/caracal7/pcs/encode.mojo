@@ -45,6 +45,7 @@ from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
+from caracal7.core.dft import dft_axis2
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
@@ -84,9 +85,7 @@ def idft2[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, ctmp: Int, co
     var o1 = strided(a=tab.base + tab.winv1, sa_m=h1 * 2, sa_k=2, b=trace, sb_k=1, sb_hi=h1, sb_lo=0,
                      c=ctmp, sc_m=2, sc_hi=h1 * 2, sc_lo=0)
     launch_gemm_f2[BACKEND, BACKEND.tile, Bytes, 1](ctx, arena, o1, h1, columns * h2, h1)
-    var o2 = strided(a=tab.base + tab.winv2, sa_m=h2 * 2, sa_k=2, b=ctmp, sb_k=h1 * 2, sb_hi=2, sb_lo=0,
-                     c=coeff, sc_m=h1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * h1 * 2, sc_z=h2 * h1 * 2)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o2, h2, h1, h2, batch=columns)
+    dft_axis2[p, False](ctx, arena, ctmp, coeff, h1, columns, tab.base + tab.inv2)
 
 
 # ---- to_stored: mixed basis on the odd digit, Frobenius-real slots (spec 9.1) ----

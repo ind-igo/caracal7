@@ -50,7 +50,7 @@ struct Run:
         var tab = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(tab.bytes)
         var families = bump.alloc(len(c.families))
-        var ltmp = bump.alloc(cw * h2 * G1 * 2)
+        var ltmp = bump.alloc(cw * 2 * h2 * G1 * 2)
         var lde_buf = bump.alloc((cw + cp) * G * 2)
         var pub_vals = bump.alloc(cp * N)
         var pub_buf = bump.alloc(cp * N * 2)

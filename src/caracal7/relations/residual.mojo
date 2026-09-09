@@ -25,6 +25,7 @@ from caracal7.core.backend import BACKEND, LANE_TILE, Operands, Loader, Strided,
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
+from caracal7.core.dft import dft_axis2
 from std.gpu import global_idx
 
 
@@ -114,15 +115,12 @@ def lde[p: Params](ctx: DeviceContext, arena: Arena,
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime G1 = 2 * h1
-    comptime G2 = 2 * h2
     # axis 1: rows are the (column, k2) lines, B[k1, j1] = g1^(j1 k1) read from the (j, k) table
     var o1 = strided(a=coeff, sa_m=h1 * 2, sa_k=2, b=tab.base + tab.wfwd1, sb_k=2, sb_hi=h1 * 2, sb_lo=0,
                      c=ltmp, sc_m=G1 * 2, sc_hi=2, sc_lo=0)
     launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o1, columns * h2, G1, h1)
-    # axis 2: per column, C[j2, j1] = sum_k2 g2^(j2 k2) ltmp[k2, j1]
-    var o2 = strided(a=tab.base + tab.wfwd2, sa_m=2 * h2 * 2, sa_k=2, b=ltmp, sb_k=G1 * 2, sb_hi=2, sb_lo=0,
-                     c=dst, sc_m=G1 * 2, sc_hi=2, sc_lo=0, sb_z=h2 * G1 * 2, sc_z=G2 * G1 * 2)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o2, G2, G1, h2, batch=columns)
+    # axis 2: per column, C[j2, j1] = sum_k2 g2^(j2 k2) ltmp[k2, j1]; ltmp holds G2 rows per column as scratch
+    dft_axis2[p, True](ctx, arena, ltmp, dst, G1, columns, tab.base + tab.fwd2)
 
 
 def residual[p: Params](ctx: DeviceContext, arena: Arena,

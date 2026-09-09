@@ -14,6 +14,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.field import F2, F4, f_add, f_sub, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
 from caracal7.core.params import Params
+from caracal7.core.dft import DftPlan
 
 comptime F2_ORDER = 16128            # |F2*| = 127^2 - 1
 comptime F4_ORDER = 260144640        # |F4*| = 127^4 - 1
@@ -243,6 +244,8 @@ struct TableLayout(TrivialRegisterPassable):
     var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
+    var fwd2: Int       # DftPlan(2 h2, h2) stage tables of the axis-2 forward DFT (dft.mojo)
+    var inv2: Int       # DftPlan(h2, h2) stage tables of the axis-2 inverse DFT, h2^-1 folded in
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
@@ -265,6 +268,8 @@ struct TableLayout(TrivialRegisterPassable):
         self.qinv2 = off; off += p.h2() * p.h2() * 2
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
+        self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
+        self.inv2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.bytes = off
 
 
@@ -300,7 +305,27 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
 
     _residual_tables[p](h, t, d)
+    _dft_tables(h, t.fwd2, DftPlan(2 * p.h2(), p.h2()), d.g2, 1)
+    _dft_tables(h, t.inv2, DftPlan(p.h2(), p.h2()), w2_inv, inv_h2)
     return h^
+
+
+def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8):
+    """The three stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3."""
+    var n = plan.n
+    var n1 = plan.n1
+    var n2 = plan.n2
+    var n3 = plan.n3
+    for j3 in range(n3):
+        for k3 in range(plan.k3):
+            _put(h, at + plan.t3() + (j3 * plan.k3 + k3) * 2, f_mul(ext_pow[1](root, (n1 * n2 * j3 * k3) % n), F2(scale)))
+        for j2 in range(n2):
+            for k2 in range(n2):
+                _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_pow[1](root, (n1 * (j3 + n3 * j2) * k2) % n))
+    for jj in range(n2 * n3):
+        for j1 in range(n1):
+            for k1 in range(n1):
+                _put(h, at + plan.t1() + ((jj * n1 + j1) * n1 + k1) * 2, ext_pow[1](root, ((jj + n2 * n3 * j1) * k1) % n))
 
 
 def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: Domains) raises:

@@ -36,7 +36,7 @@ def main() raises:
     var tab = TableLayout.__init__[p](bump.alloc(0))
     _ = bump.alloc(tab.bytes)
     var families = bump.alloc(f.count * ENTRY)
-    var ltmp = bump.alloc(COLS * p.h2() * 2 * p.h1() * 2)
+    var ltmp = bump.alloc(COLS * 2 * p.h2() * 2 * p.h1() * 2)
     var lde_buf = bump.alloc(COLS * G * 2)
     var res_buf = bump.alloc(G * p.e)
     var scratch = bump.alloc(quotient_elems[p]() * p.e)

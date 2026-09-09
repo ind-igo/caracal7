@@ -83,7 +83,7 @@ struct ProverLayout:
     var q3: Int                     # (2 h2, e)             Q3 on G2 in the clear
     var pub_vals: Int               # (public column, x2, x1)      public column values on H (load_public)
     var pub_coeff: Int              # (public column, k2, k1, 2)   their coefficients (idft2 in load_public), the LDE input
-    var ltmp: Int                   # (column, k2, G1, 2)   LDE after axis 1
+    var ltmp: Int                   # (column, G2, G1, 2)   LDE after axis 1, then the axis-2 scratch
     var lde: Int                    # (column, G2, G1, 2)   witness, accumulator, then public columns on the residual grid
     var residual: Int               # (G2, G1, e)
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
@@ -145,7 +145,7 @@ struct ProverLayout:
         self.q3 = bump.alloc(2 * p.h2() * p.e)
         self.pub_vals = bump.alloc(shape.columns_p * N)
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)
-        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * p.h2() * 2 * p.h1() * 2)
+        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * 2 * p.h2() * 2 * p.h1() * 2)
         self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * G * 2)
         self.residual = bump.alloc(G * p.e)
         self.quotient = bump.alloc(quotient_elems[p]() * p.e)

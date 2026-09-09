@@ -93,12 +93,15 @@ struct Operands(TrivialRegisterPassable, DevicePassable):
     var sb_hi: Int64
     var sb_lo: Int64
     var sb_z: Int64
-    var sb_zd: Int64             # B's batch index is z % sb_zd when > 0 (split-K: B depends on the chunk only)
+    var sb_zz: Int64
     var c: Int64
     var sc_m: Int64
     var sc_hi: Int64
     var sc_lo: Int64
     var sc_z: Int64
+    var zd: Int64                # batch z = (z // zd, z % zd) when > 0: offsets zlo * s_z + zhi * s_zz per operand
+    var sa_zz: Int64
+    var sc_zz: Int64
     var aux0: Int64
     var aux1: Int64
     var aux2: Int64
@@ -116,14 +119,14 @@ struct Operands(TrivialRegisterPassable, DevicePassable):
 trait Loader:
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
-        """B[k, n] with n = n_hi * D + n_lo."""
+        """B[k, n] with n = n_hi * D + n_lo; z is the batch byte offset."""
         ...
 
 
 struct Strided(Loader):
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
-        return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
+        return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z)
 
 
 struct Bytes(Loader):
@@ -131,7 +134,7 @@ struct Bytes(Loader):
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
         var v = F2(0)
-        v[0] = base[unsafe_offset=Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z)]
+        v[0] = base[unsafe_offset=Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z]
         return v
 
 
@@ -157,7 +160,11 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var brow = Int(block_idx.y) * BM
     var bcol = Int(block_idx.x) * BN
     var z = Int(block_idx.z)
-    var zb = z % Int(o.sb_zd) if o.sb_zd > 0 else z
+    var zlo = z % Int(o.zd) if o.zd > 0 else z
+    var zhi = z // Int(o.zd) if o.zd > 0 else 0
+    var za = zlo * Int(o.sa_z) + zhi * Int(o.sa_zz)
+    var zb = zlo * Int(o.sb_z) + zhi * Int(o.sb_zz)
+    var zc = zlo * Int(o.sc_z) + zhi * Int(o.sc_zz)
     var Mi = Int(M)
     var Ni = Int(N)
     var Ki = Int(K)
@@ -176,7 +183,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var kk = idx % BK
             var v = F2(0)
             if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + z * Int(o.sa_z))
+                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
             As0.ptr.unsafe_store(kk * BM + r, v[0])
             As1.ptr.unsafe_store(kk * BM + r, v[1])
         comptime for i in range(0, BK * BN, THREADS):
@@ -211,7 +218,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var n = bcol + tcol * TN + j
             if m < Mi and n < Ni:
                 var v = F2(UInt8(re[i][j]), UInt8(im[i][j]))
-                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + z * Int(o.sc_z)
+                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + zc
                 comptime if acc:
                     v = f_add(v, base.unsafe_load[width=2](at))
                 base.unsafe_store[width=2](at, v)
@@ -226,11 +233,14 @@ def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
 
 
 def strided(a: Int, sa_m: Int, sa_k: Int, b: Int, sb_k: Int, sb_hi: Int, sb_lo: Int,
-            c: Int, sc_m: Int, sc_hi: Int, sc_lo: Int, sa_z: Int = 0, sb_z: Int = 0, sc_z: Int = 0, sb_zd: Int = 0) -> Operands:
-    """Operands for the Strided loader, in Int."""
+            c: Int, sc_m: Int, sc_hi: Int, sc_lo: Int, sa_z: Int = 0, sb_z: Int = 0, sc_z: Int = 0,
+            zd: Int = 0, sa_zz: Int = 0, sb_zz: Int = 0, sc_zz: Int = 0) -> Operands:
+    """Operands for the Strided loader, in Int. With `zd` the batch splits as (z // zd, z % zd) with
+    strides (s_zz, s_z) per operand; without, z is linear with stride s_z."""
     return Operands(a=Int64(a), sa_m=Int64(sa_m), sa_k=Int64(sa_k), sa_z=Int64(sa_z),
-                    b=Int64(b), sb_k=Int64(sb_k), sb_hi=Int64(sb_hi), sb_lo=Int64(sb_lo), sb_z=Int64(sb_z), sb_zd=Int64(sb_zd),
+                    b=Int64(b), sb_k=Int64(sb_k), sb_hi=Int64(sb_hi), sb_lo=Int64(sb_lo), sb_z=Int64(sb_z), sb_zz=Int64(sb_zz),
                     c=Int64(c), sc_m=Int64(sc_m), sc_hi=Int64(sc_hi), sc_lo=Int64(sc_lo), sc_z=Int64(sc_z),
+                    zd=Int64(zd), sa_zz=Int64(sa_zz), sc_zz=Int64(sc_zz),
                     aux0=0, aux1=0, aux2=0)
 
 
@@ -244,7 +254,7 @@ trait Loader4:
 struct Strided4(Loader4):
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F4:
-        return base.unsafe_load[width=4](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z * Int(o.sb_z))
+        return base.unsafe_load[width=4](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z)
 
 
 def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
@@ -272,7 +282,11 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
     var brow = Int(block_idx.y) * BM
     var bcol = Int(block_idx.x) * BN
     var z = Int(block_idx.z)
-    var zb = z % Int(o.sb_zd) if o.sb_zd > 0 else z
+    var zlo = z % Int(o.zd) if o.zd > 0 else z
+    var zhi = z // Int(o.zd) if o.zd > 0 else 0
+    var za = zlo * Int(o.sa_z) + zhi * Int(o.sa_zz)
+    var zb = zlo * Int(o.sb_z) + zhi * Int(o.sb_zz)
+    var zc = zlo * Int(o.sc_z) + zhi * Int(o.sc_zz)
     var Mi = Int(M)
     var Ni = Int(N)
     var Ki = Int(K)
@@ -297,7 +311,7 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
             var kk = idx % BK
             var v = F4(0)
             if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=4](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + z * Int(o.sa_z))
+                v = base.unsafe_load[width=4](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
             As0.ptr.unsafe_store(kk * BM + r, v[0])
             As1.ptr.unsafe_store(kk * BM + r, v[1])
             As2.ptr.unsafe_store(kk * BM + r, v[2])
@@ -361,7 +375,7 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
             var n = bcol + tcol * TN + j
             if m < Mi and n < Ni:
                 var v = F4(UInt8(c0[i][j]), UInt8(c1[i][j]), UInt8(c2[i][j]), UInt8(c3[i][j]))
-                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + z * Int(o.sc_z)
+                var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + zc
                 comptime if acc:
                     v = f_add(v, base.unsafe_load[width=4](at))
                 base.unsafe_store[width=4](at, v)
