@@ -669,3 +669,24 @@ saves nothing in this IR. The copy selector `cp` is one row wider than `lo` beca
 push a product past `2^512`. Public inputs are tagged values so the static `public_data` can derive each
 factor's ingest columns without the circuit. Test: three wired chains equal `x y z w mod p` by long
 division; a wrong operand on a middle chain fails the wiring.
+
+## Additions, subtractions, the canonical check as one chain kind (2026-09-09)
+
+The spec's "narrow second instance" for `+`/`-` mod `p` and its "third small instance" for the canonical
+check are one column group of 26 columns on the same grid: `x + y = s + q p` with a signed 3-bit carry,
+`q` in 0..3 chain-constant, every value bounded below `2^260` by a public selector `bd`, the bits of `p` as
+four public columns. A subtraction is the chain with its output in the `x` slot; the canonical check is the
+chain with `s` the public constant `p - 1` and `q` masked to zero by a per-chain public column `cn`. That
+mask is why the circuit description now rides in the public inputs: `public_data` is static and must know
+which chains are canonical. The bound `bd` is what keeps the fold's copy exact across a circuit (products
+of two values below `2^260` stay below `2^520`, the copy reads weights up to 263). `docs/mulmod.md`.
+
+## Pinned public inputs, piece selectors (2026-09-09)
+
+Two Codex findings on the circuit step. The circuit bytes in the public inputs were unbound: a header
+with the same factor count as the compiled circuit could turn a canonical check into an addition. The IR
+gains `Shape.pinned`: the statement names bytes the public inputs must start with, hashed in the prefix
+and checked by the verifier (`Statement.pin`). And the plain fingerprint `ha` binds only the sum over the
+pieces of `a`, so a prover could pile every bit into one piece and reach a convolution coefficient of 127,
+zero in F_127; three public piece selectors (`s{t}`, 88-bit row-aligned pieces) force each piece's columns
+to its rows. The public factor on `ra` had pinned the pieces before wiring.

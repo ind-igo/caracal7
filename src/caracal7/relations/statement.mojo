@@ -166,6 +166,7 @@ struct Statement(Movable):
     var edges: List[Tuple[Int, Int, Int, Int]]   # (slot, chain, slot, chain) equalities
     var factors: List[Tuple[String, Int, Int, Int]]   # public factors: (name, accumulator, slot, chain)
     var zeros: List[Tuple[String, Int]]   # zero rows: (column, FIX_ONE row 0 | FIX_E the last row)
+    var pinned: List[UInt8]               # the head of the public inputs
 
     def __init__(out self):
         self.cols = List[String]()
@@ -187,6 +188,7 @@ struct Statement(Movable):
         self.edges = List[Tuple[Int, Int, Int, Int]]()
         self.factors = List[Tuple[String, Int, Int, Int]]()
         self.zeros = List[Tuple[String, Int]]()
+        self.pinned = List[UInt8]()
 
     def _fresh(self, name: String) raises:
         if name in self.col_index:
@@ -317,6 +319,11 @@ struct Statement(Movable):
         if coord != FIX_ONE and coord != FIX_E:
             raise Error("zero row coordinate is FIX_ONE or FIX_E")
         self.zeros.append((name, coord))
+
+    def pin(mut self, bytes: List[UInt8]):
+        """The public inputs must start with `bytes`: a description the statement was compiled from (a circuit),
+        so the derivation of public data from the public inputs cannot be fed a different one."""
+        self.pinned = bytes.copy()
 
     def read(self, name: String, k1: Int = 0, k2: Int = 0) -> Read:
         return Read(name, k1, k2)
@@ -555,7 +562,7 @@ struct Statement(Movable):
             for i in range(nf):
                 pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)
-        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros)
+        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros, self.pinned)
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
         return Compiled(shape^, f.bytes.copy(), layout^)
 

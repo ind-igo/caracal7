@@ -11,7 +11,7 @@ from caracal7.core.hash import Blake3
 from caracal7.core.field import E, ext_mul
 from caracal7.core.bytes import list_e
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from caracal7.relations.mulmod import Mulmod, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, single_chain, value_bytes_of, bits_of, bytes_of, product_bits, fold_bits, folded_bits, BITS, FOLDED, VALUE
+from caracal7.relations.mulmod import Mulmod, Chain, ChainValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_chain, value_bytes_of, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, MUL, ADD, SUB, CANON
 from caracal7.prover import Prover, load_trace, load_public
 from caracal7.relations import value_bytes
 from caracal7.verifier import verify
@@ -41,44 +41,17 @@ def _chals() -> List[UInt8]:
     return v^
 
 
-def _ge(a: List[Int], b: List[Int]) -> Bool:
-    for i in range(len(a) - 1, -1, -1):
-        if a[i] != b[i]:
-            return a[i] > b[i]
-    return True
-
-
-def _sub(mut a: List[Int], b: List[Int]):
-    var borrow = 0
-    for i in range(len(a)):
-        var d = a[i] - b[i] - borrow
-        a[i] = d & 1
-        borrow = 1 if d < 0 else 0
-
-
-def _p_bits(n: Int) -> List[Int]:
-    """secp256k1's p = 2^256 - 2^32 - 977 on n bits."""
-    var v = List[Int](length=n, fill=0)
-    v[BITS] = 1
-    var d = List[Int](length=n, fill=0)
-    var c = (1 << 32) + 977
-    for i in range(64):
-        d[i] = (c >> i) & 1
-    _sub(v, d)
-    return v^
-
-
 def _mod_p(bits: List[Int]) -> List[Int]:
     """Long division, bit by bit from the top: BITS + 2 bits."""
     var n = BITS + 2
-    var pb = _p_bits(n)
+    var pb = p_bits(n)
     var rem = List[Int](length=n, fill=0)
     for i in range(len(bits) - 1, -1, -1):
         for k in range(n - 1, 0, -1):
             rem[k] = rem[k - 1]
         rem[0] = bits[i]
-        if _ge(rem, pb):
-            _sub(rem, pb)
+        if ge_bits(rem, pb):
+            rem = sub_bits(rem, pb, n)
     return rem^
 
 
@@ -93,9 +66,8 @@ def test_fold_is_congruent_mod_p() raises:
         assert_equal(_mod_p(f), _mod_p(r))
         var ff = f.copy()
         ff.resize(BITS + 2, 0)
-        var p2 = _p_bits(BITS + 2)
-        _add_p2(p2)
-        assert_true(not _ge(ff, p2))
+        var p2 = add_bits(p_bits(BITS + 2), p_bits(BITS + 2), BITS + 2)
+        assert_true(not ge_bits(ff, p2))
     var one = List[Int](length=BITS + 1, fill=0)
     one[BITS] = 1
     var folded = fold_bits(one)
@@ -103,13 +75,6 @@ def test_fold_is_congruent_mod_p() raises:
     assert_equal(folded[0], 1)
     assert_equal(folded[9], 1)
     assert_equal(folded[5], 0)
-
-
-def _add_p2(mut p2: List[Int]):
-    """p2 = 2 p in place."""
-    for k in range(len(p2) - 1, 0, -1):
-        p2[k] = p2[k - 1]
-    p2[0] = 0
 
 
 def test_product_bits() raises:
@@ -156,14 +121,14 @@ def test_trace_satisfies_every_bit_family() raises:
                 if en.col_b != NONE:
                     v *= _at(trace, data, cw, cz, en.col_b, en.dj1_b // 2, en.dj2_b // 2, x1, x2)
                 sums[en.family * N + x2 * h1 + x1] = (sums[en.family * N + x2 * h1 + x1] + v) % 127
-    assert_true(checked > 164 + 4 * 32 + 12 + 8 * 2 + 8 * 15)
+    assert_true(checked > 190 + 4 * 32 + 12 + 8 * 2 + 8 * 15 + 74 + 24)
     for i in range(families * N):
         if sums[i] != 0:
             raise Error("family " + String(i // N) + " fails at row " + String(i % N))
     var chals = _chals()
     derived_chals(chals, c.shape.chals)
     var r = List[E]()
-    for k in range(4):
+    for k in range(8):
         var first = Int(c.shape.accs[k * ACC + 2]) | Int(c.shape.accs[k * ACC + 3]) << 8
         var n = Int(c.shape.accs[k * ACC + 4]) | Int(c.shape.accs[k * ACC + 5]) << 8
         var cols = List[UInt8](capacity=n * h1)
@@ -173,8 +138,8 @@ def test_trace_satisfies_every_bit_family() raises:
                 cols.append(trace[col * N + x1])
         r.append(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals))
     var z6 = list_e(chals, Int(c.shape.ends[7]) - 1)
-    assert_equal(ext_mul[4](ext_mul[4](r[0], r[2]), z6), r[3])
-    var off = 2 * N
+    assert_equal(ext_mul[4](ext_mul[4](r[0], r[2]), z6), r[7])
+    var off = 11 * N
     for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "f0", "f1", "f2", "f3"]:
         for x1 in range(h1):
             assert_equal(data[off + x1], trace[c.layout.col(name) * N + x1])
@@ -200,7 +165,7 @@ def test_prover_round_trip() raises:
     assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, w.public_inputs[p]()))
 
 
-def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True, circuit: List[Tuple[Int, Int]] = List[Tuple[Int, Int]]()) raises -> String:
+def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True, circuit: List[Chain] = List[Chain]()) raises -> String:
     var c = mulmod_statement(zeros, circuit).compile[p]()
     var shape = mulmod_statement(zeros, circuit).compile[p]().take_shape()
     var cc = mulmod_statement(zeros, circuit).compile[p]()
@@ -229,14 +194,15 @@ def test_wrong_product_and_idle_carry_are_rejected() raises:
     var w = single(operand(3), operand(4))
     var c = mulmod_statement().compile[p]()
     var claim = w.public_inputs[p]()
-    var bits = bits_of(claim, 2 * (VALUE + 1) + 1, FOLDED)
+    var head = parse_circuit(claim)[1] + 2 * VALUE
+    var bits = bits_of(claim, head, FOLDED)
     var carry = 1
     for i in range(len(bits)):
         var s = bits[i] + carry
         bits[i] = s & 1
         carry = s >> 1
     var wrong = List[UInt8]()
-    for i in range(2 * (VALUE + 1) + 1):
+    for i in range(head):
         wrong.append(claim[i])
     wrong.extend(bytes_of(bits))
     var a = w.inputs[0].copy()
@@ -261,12 +227,13 @@ def test_three_wired_chains() raises:
     """Chains x y, then (x y) z with a from chain 0, then w (x y z) with b from chain 1: the output is x y z w mod p by
     long division, the proof round-trips, and a chain fed a wrong operand (every family holds) fails the
     wiring."""
-    var circuit: List[Tuple[Int, Int]] = [(-1, -1), (0, -1), (-1, 1)]
+    var circuit: List[Chain] = [Chain(MUL, -1, -1), Chain(MUL, 0, -1), Chain(MUL, -1, 1)]
     var inputs: List[List[UInt8]] = [value_bytes_of(operand(11)), value_bytes_of(operand(12)), value_bytes_of(operand(13)), value_bytes_of(operand(14))]
     var w = Mulmod(inputs.copy(), circuit.copy())
     var claim = w.public_inputs[p]()
-    assert_equal(len(claim), 5 * (VALUE + 1))
-    var f = bits_of(claim, 4 * (VALUE + 1) + 1, FOLDED)
+    var head = parse_circuit(claim)[1]
+    assert_equal(len(claim), head + 5 * VALUE)
+    var f = bits_of(claim, head + 4 * VALUE, FOLDED)
     var prod = product_bits(product_bits(bits_of(operand(11), 0, BITS), bits_of(operand(12), 0, BITS)),
                             product_bits(bits_of(operand(13), 0, BITS), bits_of(operand(14), 0, BITS)))
     assert_equal(_mod_p(f), _mod_p(prod))
@@ -276,10 +243,86 @@ def test_three_wired_chains() raises:
     assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, claim))
     var c = mulmod_statement(True, circuit).compile[p]()
     var vals = circuit_values(inputs, circuit)
-    var abits = vals[0].copy()
-    abits[1][5] ^= 1
-    var bbits = vals[1].copy()
-    assert_true(_rejected(ctx, circuit_trace[p](c.layout, abits, bbits), claim, True, circuit) != "accepted")
+    vals[1].a[5] ^= 1
+    assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals), claim, True, circuit) != "accepted")
+
+
+def _modp_mul(a: List[Int], b: List[Int]) -> List[Int]:
+    return _mod_p(product_bits(a, b))
+
+
+def _modp_sub(a: List[Int], b: List[Int]) -> List[Int]:
+    """a - b mod p for a, b below p."""
+    var n = BITS + 2
+    var x = a.copy()
+    x.resize(n, 0)
+    var y = b.copy()
+    y.resize(n, 0)
+    if not ge_bits(x, y):
+        x = add_bits(x, p_bits(n), n)
+    return sub_bits(x, y, n)
+
+
+def test_add_sub_canon_circuit() raises:
+    """Chains x y, + z, - w, squared, checked canonical, - w: the output by independent host arithmetic, the round
+    trip on six chains, a non-canonical value refused by the honest prover, and a prover that passes the
+    canonical check with q = 1 on a value past p (every other family holds) rejected by the mask."""
+    var circuit: List[Chain] = [Chain(MUL, -1, -1), Chain(ADD, 0, -1), Chain(SUB, 1, -1), Chain(MUL, 2, 2), Chain(CANON, 3, -1), Chain(SUB, 3, -1)]
+    var inputs: List[List[UInt8]] = [value_bytes_of(operand(21)), value_bytes_of(operand(22)), value_bytes_of(operand(23)), value_bytes_of(operand(24)), value_bytes_of(operand(24))]
+    var w = Mulmod(inputs.copy(), circuit.copy())
+    var claim = w.public_inputs[p]()
+    var head = parse_circuit(claim)[1]
+    assert_equal(len(claim), head + 6 * VALUE)
+    var x = bits_of(operand(21), 0, BITS)
+    var y = bits_of(operand(22), 0, BITS)
+    var z = bits_of(operand(23), 0, BITS)
+    var v = bits_of(operand(24), 0, BITS)
+    var e = _mod_p(add_bits(_modp_mul(x, y), z, BITS + 2))
+    e = _modp_sub(e, v)
+    e = _modp_mul(e, e)
+    e = _modp_sub(e, v)
+    assert_equal(_mod_p(bits_of(claim, head + 5 * VALUE, FOLDED)), e)
+    var ctx = DeviceContext()
+    var proof = prove_workload[p, Blake3, Mulmod](ctx, w)
+    print("six-chain proof bytes:", len(proof))
+    assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, claim))
+    var n = BITS + 2
+    var big = add_bits(p_bits(n), [1, 0, 1], n)               # p + 5
+    big.resize(FOLDED, 0)
+    var canon: List[Chain] = [Chain(CANON, -1, -1)]
+    var bad: List[List[UInt8]] = [bytes_of(big)]
+    with assert_raises(contains="not canonical"):
+        _ = Mulmod(bad.copy(), canon.copy()).public_inputs[p]()
+    var pm1 = sub_bits(p_bits(n), [1], n)
+    var vals = List[ChainValues]()
+    vals.append(ChainValues(CANON, big.copy(), sub_bits(add_bits(pm1, p_bits(n), n), big, n), pm1.copy(), 1))
+    var c = mulmod_statement(True, canon).compile[p]()
+    var cheat = circuit_bytes(canon)
+    cheat.extend(bytes_of(big))
+    assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals), cheat, True, canon) != "accepted")
+    # the same cheat with a public-input header that turns the check into an addition of p + 5 and 0: the
+    # statement pins its circuit bytes, so the header is refused before any public data is derived
+    var swap: List[Chain] = [Chain(ADD, -1, -1)]
+    var swapped = circuit_bytes(swap)
+    swapped.extend(bytes_of(big))
+    swapped.extend(bytes_of(List[Int](length=FOLDED, fill=0)))
+    swapped.extend(bytes_of(big))
+    vals[0].q = 0
+    vals[0].b = List[Int](length=FOLDED, fill=0)
+    vals[0].f = big.copy()
+    var cs = mulmod_statement(True, canon).compile[p]()
+    var shape = mulmod_statement(True, canon).compile[p]().take_shape()
+    var prover = Prover[p, Blake3](ctx, cs^.take_shape(), mulmod_statement(True, canon).compile[p]().families.copy())
+    var ca = mulmod_statement(True, canon).compile[p]()
+    var swapped_data = Mulmod.public_data[p](ca.layout, swapped)
+    var blocks = List[UInt8]()
+    for i in range(value_bytes(ca.layout.publics, p.h1(), p.h2())):
+        blocks.append(swapped_data[i])
+    load_trace[p, Blake3](ctx, prover, circuit_trace[p](c.layout, vals))
+    load_public[p, Blake3](ctx, prover, blocks)
+    var swapped_proof = prover.prove(ctx, swapped)
+    with assert_raises(contains="pinned"):
+        _ = verify[p, Blake3](swapped_proof^, shape, swapped, ca.families, swapped_data)
 
 
 def main() raises:

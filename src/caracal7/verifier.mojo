@@ -32,6 +32,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     nothing here checks that. The statement builder is where the derivation becomes code on both sides."""
     if len(families) != shape.entries * ENTRY:
         raise Error("family table does not match the shape")
+    if len(public_inputs) < len(shape.pinned) or public_inputs[0:len(shape.pinned)] != Span(shape.pinned):
+        raise Error("public inputs do not start with the statement's pinned bytes")
     # Shape validated its own family table; bind this one to the list and the challenge count before any index is used
     var need = required_points(families, shape.restrictions, shape.accumulators() > 0, shape.zeros)
     for i in range(len(need) // POINT):

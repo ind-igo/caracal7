@@ -62,6 +62,7 @@ var sa = st.slot("ra")                         # a wiring slot: the accumulator'
 st.wire(sa, 3, sb, 7)                          # slot sa on chain 3 equals slot sb on chain 7
 st.public_factor("r", "ra", sb, 0)             # a public value fingerprinted by "ra", equal to slot sb on chain 0; its ingest columns follow the restriction lines in the public data
 st.zero("y03", FIX_E)                          # the column is zero on the last row (FIX_ONE: row 0) of every chain: its opening at (coordinate, z2) vanishes
+st.pin(circuit_bytes)                          # the public inputs must start with these bytes (a description the statement was compiled from)
 var r = st.read("a0", k1=3)                    # cyclic read (omega1^3 x1, x2); k2=1 is the next-chain read
 st.family("chi", [Term(1, r, st.read("a1")), Term(-1, st.read("a2"))], GATE_NONE)
 var el = st.derived(CHAL_MUL, 3, 1)            # a challenge derivation row; the element index for Term.chal
@@ -124,6 +125,7 @@ Tests that need a wrong trace or a wrong advice call the pieces directly.
 | chain-end families into Q3 | `chain_end` terms (Shape.ends) next to the (W) pairs, alpha powers by family index (done 2026-09-08) | nothing |
 | wiring, public factors | `slot`, `wire`, `public_factor` (done 2026-09-09): Shape.wires, sigma, pubf; two fresh challenges; one joint boundary | chain ordering for next-chain edges, with ECDSA |
 | zero row (mulmod 4) | `zero` (done 2026-09-09): Shape.zeros, the opening at (row, z2) is zero | nothing |
+| pinned public inputs | `pin` (done 2026-09-09): Shape.pinned, hashed; the verifier refuses public inputs that do not start with them | nothing |
 | memory | absent, `TODO(memory)` slots | later |
 | names, groups, kinds, padding | no IR concept | builder only, no IR change |
 | shared reads collapsed into one kappa | `ponytail:` note in ir.mojo, every term its own entry | builder pass; a perf item once Keccak's family list is measured |

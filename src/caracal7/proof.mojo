@@ -92,6 +92,7 @@ struct Shape(Writable):
     var sigma: List[UInt8]      # the wiring permutation: F2 per slot and chain, slot-major, part of the artifact
     var pubf: List[UInt8]       # public factors (PUBF bytes each): virtual slots whose value the verifier fingerprints from the public data
     var zeros: List[UInt8]      # zero rows (ZERO bytes each): a column's opening at (1, z2) or (e1, z2) is zero, part of the artifact
+    var pinned: List[UInt8]     # the public inputs must start with these bytes (a circuit description the statement was compiled from), part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
@@ -99,7 +100,8 @@ struct Shape(Writable):
                             tables: List[List[UInt8]] = List[List[UInt8]](), publics: List[UInt8] = List[UInt8](),
                             restrictions: List[UInt8] = List[UInt8](), points: List[UInt8] = List[UInt8](),
                             chals: List[UInt8] = standard_chals(), ends: List[UInt8] = List[UInt8](), wires: List[UInt8] = List[UInt8](),
-                            sigma: List[UInt8] = List[UInt8](), pubf: List[UInt8] = List[UInt8](), zeros: List[UInt8] = List[UInt8]()) raises:
+                            sigma: List[UInt8] = List[UInt8](), pubf: List[UInt8] = List[UInt8](), zeros: List[UInt8] = List[UInt8](),
+                            pinned: List[UInt8] = List[UInt8]()) raises:
         """The entry count comes from the family table (residual.mojo). `points` is the opening list (an empty
         list means the default, ir.shift_points); it must hold every point of ir.required_points. `chals` is the
         challenge derivation table. A lookup descriptor names its table by index; the table's row width is the
@@ -125,6 +127,7 @@ struct Shape(Writable):
         self.sigma = sigma.copy()
         self.pubf = pubf.copy()
         self.zeros = zeros.copy()
+        self.pinned = pinned.copy()
         var opened = self.columns_w + self.columns_z
         if get_u16(self.point_list, 0) != 0 or get_u16(self.point_list, 2) != 0:
             raise Error("opening point 0 must be z")
@@ -403,6 +406,8 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.pubf.copy())
     append_u32(bytes, len(shape.zeros))
     bytes.extend(shape.zeros.copy())
+    append_u32(bytes, len(shape.pinned))
+    bytes.extend(shape.pinned.copy())
     var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())
