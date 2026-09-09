@@ -1,5 +1,6 @@
-"""The ECDSA circuit: op counts on the 144 x 896 grid, the host walk closing on a valid signature and
-refusing a changed message, then the prover round trip and its proof size."""
+"""The ECDSA circuit: op counts on the 144 x 896 grid, the live walk emitting the fixed circuit op for op,
+the host solver closing on a valid signature and refusing a changed message, then the prover round trip,
+its proof size, and the proof rejected against a claim with a changed message."""
 
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
@@ -38,6 +39,10 @@ def test_circuit_shape_and_host_walk() raises:
     var sig = _signature()
     var w = walk(Curve(), sig[0], sig[1], sig[2], sig[3], True)
     assert_equal(len(w.ops), len(ops))
+    for j in range(len(ops)):
+        var a = ops[j]
+        var b = w.ops[j]
+        assert_true(a.kind == b.kind and a.x == b.x and a.y == b.y and a.z == b.z and a.s == b.s and a.sy == b.sy and a.sz == b.sz and a.qz == b.qz and a.mod == b.mod)
     print("public factors:", len(w.inputs), "hints:", len(w.hints))
     _ = circuit_values(w.inputs, w.ops, w.hints)
     var bad = walk(Curve(), sig[0], sig[1], sig[2] + Big(1), sig[3], True)
@@ -54,7 +59,16 @@ def test_prover_round_trip() raises:
     var ctx = DeviceContext()
     var proof = prove_workload[p, Blake3, Ecdsa](ctx, w)
     print("ecdsa proof bytes:", len(proof))
+    var again = proof.copy()
     assert_true(verify_workload[p, Blake3, Ecdsa](proof^, w, claim, profile=True))
+    var tampered = claim.copy()
+    tampered[64] ^= 1
+    var accepted: Bool
+    try:
+        accepted = verify_workload[p, Blake3, Ecdsa](again^, w, tampered)
+    except:
+        accepted = False
+    assert_true(not accepted)
 
 
 def main() raises:
