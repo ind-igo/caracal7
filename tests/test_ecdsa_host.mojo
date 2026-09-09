@@ -38,7 +38,7 @@ def test_split_and_recode() raises:
                     acc = acc.shl(b) + Big(d[i])
                     if i < n - 1:
                         assert_true(d[i] % 2 != 0 and d[i] >= -(1 << b) and d[i] < (1 << b))
-                assert_true(d[n - 1] >= -(1 << b) and d[n - 1] + s[1] <= (1 << b) + 2)     # inside _digit_points' table
+                assert_true(abs(d[n - 1]) <= (1 << b) and abs(d[0] + s[1]) <= (1 << b) + 2)     # inside _digit_points' table
                 assert_equal(acc + Big(s[1]), half.abs())
     var d = recode(Big(-1), 4)
     assert_equal(d[0], 15)

@@ -236,6 +236,8 @@ struct Prover[p: Params, H: Hash]:
                 for j in range(ENTRY):
                     fg[self.entries_g * ENTRY + j] = self.families[i * ENTRY + j]
                 self.entries_g += 1
+        for i in range(self.entries_g * ENTRY, len(fg)):
+            fg[i] = 0
         self.arena.upload(ctx, self.layout.families_g, fg)
         self.arena.upload(ctx, self.layout.shifts, ph)
         if len(self.shape.accs) > 0:

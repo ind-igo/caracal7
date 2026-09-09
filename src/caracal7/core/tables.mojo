@@ -395,6 +395,8 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
             _put(h, t.qinv2 + (k * h2 + tt) * 2, ext_mul[1](w, ext_pow[1](g2_inv, (2 * tt * k) % (2 * h2))))
     # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it)
     var gam = f2_primitive()
+    if ext_pow[1](gam, h2) == F2(1):
+        raise Error("gamma2 G2 meets G2: h2 must be a proper divisor of F2_ORDER")
     var gam_inv = ext_pow[1](gam, F2_ORDER - 1)
     for tt in range(2 * h2):
         _put(h, t.c2p + tt * 2, ext_mul[1](gam, ext_pow[1](d.g2, tt)))
