@@ -774,3 +774,15 @@ Horner kernel writes zeros on H x H: 520 -> 443 ms. The opening GEMM read `store
 adjacent threads a column apart (N bytes); the Loader trait now carries `kfast` (the tile load walks k
 in adjacent threads) and `real` (no imaginary plane: two tile products instead of four), `Bytes[kfast_=True]`
 for the openings: open 356 -> 212 ms. Warm prove 2,151 -> 1,985 ms.
+
+## Small grid on a coset (2026-09-09)
+
+The grand-product and chain-end terms were coefficient convolutions (`k_polymul`: one thread per output
+coefficient, up to h2 serial E products) and the division by `X2^h2 - 1` a coefficient identity: 25
+convolutions, 260 ms at h2 = 576. Every line now goes to its values on the coset `c_t = gamma2 g2^t` of
+G2 (`winv2`, then the new `cfwd2`), the terms are pointwise products there, `Q3 = R2 / (c^h2 - 1)` is a
+pointwise division (`c^h2 - 1` vanishes nowhere off G2, and an honest R2 vanishes on H2, so the quotient
+is exact), then `cinv2` to coefficients and `wfwd2` to the clear vector on G2. Tables `c2p`, `cfwd2`,
+`cinv2` (4 MB at h2 = 576). Small grid 261 -> 22 ms, warm prove 1,985 -> 1,733 ms. The small-grid test
+now makes its lines satisfy `b d = a c n` on H2, since the device no longer computes the quotient of the
+vanishing part of an arbitrary R2.

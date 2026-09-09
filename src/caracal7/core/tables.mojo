@@ -250,6 +250,9 @@ struct TableLayout(TrivialRegisterPassable):
     var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
+    var c2p: Int        # (2 h2, 2)     the coset points c_t = gamma2 g2^t of the small grid (smallgrid.mojo)
+    var cfwd2: Int      # (2 h2, h2, 2) coefficient k -> value at c_t: gamma2^k g2^(t k)
+    var cinv2: Int      # (2 h2, 2 h2, 2) coset values t -> coefficient k: (2 h2)^-1 gamma2^-k g2^(-t k)
     var fwd1: Int       # DftPlan(2 h1, h1) stage tables of the axis-1 forward DFT (dft.mojo)
     var inv1: Int       # DftPlan(h1, h1) stage tables of the axis-1 inverse DFT, h1^-1 folded in
     var fwd2: Int       # the same on axis 2
@@ -277,6 +280,9 @@ struct TableLayout(TrivialRegisterPassable):
         self.qinv2 = off; off += p.h2() * p.h2() * 2
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
+        self.c2p = off; off += 2 * p.h2() * 2
+        self.cfwd2 = off; off += 2 * p.h2() * p.h2() * 2
+        self.cinv2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
         self.fwd1 = off; off += DftPlan(2 * p.h1(), p.h1()).bytes()
         self.inv1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
         self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
@@ -387,3 +393,19 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
         for k in range(h2):
             var w = f_mul(ext_pow[1](g2_inv, k), inv_h2)
             _put(h, t.qinv2 + (k * h2 + tt) * 2, ext_mul[1](w, ext_pow[1](g2_inv, (2 * tt * k) % (2 * h2))))
+    # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it)
+    var gam = f2_primitive()
+    var gam_inv = ext_pow[1](gam, F2_ORDER - 1)
+    for tt in range(2 * h2):
+        _put(h, t.c2p + tt * 2, ext_mul[1](gam, ext_pow[1](d.g2, tt)))
+    for k in range(2 * h2):
+        var gk = ext_pow[1](gam, k)
+        var gki = ext_pow[1](gam_inv, k)
+        for tt in range(2 * h2):
+            if k < h2:
+                _put(h, t.cfwd2 + (tt * h2 + k) * 2, ext_mul[1](gk, _get2(h, t.wfwd2 + (tt * 2 * h2 + k) * 2)))
+            _put(h, t.cinv2 + (k * 2 * h2 + tt) * 2, ext_mul[1](gki, _get2(h, t.ginv2 + (k * 2 * h2 + tt) * 2)))
+
+
+def _get2(h: HostBuffer[DType.uint8], off: Int) -> F2:
+    return F2(h[off], h[off + 1])

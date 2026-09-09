@@ -5,7 +5,7 @@ cyclic interpolation against Horner on the coefficients."""
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed
+from caracal7.core.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed, ext_inv
 from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
@@ -73,6 +73,10 @@ def test_q3_matches_host_division_and_interpolation() raises:
     var zend = _rand(h2 * 16, 2)
     var nend = _rand(h2 * 16, 3)
     var dend = _rand(h2 * 16, 4)
+    for t in range(h2):     # b d = a c n on H2, so R2 vanishes there and the quotient is exact (the device divides on a coset)
+        var v = ext_mul[4](ext_mul[4](list_e(z2, t), list_e(zend, t)), ext_mul[4](list_e(nend, t), ext_inv[4](list_e(z2, (t + 1) % h2))))
+        for i in range(16):
+            dend[t * 16 + i] = v[i]
     var alpha = _rand(16, 5)
     var bump = Bump()
     var tab = TableLayout.__init__[p](bump.alloc(0))
@@ -103,8 +107,7 @@ def test_q3_matches_host_division_and_interpolation() raises:
     for i in range(2 * h2 * 16):
         q3.append(qh[i])
 
-    # host: R2 in coefficients; its values on H2 are not zero for random lines, so compare the exact
-    # quotient of the vanishing part: R2 = Q (X^h2 - 1) + rem; the device computes q_k = r_{k+h2} + r_{k+2h2}
+    # host: R2 in coefficients, then the exact quotient q_k = r_{k+h2} + r_{k+2h2} (R2 vanishes on H2)
     var w2_inv = ext_pow[1](d.omega2, h2 - 1)
     var a = _coeffs(z2, 0, w2_inv)
     var zs = List[UInt8](capacity=h2 * 16)
