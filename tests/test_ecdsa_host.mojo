@@ -1,7 +1,7 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 
 from caracal7.workloads.bigint import Big
-from caracal7.workloads.ecdsa import Curve, Point, recode, skew
+from caracal7.workloads.ecdsa import Curve, Point, recode, skew, QW, WINDOWS
 
 
 def test_group_and_endomorphism() raises:
@@ -29,13 +29,16 @@ def test_split_and_recode() raises:
         assert_true(kk[0].abs() < bound and kk[1].abs() < bound)
         for half in [kk[0].copy(), kk[1].copy()]:
             var s = skew(half.abs())
-            for b in [4, 8]:
-                var d = recode(s[0], b)
+            for pair in [(4, 32), (8, 32), (QW, WINDOWS)]:
+                var b = pair[0]
+                var n = pair[1]
+                var d = recode(s[0], b, n)
                 var acc = Big()
-                for i in range(31, -1, -1):
+                for i in range(n - 1, -1, -1):
                     acc = acc.shl(b) + Big(d[i])
-                    if i < 31:
+                    if i < n - 1:
                         assert_true(d[i] % 2 != 0 and d[i] >= -(1 << b) and d[i] < (1 << b))
+                assert_true(d[n - 1] >= -(1 << b) and d[n - 1] + s[1] <= (1 << b) + 2)     # inside _digit_points' table
                 assert_equal(acc + Big(s[1]), half.abs())
     var d = recode(Big(-1), 4)
     assert_equal(d[0], 15)

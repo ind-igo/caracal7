@@ -83,7 +83,7 @@ struct Run:
         lde[p](ctx, arena, enc.coeff, cw, tab, ltmp, lde_buf)
         if with_public:
             lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + cw * G * 2)
-        residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf)
+        residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf, families, len(c.families) // ENTRY, 0, 0)
         quotient[p](ctx, arena, res_buf, tab, scratch, stored)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * N * 2)

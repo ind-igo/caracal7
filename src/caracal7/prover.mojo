@@ -63,6 +63,7 @@ struct ProverLayout:
     var tree_z: Int
     var tree_q: Int
     var families: Int               # (entry, ENTRY)        the family table, kappa folded in on device
+    var families_g: Int             # (entry, ENTRY)        the same without the Horner basis entries: the residual GEMM's table
     var accs: Int                   # (accumulator, ACC)    accumulator descriptors
     var shifts: Int                 # (P, POINT)            opening points as (dj1, dj2) on G
     var num: Int                    # (row, e)              the Z stage: N, D, 1/D, Z per accumulator in turn
@@ -125,6 +126,7 @@ struct ProverLayout:
         self.tree_z = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.families = bump.alloc(shape.entries * ENTRY)
+        self.families_g = bump.alloc(shape.entries * ENTRY)
         self.accs = bump.alloc(len(shape.accs))
         self.shifts = bump.alloc(shape.points * POINT)
         self.num = bump.alloc(N * p.e)
@@ -187,6 +189,7 @@ struct ProverLayout:
 struct Prover[p: Params, H: Hash]:
     var shape: Shape
     var families: List[UInt8]       # the entry table as built (residual.Families), kappa bytes zero
+    var entries_g: Int              # entries of layout.families_g
     var layout: ProverLayout
     var arena: Arena
     var domains: Domains
@@ -201,6 +204,7 @@ struct Prover[p: Params, H: Hash]:
             raise Error("family table does not match shape.entries")
         self.shape = shape^
         self.families = families^
+        self.entries_g = 0
         self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
@@ -219,6 +223,20 @@ struct Prover[p: Params, H: Hash]:
         for i in range(len(pts)):
             ph[i] = pts[i]
         self.arena.upload(ctx, self.layout.families, fh)
+        var keep = List[Bool](length=self.shape.entries, fill=True)
+        for k in range(len(self.shape.accs) // ACC):
+            if Int(self.shape.accs[k * ACC + 38]) == KIND_HORNER:
+                var first = get_u16(self.shape.accs, k * ACC + 2)
+                for i in range(first - 32, first):
+                    keep[i] = False
+        var fg = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
+        ctx.synchronize()
+        for i in range(self.shape.entries):
+            if keep[i]:
+                for j in range(ENTRY):
+                    fg[self.entries_g * ENTRY + j] = self.families[i * ENTRY + j]
+                self.entries_g += 1
+        self.arena.upload(ctx, self.layout.families_g, fg)
         self.arena.upload(ctx, self.layout.shifts, ph)
         if len(self.shape.accs) > 0:
             _upload(ctx, self.arena, self.layout.accs, self.shape.accs)
@@ -356,7 +374,8 @@ struct Prover[p: Params, H: Hash]:
         if S.columns_p > 0:
             lde[Self.p](ctx, self.arena, L.pub_coeff, S.columns_p, L.tables, L.ltmp, L.lde + (S.columns_w + S.columns_z) * 4 * N * 2)
         self._mark(ctx, profile, "lde", t0)
-        residual[Self.p](ctx, self.arena, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual)
+        residual[Self.p](ctx, self.arena, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual,
+                         L.families_g, self.entries_g, L.accs, len(S.accs) // ACC)
         self._mark(ctx, profile, "residual", t0)
         quotient[Self.p](ctx, self.arena, L.residual, L.tables, L.quotient, L.enc_q.trace)
         self._mark(ctx, profile, "quotient", t0)

@@ -73,11 +73,11 @@ def main() raises:
     ctx.synchronize()
     report("lde", Int(perf_counter_ns() - t0), COLS * (p.N() * 2 * p.h1() + 2 * p.h1() * 2 * p.h2() * p.h2()))
 
-    residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
+    residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf, families, f.count, 0, 0)
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf)
+        residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf, families, f.count, 0, 0)
     ctx.synchronize()
     report("residual", Int(perf_counter_ns() - t0), f.count * G * 8)
 

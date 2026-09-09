@@ -34,13 +34,14 @@ curve work.
   public point `P_w = sum_i d_{i,w} T_i`, which the verifier builds from four tables of the multiples `T ..
   65 T` (about 260 host additions, plus 3 per window). 126 doublings (the accumulator starts at `16 B`, so
   window 21 needs none) and 22 additions.
-- Recoding of an odd magnitude `k` in base `2^b` (`b = 6`): for the low 31 digits, `d = (k mod 2^(b+1))
-  - 2^b`, `k <- (k - d) / 2^b`, which keeps `k` odd; digit 31 is what remains. Every odd `|k| < 2^(32 b)`
-  has exactly this representation (Codex checked the small lengths exhaustively). Without the terminal
-  rule the recurrence never ends: `k = 1` emits `-15` forever.
+- Recoding of an odd magnitude `k` in base `2^b` (`b = 6`, 22 digits): for the low 21 digits, `d = (k mod
+  2^(b+1)) - 2^b`, `k <- (k - d) / 2^b`, which keeps `k` odd; digit 21 is what remains, in `[-1, 3]` for
+  halves below `2^128`. Every odd `|k| < 2^(22 b)` has exactly this representation (Codex checked the
+  small lengths exhaustively). Without the terminal rule the recurrence never ends: `k = 1` emits `-63`
+  forever.
 - Parity: the recoding takes an odd value, so a half `k` (signed, after the GLV split) is recoded as `k - c`
   with `c = 1` for even `k` and `c = 2` for odd `k`, and window 0 adds `(d_0 + c) T` instead of `d_0 T`.
-  `k = 0` and `k = 1` both recode `-1` (terminal digit `-1`, the low digits `15`). The sign of the base is
+  `k = 0` and `k = 1` both recode `-1` (terminal digit `-1`, the low digits `63`). The sign of the base is
   the GLV half's sign only; skewing the magnitude and then moving the sign into the base would reverse the
   skew and make zero contribute `-2 T`. The window-0 entries are `(d_0 + c) T` for `d_0 + c` in `[-62, 65]`; the
   verifier builds `T .. 65 T` per base.

@@ -753,3 +753,15 @@ at 236 columns. The 2-adic stages read `gA^(2^(b - 6) x)`, of order at most 64, 
 products per MAC instead of a full F4 product. The radix 3, 7, 9 twiddles have orders dividing 126, so
 they are in F: one broadcast product. Radix 5 stays in F4. `_fill_rs` checks both facts on the host
 tables. ECDSA at `144 x 576`: encode W 483 -> 275 ms, encode Z 428 -> 242, warm prove 2,794 -> 2,346 ms.
+
+## Horner transitions as E reads (2026-09-09)
+
+An accumulator's transition `R(omega1 x) - scale R(x)` entered the residual GEMM as 2 e linear entries
+(one per coordinate column, kappa = alpha^f b_t): 416 of ECDSA's 1,568 entries, each a gathered F2 read
+and 8 F2 MACs per point. `k_horner_residual` reads the e coordinate columns as one E value (`_z_read`:
+coordinate 2l is `u_2l - v_(2l+1)`, 2l + 1 is `v_2l + u_(2l+1)`, i = b_1) at x and at omega1 x, two E
+products with the folded kappas of the basis-0 entries, times the gate, added to the GEMM's output. The
+prover uploads a second family table without those entries (`families_g`) for the GEMM; the artifact,
+the accumulator kernels and the verifier keep the full table. ECDSA residual 650 -> 520 ms, warm prove
+2,346 -> 2,216 ms. Also from the audit of the Straus-Shamir change (one opus reviewer, Codex: no
+soundness findings): the recoding test now covers the shipped `(QW, WINDOWS)` and the table bound.
