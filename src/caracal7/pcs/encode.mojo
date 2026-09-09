@@ -291,11 +291,39 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     var xs = InlineArray[F4, r](fill=F4(0))
     comptime for k in range(r):
         xs[k] = etmp.load(base, first + k * step)
+    var ys = InlineArray[F4, r](fill=F4(0))
+    comptime if r == 8:
+        # decimation in frequency: y[2m] = DFT4(x_n + x_(n+4)), y[2m+1] = DFT4((x_n - x_(n+4)) W_8^n),
+        # DFT4 with W_4 = W_8^2 and W_8^4 = -1: 5 products, 24 sums (a dense 8 x 8 is 64 products)
+        var a = InlineArray[SIMD[DType.int32, 4], 4](fill=SIMD[DType.int32, 4](0))
+        var d = InlineArray[SIMD[DType.int32, 4], 4](fill=SIMD[DType.int32, 4](0))
+        comptime for n in range(4):
+            var lo = xs[n].cast[DType.int32]()
+            var hi = xs[n + 4].cast[DType.int32]()
+            a[n] = lo + hi
+            comptime if n == 0:
+                d[n] = lo - hi
+            else:
+                f4_mac_f2_wide(d[n], wr[n], f_reduce_signed(lo - hi))
+        comptime for half in range(2):
+            var v0 = a[0] if half == 0 else d[0]
+            var v1 = a[1] if half == 0 else d[1]
+            var v2 = a[2] if half == 0 else d[2]
+            var v3 = a[3] if half == 0 else d[3]
+            var c3 = SIMD[DType.int32, 4](0)
+            f4_mac_f2_wide(c3, wr[2], f_reduce_signed(v1 - v3))
+            ys[half] = f_reduce_signed(v0 + v2 + v1 + v3)
+            ys[half + 2] = f_reduce_signed(v0 - v2 + c3)
+            ys[half + 4] = f_reduce_signed(v0 + v2 - v1 - v3)
+            ys[half + 6] = f_reduce_signed(v0 - v2 - c3)
+    else:
+        comptime for e in range(r):
+            var wide = SIMD[DType.int32, 4](0)
+            comptime for k in range(r):
+                f4_mac_f2_wide(wide, wr[(e * k) % r], xs[k])
+            ys[e] = f_reduce_signed(wide)
     comptime for e in range(r):
-        var wide = SIMD[DType.int32, 4](0)
-        comptime for k in range(r):
-            f4_mac_f2_wide(wide, wr[(e * k) % r], xs[k])
-        var y = f_reduce_signed(wide)
+        var y = ys[e]
         comptime if e > 0:
             var ws = base.unsafe_load[width=2](ga.at(((e * n_lo) << shift) & mask))
             var tw = SIMD[DType.int32, 4](0)
@@ -331,6 +359,7 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     comptime for k in range(r):
         xs[k] = etmp.load(base, ((first_lin + k * st) << bb) * Int(columns) + col_off)
     comptime assert r <= F4_MAC_MAX
+    var ys = InlineArray[F4, r](fill=F4(0))
     comptime for t in range(r):
         var wide = SIMD[DType.int32, 4](0)
         comptime for k in range(r):
@@ -338,7 +367,9 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
                 f4_mac_wide(wide, pw[(t * k) % r], xs[k])
             else:
                 f4_mac_real_wide(wide, pw[(t * k) % r][0], xs[k])
-        var acc = f_reduce_signed(wide)
+        ys[t] = f_reduce_signed(wide)
+    comptime for t in range(r):
+        var acc = ys[t]
         var lin = first_lin + t * st
         comptime if final:
             var s = Mi * _t1_true(t1, bb) + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0

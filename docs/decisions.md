@@ -807,3 +807,31 @@ tail do not move at `h2 = 448`, while the second operand set (pieces, `b'`, its 
 accumulators) adds about 150 columns: the encoder, the openings and the proof grow by 30% against a 22%
 smaller grid. The remaining prover budget is the RS stages (600 ms), the residual gather (430) and the
 openings (200); the next step is there, or an MMA backend for all GEMM-shaped stages.
+
+## RS stages: what they were bound by (2026-09-10)
+
+The level-1 RS encoder (236 columns, 4 cosets of 161,280) took 229 ms; a stage with its arithmetic removed
+ran no faster, and a stage with four columns per thread (16-byte accesses) ran slower, so neither the MACs
+nor the request count was the limit. A standalone microbench of the access pattern (r strided loads and
+stores over a 152 MB buffer) runs at 2.2 ms per pass, against about 10 ms per real stage launch. The
+difference was the twiddle table: a radix-r stage loaded r^2 twiddles per thread from the `ga` or `w_r`
+table with an address computation each, and with a constant twiddle the 2-adic stages ran at 36 ms
+instead of 96. Now:
+
+- Every stage keeps the r powers of its root in registers (r loads) and indexes them at compile time by
+  `(e k) mod r`; the 2-adic stage applies the size-S twiddle `W_S^(e n_lo)` after the r-point sum (r - 1
+  more loads and products) instead of folding it into r^2 table entries.
+- The gather computes the B2 outputs of one (lin, n1) in one thread: each input is loaded and twisted
+  once instead of B2 times. 58 -> 18 ms.
+- The radix-8 stage is a decimation-in-frequency FFT (5 products, 24 sums per 8 points) rather than the
+  dense 8 x 8; `W_8^4 = -1` because `gA` has exact 2-power order.
+- A 3 x 3 factorization of the radix-9 stage gained nothing: that stage is bound by its scatter into the
+  leaf-major code buffer (every block writes eight rows 315 rows apart), not by its 81 real MACs. Reverted.
+  Wide (16-byte) column loads were also reverted: 4-byte in-place strided access measured faster on the
+  M1 Pro, and the wide vectors cost registers.
+
+RS encode 229 -> 137 ms per 236 columns (gather 18, 2-adic 38, radix 5 29, radix 7 18, radix 9 with the
+scatter 36); the memory floor for six passes over four cosets is about 56 ms. The next step there is pass
+fusion in threadgroup memory (the two radix-8 stages: 8 KB per 32 columns; the odd stages: 315 lines x 16
+columns), worth about a pass each. ECDSA: encode W 273 -> 192, Z 254 -> 169, Q 68 -> 47 ms,
+warm prove 1,751 -> 1,548 ms.
