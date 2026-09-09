@@ -45,7 +45,7 @@ from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
-from caracal7.core.dft import dft_axis2
+from caracal7.core.dft import dft_axis
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
@@ -78,14 +78,13 @@ struct EncLayout(TrivialRegisterPassable):
 
 def idft2[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, ctmp: Int, coeff: Int,
                      columns: Int, tab: TableLayout) raises:
-    """trace (column, x2, x1) F -> coeff (column, k2, k1, 2): inverse DFT per axis, two skeleton launches.
-    Axis 1: C[k1, line] = sum_t1 Winv1[k1, t1] trace[line, t1]; axis 2 per column: C[k2, k1] = sum_t2 Winv2[k2, t2] ctmp[t2, k1]."""
+    """trace (column, x2, x1) F -> coeff (column, k2, k1, 2): inverse DFT per axis, three radix stages
+    each (dft.mojo). Axis 1 reads the bytes into ctmp with coeff as scratch; axis 2 reads ctmp, its own
+    scratch, into coeff."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
-    var o1 = strided(a=tab.base + tab.winv1, sa_m=h1 * 2, sa_k=2, b=trace, sb_k=1, sb_hi=h1, sb_lo=0,
-                     c=ctmp, sc_m=2, sc_hi=h1 * 2, sc_lo=0)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes, 1](ctx, arena, o1, h1, columns * h2, h1)
-    dft_axis2[p, False](ctx, arena, ctmp, coeff, h1, columns, tab.base + tab.inv2)
+    dft_axis[p, False, 1, bytes_in=True](ctx, arena, trace, ctmp, coeff, 1, columns * h2, tab.base + tab.inv1)
+    dft_axis[p, False, 2](ctx, arena, ctmp, coeff, ctmp, h1, columns, tab.base + tab.inv2)
 
 
 # ---- to_stored: mixed basis on the odd digit, Frobenius-real slots (spec 9.1) ----

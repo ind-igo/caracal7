@@ -25,7 +25,7 @@ from caracal7.core.backend import BACKEND, LANE_TILE, Operands, Loader, Strided,
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
-from caracal7.core.dft import dft_axis2
+from caracal7.core.dft import dft_axis
 from std.gpu import global_idx
 
 
@@ -110,17 +110,16 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
 
 def lde[p: Params](ctx: DeviceContext, arena: Arena,
                    coeff: Int, columns: Int, tab: TableLayout, ltmp: Int, dst: Int) raises:
-    """coeff (column, k2, k1, 2) -> dst (column, j2, j1, 2): forward DFT per axis onto G (spec 10.2).
-    The twist by g^i is inside the tables g_l^(j k), so there is no separate pass."""
+    """coeff (column, k2, k1, 2) -> dst (column, j2, j1, 2): forward DFT per axis onto G (spec 10.2),
+    three radix stages each (dft.mojo). The twist by g^i is inside the tables, so there is no separate
+    pass. ltmp holds G2 rows of G1 per column: axis 1 writes its first half and scratches in the
+    second, axis 2 reads the first half and scratches over both."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime G1 = 2 * h1
-    # axis 1: rows are the (column, k2) lines, B[k1, j1] = g1^(j1 k1) read from the (j, k) table
-    var o1 = strided(a=coeff, sa_m=h1 * 2, sa_k=2, b=tab.base + tab.wfwd1, sb_k=2, sb_hi=h1 * 2, sb_lo=0,
-                     c=ltmp, sc_m=G1 * 2, sc_hi=2, sc_lo=0)
-    launch_gemm_f2[BACKEND, BACKEND.tile, Strided, 1](ctx, arena, o1, columns * h2, G1, h1)
-    # axis 2: per column, C[j2, j1] = sum_k2 g2^(j2 k2) ltmp[k2, j1]; ltmp holds G2 rows per column as scratch
-    dft_axis2[p, True](ctx, arena, ltmp, dst, G1, columns, tab.base + tab.fwd2)
+    var half = columns * h2 * G1 * 2
+    dft_axis[p, True, 1](ctx, arena, coeff, ltmp, ltmp + half, 1, columns * h2, tab.base + tab.fwd1)
+    dft_axis[p, True, 2](ctx, arena, ltmp, dst, ltmp, G1, columns, tab.base + tab.fwd2)
 
 
 def residual[p: Params](ctx: DeviceContext, arena: Arena,

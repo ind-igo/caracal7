@@ -718,3 +718,17 @@ the pin check), fixed by `_check_op` in placement; the empty-circuit substitutio
 and traced another; and a family test that never exercised an add lane. The verifier's curve work is
 affine on the big-integer type, about a thousand operations per signature; the fixed-base tables as
 constants and Jacobian coordinates are the upgrades if it ever matters.
+
+## Grid DFTs as radix stages (2026-09-09)
+
+The ECDSA profile put 3.1 s of a 7.8 s prove in the LDE and about half of each encode in `idft2`. The
+grid DFTs were dense GEMMs per axis, so a column paid 2 h multiply-adds per point per axis and the
+chain axis (2 h2 = 1792) made the cost quadratic in the chain count; Keccak's grids were too small to
+show it. `core/dft.mojo` splits each axis length as n1 n2 n3 (odd part, two halves of the power of two)
+and runs three stages, the Cooley-Tukey twists folded into per-prefix twiddle tables. A first version
+ran the stages through `gemm_f2` with small tiles; a radix of 7 or 16 has nothing for a tiled GEMM to
+amortize, so a stage is now one thread per (line, prefix, inner) doing r x kin complex products in
+int32. Both axes, forward and inverse, use the same kernel (axis 1 with W = 1, the trace bytes read
+directly). ECDSA: lde 3126 -> 162 ms, encode W 1035 -> 697, encode Z 917 -> 525, warm prove 7.8 -> 4.5 s.
+`Operands` gained a two-level batch index on the way (`zd`, `s_zz`), which the split-K opening uses.
+Not done: the small grid and the quotient still use the dense `wfwd2`, `ginv2`, `winv2` tables.

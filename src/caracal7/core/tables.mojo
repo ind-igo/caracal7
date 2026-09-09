@@ -244,8 +244,10 @@ struct TableLayout(TrivialRegisterPassable):
     var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
-    var fwd2: Int       # DftPlan(2 h2, h2) stage tables of the axis-2 forward DFT (dft.mojo)
-    var inv2: Int       # DftPlan(h2, h2) stage tables of the axis-2 inverse DFT, h2^-1 folded in
+    var fwd1: Int       # DftPlan(2 h1, h1) stage tables of the axis-1 forward DFT (dft.mojo)
+    var inv1: Int       # DftPlan(h1, h1) stage tables of the axis-1 inverse DFT, h1^-1 folded in
+    var fwd2: Int       # the same on axis 2
+    var inv2: Int
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
@@ -268,6 +270,8 @@ struct TableLayout(TrivialRegisterPassable):
         self.qinv2 = off; off += p.h2() * p.h2() * 2
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
+        self.fwd1 = off; off += DftPlan(2 * p.h1(), p.h1()).bytes()
+        self.inv1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
         self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
         self.inv2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.bytes = off
@@ -305,6 +309,8 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
 
     _residual_tables[p](h, t, d)
+    _dft_tables(h, t.fwd1, DftPlan(2 * p.h1(), p.h1()), d.g1, 1)
+    _dft_tables(h, t.inv1, DftPlan(p.h1(), p.h1()), w1_inv, inv_h1)
     _dft_tables(h, t.fwd2, DftPlan(2 * p.h2(), p.h2()), d.g2, 1)
     _dft_tables(h, t.inv2, DftPlan(p.h2(), p.h2()), w2_inv, inv_h2)
     return h^
