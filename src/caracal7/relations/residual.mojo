@@ -10,20 +10,22 @@ Buffers (bytes; slowest ... fastest):
     trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
 Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8):
     lde        axis 1: C[line, j1] = sum_k coeff[line, k] g1^(j1 k); axis 2 per column likewise
-    residual   C[slot, point] = sum_entry kappa[entry][slot] * X[entry][point]; X is gathered by the
-               Family loader as mult(point) * c_a(shift_a point) * c_b(shift_b point). The 2 e basis
-               entries of a Horner transition are not in that GEMM: k_horner_residual reads the e
-               coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
+    residual   the one stage that is not a GEMM launch: k_residual, one thread per point, gathers
+               X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point) and accumulates
+               the 8 kappa lanes in registers (the GEMM skeleton's shared-memory staging cost more than
+               the gather at M = 8). The 2 e basis entries of a Horner transition are not in the table it
+               walks: it reads the e coordinate columns as one E value R(point) and adds
+               alpha^f gate (R(omega1 x) - scale R)
     quotient   q1m over G1 -> Q1 on the coset; qinv1, ginv2 -> the A, B coefficients;
                q2m, qinv2 -> the Q2 coefficients; forward DFTs to their values on H"""
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_reduce_signed, ext_mul, ext_pow, ext_embed, ext_one
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
-from caracal7.core.backend import BACKEND, LANE_TILE, Operands, Loader, Strided, launch_gemm_f2, strided
+from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT, ACC, KIND_HORNER
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
@@ -76,34 +78,6 @@ def _read[p: Params](base: Base, lde: Buf[2], at: Int, j1: Int, j2: Int) -> F2:
     return lde.load(base, (col * G2 + b) * G1 + a)
 
 
-struct Family[p: Params](Loader):
-    """B[entry, point] of the residual GEMM, gathered from the LDE. The point of (n_hi, n_lo) by sb_lo:
-    0 all of G (D = G1: j2 = n_hi, j1 = n_lo); 1 the odd rows (D = G1: j2 = 2 n_hi + 1); 2 the odd
-    columns of the even rows (D = h1: j2 = 2 n_hi, j1 = 2 n_lo + 1). aux0 = lde, aux1 = gate1, aux2 = gate2."""
-    comptime real = False
-    comptime kfast = False
-
-    @staticmethod
-    def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
-        var j1 = n_lo
-        var j2 = n_hi
-        if o.sb_lo == 1:
-            j2 = 2 * n_hi + 1
-        elif o.sb_lo == 2:
-            j2 = 2 * n_hi
-            j1 = 2 * n_lo + 1
-        var ent = Int(o.b) + k * ENTRY
-        var v = _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 16, j1, j2)
-        if u16(base, ent + 22) != NONE:
-            v = ext_mul[1](v, _read[Self.p](base, Buf[2](Int(o.aux0)), ent + 22, j1, j2))
-        var mult = Buf[1](ent).load(base, 28)
-        if mult == 1:
-            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux1) + j1 * 2))
-        elif mult == 2:
-            v = ext_mul[1](v, base.unsafe_load[width=2](Int(o.aux2) + j2 * 2))
-        return v
-
-
 @always_inline
 def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E:
     """R(point) = sum_t b_t R_t(point) from the e coordinate columns at col: with R_t = u_t + i v_t in F2,
@@ -119,29 +93,64 @@ def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E
     return r
 
 
-def k_horner_residual[p: Params](base: Base, lde: Buf[2], families: Buf[1], accs: Buf[1], n_accs: Int32,
-                                 gate1: Buf[2], dst: Buf[16]):
-    """dst[point] += sum over Horner accumulators of gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)), one
-    thread per point; kappa_A = alpha^f and kappa_B = -alpha^f scale are the folded kappas of the basis-0
-    entries (ir.Families.horner puts the 2 e basis entries just before the ingest range). On H x H the
-    residual of a satisfied statement is zero, so the GEMM skips that quadrant and this kernel writes it."""
+def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2],
+                          families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[16]):
+    """dst[point] = sum over entries of kappa X(point) + the Horner transitions, one thread per point
+    with the 8 kappa lanes accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
+    is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane, 128 terms between
+    reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even rows; R is
+    zero on H x H for a satisfied statement, so the last quadrant's threads write zero. A Horner
+    accumulator adds gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)) with kappa_A = alpha^f and
+    kappa_B = -alpha^f scale, the folded kappas of its basis-0 entries (ir.Families.horner puts the
+    2 e basis entries just before the ingest range), R read from the e coordinate columns as one E."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
+    comptime Q1 = G1 * p.h2()
+    comptime Q2 = p.h1() * p.h2()
     var gid = Int(global_idx.x)
     if gid >= G1 * G2:
         return
-    var j1 = gid % G1
-    var j2 = gid // G1
+    var j1: Int
+    var j2: Int
+    if gid < Q1:
+        j2 = 2 * (gid // G1) + 1
+        j1 = gid % G1
+    elif gid < Q1 + Q2:
+        j2 = 2 * ((gid - Q1) // p.h1())
+        j1 = 2 * ((gid - Q1) % p.h1()) + 1
+    else:
+        j2 = 2 * ((gid - Q1 - Q2) // p.h1())
+        j1 = 2 * ((gid - Q1 - Q2) % p.h1())
+        dst.store(base, j2 * G1 + j1, E(0))
+        return
+    var g1 = gate1.load(base, j1)
+    var g2 = gate2.load(base, j2)
+    var re = SIMD[DType.int32, 8](0)
+    var im = SIMD[DType.int32, 8](0)
+    for k in range(Int(count)):
+        var ent = fam.at(k * ENTRY)
+        var v = _read[p](base, lde, ent + 16, j1, j2)
+        if u16(base, ent + 22) != NONE:
+            v = ext_mul[1](v, _read[p](base, lde, ent + 22, j1, j2))
+        var mult = fam.load(base, k * ENTRY + 28)
+        if mult == 1:
+            v = ext_mul[1](v, g1)
+        elif mult == 2:
+            v = ext_mul[1](v, g2)
+        var kap = Buf[16](ent).load(base, 0).deinterleave()
+        var kre = kap[0].cast[DType.int32]()
+        var kim = kap[1].cast[DType.int32]()
+        var v0 = Int32(v[0])
+        var v1 = Int32(v[1])
+        re += kre * v0 - kim * v1
+        im += kre * v1 + kim * v0
+        if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
+            re = f_reduce_signed(re).cast[DType.int32]()
+            im = f_reduce_signed(im).cast[DType.int32]()
+    var acc = f_reduce_signed(re).interleave(f_reduce_signed(im))
     var jn = j1 + 2
     if jn >= G1:
         jn -= G1
-    if (j1 & 1) == 0 and (j2 & 1) == 0:
-        dst.store(base, gid, E(0))
-        return
-    if n_accs == 0:
-        return
-    var g = gate1.load(base, j1)
-    var acc = dst.load(base, gid)
     for k in range(Int(n_accs)):
         var d = accs.offset(k * ACC)
         if Int(d.load(base, 38)) != KIND_HORNER:
@@ -152,11 +161,11 @@ def k_horner_residual[p: Params](base: Base, lde: Buf[2], families: Buf[1], accs
         var kb = Buf[16](families.at((first - 31) * ENTRY)).load(base, 0)
         var v = f_add(ext_mul[4](ka, _z_read[p](base, lde, col, jn, j2)), ext_mul[4](kb, _z_read[p](base, lde, col, j1, j2)))
         comptime for l in range(8):                      # times the gate, an F2 scalar, lane by lane
-            var w = ext_mul[1](F2(v[2 * l], v[2 * l + 1]), g)
+            var w = ext_mul[1](F2(v[2 * l], v[2 * l + 1]), g1)
             v[2 * l] = w[0]
             v[2 * l + 1] = w[1]
         acc = f_add(acc, v)
-    dst.store(base, gid, acc)
+    dst.store(base, j2 * G1 + j1, acc)
 
 
 def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups: Int32):
@@ -192,10 +201,9 @@ def lde[p: Params](ctx: DeviceContext, arena: Arena,
 def residual[p: Params](ctx: DeviceContext, arena: Arena,
                         lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, chals: Int, dst: Int,
                         families_g: Int, count_g: Int, accs: Int, n_accs: Int) raises:
-    """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5 as
-    one GEMM over `families_g` (the table without the Horner basis entries; may be `families` itself),
-    A = the kappa table (8 F2 lanes x entries), B gathered from the LDE; then the Horner transitions
-    from `families` (all entries, kappa folded) and the `accs` descriptors."""
+    """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5,
+    k_residual over `families_g` (the table without the Horner basis entries; may be `families` itself)
+    plus the Horner transitions from `families` (all entries, kappa folded) and the `accs` descriptors."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
@@ -203,22 +211,10 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
     if families_g != families:
         ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[16](alpha), Buf[16](chals),
                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
-    # the odd rows (coset x G1), then the odd columns of the even rows (H2 x coset): R = 0 on H x H
-    var o = strided(a=families_g, sa_m=2, sa_k=ENTRY, b=families_g, sb_k=0, sb_hi=0, sb_lo=1,
-                    c=dst + G1 * p.e, sc_m=2, sc_hi=2 * G1 * p.e, sc_lo=p.e)
-    o.aux0 = Int64(lde_buf)
-    o.aux1 = Int64(tab.base + tab.gate1)
-    o.aux2 = Int64(tab.base + tab.gate2)
-    # ponytail: D is not a power of two, so the point split costs an integer division per gathered
-    # element; a (j2, j1) 2D launch removes it when the residual shows up in the profile.
-    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], G1](ctx, arena, o, p.e // 2, G1 * p.h2(), count_g)
-    o.sb_lo = 2
-    o.c = Int64(dst + p.e)
-    o.sc_lo = Int64(2 * p.e)
-    launch_gemm_f2[BACKEND, LANE_TILE, Family[p], p.h1()](ctx, arena, o, p.e // 2, p.h1() * p.h2(), count_g)
-    comptime kh = k_horner_residual[p]
-    ctx.enqueue_function[kh](arena.buf, Buf[2](lde_buf), Buf[1](families), Buf[1](accs), Int32(n_accs),
-                             Buf[2](tab.base + tab.gate1), Buf[16](dst),
+    comptime kr = k_residual[p]
+    ctx.enqueue_function[kr](arena.buf, Buf[2](lde_buf), Buf[1](families_g), Int32(count_g),
+                             Buf[2](tab.base + tab.gate1), Buf[2](tab.base + tab.gate2),
+                             Buf[1](families), Buf[1](accs), Int32(n_accs), Buf[16](dst),
                              grid_dim=ceildiv(G1 * G2, BACKEND.block), block_dim=BACKEND.block)
 
 

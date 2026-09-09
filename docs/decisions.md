@@ -835,3 +835,17 @@ scatter 36); the memory floor for six passes over four cosets is about 56 ms. Th
 fusion in threadgroup memory (the two radix-8 stages: 8 KB per 32 columns; the odd stages: 315 lines x 16
 columns), worth about a pass each. ECDSA: encode W 273 -> 192, Z 254 -> 169, Q 68 -> 47 ms,
 warm prove 1,751 -> 1,548 ms.
+
+## Residual as a per-point kernel, not a GEMM (2026-09-10)
+
+The residual GEMM had M = 8 (the kappa lanes): the skeleton staged every gathered B element through
+shared memory and two barriers to serve 8 rows, in 32-thread blocks. Loader variants at ECDSA size
+showed the skeleton was the cost, not the gather: full loader 400 ms, descriptor only with no LDE read
+256, a contiguous read with no descriptor 286; the first read, the second read and the gate added
+about 50 ms each. Wider lane tiles were all slower (256 x 16: 541, 512 x 16: 920) because their
+threadgroup memory cuts occupancy. `k_residual` gives each thread one point and walks the entry table
+with the 8 kappa lanes as two int32 SIMD accumulators (kappa deinterleaved into real and imaginary
+lanes, 4 vector MACs per entry, reduced every 128 terms); the entry descriptors are uniform loads,
+the LDE reads coalesce along j1, and the Horner transitions are fused in. Residual 430 -> 128 ms,
+warm prove 1,548 -> 1,297 ms. `open` uses the same M = 8 lane tile (221 ms) and is the next
+candidate for the same treatment.
