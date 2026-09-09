@@ -1,6 +1,7 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 
 from caracal7.workloads.bigint import Big
+from caracal7.workloads.fp import Fp
 from caracal7.workloads.ecdsa import Curve, Point, recode, skew, QW, WINDOWS
 
 
@@ -67,6 +68,25 @@ def test_blinding_and_verify() raises:
     assert_equal(b.y.bit(0), 0)
     msg[0] = 9
     assert_true(c.blinding(msg) != b)
+
+
+def test_fp_matches_big() raises:
+    """The limb field against Big's modular arithmetic: products, sums, differences, inverses, on values
+    across the range (p - 1, small, a Blake-like spread from an LCG)."""
+    var c = Curve()
+    var vals: List[Big] = [Big(0), Big(1), Big(2), c.p - Big(1), c.p - Big(2), Big(1).shl(255), Big(1).shl(256) - Big(1) - c.p]
+    var seed = Big(0x9E3779B97F4A7C15)
+    for _ in range(12):
+        seed = (seed * Big(6364136223846793005) + Big(1442695040888963407)).low(256).mod(c.p)
+        vals.append(seed.copy())
+    for a in vals:
+        for b in vals:
+            assert_equal((Fp.from_big(a) * Fp.from_big(b)).to_big(), a.mulmod(b, c.p))
+            assert_equal((Fp.from_big(a) + Fp.from_big(b)).to_big(), (a + b).mod(c.p))
+            assert_equal((Fp.from_big(a) - Fp.from_big(b)).to_big(), (a - b + c.p).mod(c.p))
+        if not a.is_zero():
+            assert_equal(Fp.from_big(a).inv().to_big(), a.inv_mod(c.p))
+    assert_true(Fp.from_big(Big(0)).inv().to_big().is_zero())
 
 
 def main() raises:

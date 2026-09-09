@@ -602,6 +602,17 @@ def fold_bits(bits: List[Int]) -> List[Int]:
     return acc^
 
 
+def folded(a: Big, b: Big) raises -> Big:
+    """The folded output of a product chain: a b under the fold twice, below 2^FOLDED."""
+    var c = Big(977) + Big(1).shl(32)
+    var t = a * b
+    t = t.low(BITS) + t.shr(BITS) * c
+    t = t.low(BITS) + t.shr(BITS) * c
+    if t.bit_length() > FOLDED:
+        raise Error("the folded result exceeds " + String(FOLDED) + " bits")
+    return t^
+
+
 def folded_bits(a: List[Int], b: List[Int]) raises -> List[Int]:
     """The FOLDED bits of a product chain's output for the operand bits."""
     var f = fold_bits(fold_bits(product_bits(a, b)))
@@ -687,7 +698,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
             else:
                 raise Error("bad operand reference on op " + String(j))
         if op.kind == MUL:
-            vals.append(OpValues(MUL, _bounded(v[0]), _bounded(v[1]), Big(), Big.from_bits(folded_bits(v[0].bits(WIDTH), v[1].bits(WIDTH))), 0))
+            vals.append(OpValues(MUL, _bounded(v[0]), _bounded(v[1]), Big(), folded(v[0], v[1]), 0))
             continue
         var known = Big()
         for role in range(3):
@@ -727,13 +738,21 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
     return vals^
 
 
-def _put(mut trace: List[UInt8], layout: Layout, N: Int, base: Int, name: String, bits: List[Int], grouped: Bool) raises:
-    """A value's bits into the column set `name` (or a's pieces) of the chain at `base`."""
-    var cols = _columns(bits, grouped)
+def _cols(layout: Layout, name: String, grouped: Bool) raises -> List[Int]:
+    """The column indices of a value's column set (or a's pieces), (g * Q + j) order."""
+    var v = List[Int]()
     for g in range(PIECES if grouped else 1):
         for j in range(Q):
-            for x1 in range(ROWS):
-                trace[layout.col(name + (String(g) if grouped else String("")) + String(j)) * N + base + x1] = cols[(g * Q + j) * ROWS + x1]
+            v.append(layout.col(name + (String(g) if grouped else String("")) + String(j)))
+    return v^
+
+
+def _put(mut trace: List[UInt8], N: Int, base: Int, cols: List[Int], bits: List[Int], grouped: Bool):
+    """A value's bits into the column set `cols` (or a's pieces) of the chain at `base`."""
+    for i in range(len(bits)):
+        if bits[i] != 0:
+            var g = _piece(i) if grouped else 0
+            trace[cols[g * Q + i % Q] * N + base + _row(i)] = 1
 
 
 def mulmod_trace[p: Params](layout: Layout, a: List[UInt8], b: List[UInt8], cheat: Int = -1) raises -> List[UInt8]:
@@ -753,11 +772,33 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         raise Error("the instance needs " + String(ROWS) + " rows per chain, every chain on the grid, a value per op")
     var trace = List[UInt8](length=layout.columns_w() * N, fill=0)
     var mul_at = List[Int](length=p.h2(), fill=-1)
+    var lanes = List[List[Int]]()                  # per lane: x, y, z, s (Q each), q (QBITS), c (ACARRY x Q)
+    for L in range(LANES):
+        var v = List[Int]()
+        for name in ["x", "y", "z", "s"]:
+            v.extend(_cols(layout, _lane(L, name), False))
+        for k in range(QBITS):
+            v.append(layout.col(_lane(L, "q" + String(k))))
+        for k in range(ACARRY):
+            v.extend(_cols(layout, _lane(L, "c" + String(k)), False))
+        lanes.append(v^)
     for j in range(len(ops)):
         if ops[j].kind == ADD:
-            _add_lane[p](layout, trace, at[j][0], at[j][1], vals[j], ops[j], modulus(ops[j].mod).bits(SLOTS))
+            _add_lane[p](trace, lanes[at[j][1]], at[j][0], vals[j], ops[j], modulus(ops[j].mod).bits(SLOTS))
         else:
             mul_at[at[j][0]] = j
+    var ca = _cols(layout, "a", True)
+    var cb = _cols(layout, "b", False)
+    var cr = _cols(layout, "r", False)
+    var cc = List[Int]()                           # (t * CBITS + m) * Q + j
+    for t in range(PIECES):
+        for m in range(CBITS):
+            cc.extend(_cols(layout, "c" + String(t) + String(m), False))
+    var cy = List[Int]()                           # k * Q + j
+    for k in range(CARRY):
+        cy.extend(_cols(layout, "y" + String(k), False))
+    var fold1 = _fold_cols(layout, "r", "h", "o", "z")
+    var fold2 = _fold_cols(layout, "o", "g", "f", "v")
     for x2 in range(p.h2()):
         var live = mul_at[x2] >= 0
         if not live and x2 != cheat:
@@ -765,62 +806,79 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         var base = x2 * h1
         var ab = vals[mul_at[x2]].x.bits(WIDTH) if live else List[Int]()
         var bb = vals[mul_at[x2]].y.bits(WIDTH) if live else List[Int]()
-        _put(trace, layout, N, base, "a", ab, True)
-        _put(trace, layout, N, base, "b", bb, False)
+        _put(trace, N, base, ca, ab, True)
+        _put(trace, N, base, cb, bb, False)
         for t in range(PIECES):
-            for w in range(t * PIECE, t * PIECE + PIECE + len(bb) + Q):
+            var lo = t * PIECE
+            var hi = min((t + 1) * PIECE, len(ab)) if t < PIECES - 1 else len(ab)
+            for w in range(lo, lo + PIECE + len(bb) + Q):
                 var c = 0
-                for i in range(t * PIECE, min((t + 1) * PIECE, len(ab)) if t < PIECES - 1 else len(ab)):
-                    if i <= w and w - i < len(bb):
-                        c += ab[i] * bb[w - i]
+                for i in range(lo, min(hi, w + 1)):
+                    if ab[i] != 0 and w - i < len(bb):
+                        c += bb[w - i]
+                if c == 0:
+                    continue
                 var b6 = 1 if c >= 64 else 0
                 var b5 = 1 if c >= 32 and c < 64 else 0
                 var v = c - 64 * b6 - 32 * b5
                 for m in range(CBITS):
                     var bit = b6 if m == 6 else (b5 if m == 5 else (v >> m) & 1)
                     if bit == 1:
-                        trace[layout.col(_c(t, m, (w + m) % Q)) * N + base + _row(w + m)] = 1
+                        trace[cc[(t * CBITS + m) * Q + (w + m) % Q] * N + base + _row(w + m)] = 1
         var carry = 0
         if x2 == cheat:
             var off = base + h1 - 1
-            trace[layout.col(_c(0, 0, Q - 1)) * N + off] = 1
-            trace[layout.col(_c(0, 1, Q - 1)) * N + off] = 1
-            trace[layout.col(_y(0, Q - 1)) * N + off] = 1
+            trace[cc[Q - 1] * N + off] = 1
+            trace[cc[Q + Q - 1] * N + off] = 1
+            trace[cy[Q - 1] * N + off] = 1
             carry = 1
         for w in range(SLOTS):
             var s = carry
+            var at_w = base + _row(w)
             for t in range(PIECES):
                 for m in range(CBITS):
-                    s += Int(trace[layout.col(_c(t, m, w % Q)) * N + base + _row(w)])
-            trace[layout.col("r" + String(w % Q)) * N + base + _row(w)] = UInt8(s & 1)
+                    s += Int(trace[cc[(t * CBITS + m) * Q + w % Q] * N + at_w])
+            trace[cr[w % Q] * N + at_w] = UInt8(s & 1)
             carry = s >> 1
             for k in range(CARRY):
-                trace[layout.col(_y(k, w % Q)) * N + base + _row(w)] = UInt8((carry >> k) & 1)
-        _fold_chain[p](layout, trace, x2, "r", "h", "o", "z")
-        _fold_chain[p](layout, trace, x2, "o", "g", "f", "v")
+                trace[cy[k * Q + w % Q] * N + at_w] = UInt8((carry >> k) & 1)
+        _fold_chain[p](trace, x2, fold1)
+        _fold_chain[p](trace, x2, fold2)
     return trace^
 
 
-def _fold_chain[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, src: String, copy: String, dst: String, carry: String) raises:
-    """The copy and the fold ripple of one chain, the families of `_fold_families` evaluated in row order."""
+def _fold_cols(layout: Layout, src: String, copy: String, dst: String, carry: String) raises -> List[Int]:
+    """src, copy, dst (Q each), then carry (FOLD x Q)."""
+    var v = _cols(layout, src, False)
+    v.extend(_cols(layout, copy, False))
+    v.extend(_cols(layout, dst, False))
+    for k in range(FOLD):
+        v.extend(_cols(layout, carry + String(k), False))
+    return v^
+
+
+def _fold_chain[p: Params](mut trace: List[UInt8], x2: Int, cols: List[Int]):
+    """The copy and the fold ripple of one chain, the families of `_fold_families` evaluated in row order;
+    `cols` from `_fold_cols`."""
     comptime h1 = p.h1()
     comptime N = p.N()
     var base = x2 * h1
+    var shifts = _shifts()
     for x1 in range(h1):
         if _cp_row(x1):
             for j in range(Q):
-                trace[layout.col(copy + String(j)) * N + base + x1] = trace[layout.col(src + String(j)) * N + base + (x1 + UP) % h1]
+                trace[cols[Q + j] * N + base + x1] = trace[cols[j] * N + base + (x1 + UP) % h1]
     var cy = 0
     for w in range(SLOTS):
         var x1 = _row(w)
-        var s = cy + (Int(trace[layout.col(src + String(w % Q)) * N + base + x1]) if _lo_row(x1) else 0)
-        for sh in _shifts():
+        var s = cy + (Int(trace[cols[w % Q] * N + base + x1]) if _lo_row(x1) else 0)
+        for sh in shifts:
             var at = _below(w % Q, sh)
-            s += Int(trace[layout.col(copy + String(at[1])) * N + base + (x1 + at[0]) % h1])
-        trace[layout.col(dst + String(w % Q)) * N + base + x1] = UInt8(s & 1)
+            s += Int(trace[cols[Q + at[1]] * N + base + (x1 + at[0]) % h1])
+        trace[cols[2 * Q + w % Q] * N + base + x1] = UInt8(s & 1)
         cy = s >> 1
         for k in range(FOLD):
-            trace[layout.col(carry + String(k) + String(w % Q)) * N + base + x1] = UInt8((cy >> k) & 1)
+            trace[cols[3 * Q + k * Q + w % Q] * N + base + x1] = UInt8((cy >> k) & 1)
 
 
 def _qbits(q: Int) -> List[Int]:
@@ -831,8 +889,9 @@ def _qbits(q: Int) -> List[Int]:
     return v^
 
 
-def _add_lane[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, L: Int, v: OpValues, op: Op, mb: List[Int]) raises:
-    """x, y, z, s, q and the signed carries of `_add_families` in row order; `mb` the modulus bits."""
+def _add_lane[p: Params](mut trace: List[UInt8], cols: List[Int], x2: Int, v: OpValues, op: Op, mb: List[Int]) raises:
+    """x, y, z, s, q and the signed carries of `_add_families` in row order; `cols` the lane's columns as
+    `circuit_trace` lists them, `mb` the modulus bits."""
     comptime h1 = p.h1()
     comptime N = p.N()
     var base = x2 * h1
@@ -840,14 +899,16 @@ def _add_lane[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, L: Int
     var yb = v.y.bits(WIDTH)
     var zb = v.z.bits(WIDTH)
     var sb = v.s.bits(WIDTH)
-    _put(trace, layout, N, base, _lane(L, "x"), xb, False)
-    _put(trace, layout, N, base, _lane(L, "y"), yb, False)
-    _put(trace, layout, N, base, _lane(L, "z"), zb, False)
-    _put(trace, layout, N, base, _lane(L, "s"), sb, False)
+    var vals: List[List[Int]] = [xb.copy(), yb.copy(), zb.copy(), sb.copy()]
+    for r in range(4):
+        var sub = List[Int]()
+        for j in range(Q):
+            sub.append(cols[r * Q + j])
+        _put(trace, N, base, sub, vals[r], False)
     var qb = _qbits(v.q)
     for k in range(QBITS):
         for x1 in range(h1):
-            trace[layout.col(_lane(L, "q" + String(k))) * N + base + x1] = UInt8(qb[k])
+            trace[cols[4 * Q + k] * N + base + x1] = UInt8(qb[k])
     var sy = op.sy
     var sz = op.sz
     var c = 0
@@ -864,7 +925,7 @@ def _add_lane[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, L: Int
             raise Error("addition carry out of range")
         var e = c + 16 if c < 0 else c
         for k in range(ACARRY):
-            trace[layout.col(_lane(L, "c" + String(k) + String(w % Q))) * N + base + _row(w)] = UInt8((e >> k) & 1)
+            trace[cols[4 * Q + QBITS + k * Q + w % Q] * N + base + _row(w)] = UInt8((e >> k) & 1)
     if c != 0:
         raise Error("addition does not close")
 

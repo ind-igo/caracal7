@@ -8,6 +8,7 @@ from caracal7.core.bytes import host_base
 from caracal7.core.hash import Blake3
 from caracal7.core.params import Params
 from caracal7.workloads.bigint import Big
+from caracal7.workloads.fp import Fp, L4
 from caracal7.workloads.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
 from caracal7.relations.statement import Statement, Layout
 from caracal7.workload import Workload
@@ -65,15 +66,6 @@ struct Curve(Movable):
 
     # ---- the field ----
 
-    def red(self, v: Big) -> Big:
-        """v mod p for 0 <= v < 2^512, by the fold twice and at most two subtractions."""
-        var c = Big(977) + Big(1).shl(32)
-        var t = v.low(256) + v.shr(256) * c
-        t = t.low(256) + t.shr(256) * c
-        while t >= self.p:
-            t = t - self.p
-        return t^
-
     def fadd(self, a: Big, b: Big) -> Big:
         var t = a + b
         return t - self.p if t >= self.p else t^
@@ -83,18 +75,19 @@ struct Curve(Movable):
         return t + self.p if t.neg else t^
 
     def fmul(self, a: Big, b: Big) -> Big:
-        return self.red(a * b)
+        return (Fp.from_big(a) * Fp.from_big(b)).to_big()
 
     def fpow(self, a: Big, e: Big) -> Big:
-        var r = Big(1)
+        var x = Fp.from_big(a)
+        var r = Fp(L4(1, 0, 0, 0))
         for i in range(e.bit_length() - 1, -1, -1):
-            r = self.fmul(r, r)
+            r = r * r
             if e.bit(i) == 1:
-                r = self.fmul(r, a)
-        return r^
+                r = r * x
+        return r.to_big()
 
     def finv(self, a: Big) -> Big:
-        return self.fpow(a, self.p - Big(2))
+        return Fp.from_big(a).inv().to_big()
 
     def fsqrt(self, a: Big) raises -> Big:
         """p = 3 mod 4: a^((p + 1) / 4), checked."""
