@@ -191,7 +191,7 @@ def _check_on_g(r: Run) raises:
             if r.e(r.res, (j2 * G1 + j1) * p.e) != E(0):
                 bad += 1
     assert_equal(bad, 0)
-    var points: List[Int] = [1, G1, G1 + 1, 9 * G1 + 50, (G2 - 1) * G1 + G1 - 1]
+    var points: List[Int] = [1, G1, G1 + 1, 2 * G1 + 3, 9 * G1 + 50, (G2 - 1) * G1 + G1 - 1]
     for n in points:
         var j1 = n % G1
         var j2 = n // G1

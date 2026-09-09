@@ -74,7 +74,7 @@ Each kernel is one `def` taking device buffers and `Params`. Grid and block shap
 | `pack` | stored → packed | one per (column, i) | gather 4 slots on the packing digit into one F4 symbol |
 | `rs_encode` | packed → code | one thread per (column, output) for the gather; radix stages one per (column, butterfly) | coset twist by `g_k^i` inside the gather, then the order-L0 DFT over F4: the power-of-two part as a sparse gather (the inputs of one residue class) plus Cooley-Tukey radix-8 steps with the twiddle folded into each coefficient, then the odd-part Good-Thomas radix stages, all as register butterflies |
 | `merkle` | code → tree | one per node per level | Blake3, 1,024-byte leaves, 32-byte nodes, one launch per level |
-| `open` | stored, w_z → alpha | lane GEMM on the skeleton | contraction `<w_z, stored(c)>` in E for every column of every tree; `w_z` is built on device per (point, slot) from the pieces of 9.1 (`slot_weight`, shared with the verifier) |
+| `open` | stored, w_z → alpha | one GEMM on the skeleton, rows (point, lane) | contraction `<w_z, stored(c)>` in E for every column of every tree; `w_z` is built on device per (point, slot) from the pieces of 9.1 (`slot_weight`, shared with the verifier) |
 | `fold` | stored, beta → fold_y | one per slot | GEMV over all columns of all three trees |
 | `query_gather` | code, tree, S → proof bytes | one per query, then one per frontier node | opened leaf rows and a Merkle multiproof: the unique sibling frontier of S is computed first, each sibling emitted once |
 | `tail_materialize` | tensor terms → w_tilde | one per slot | sum of the active claim batch: up to `12 P + 4 n_cw |S_1|` tensor terms at level 2, `|S_{l-1}|` plus the running claim later |

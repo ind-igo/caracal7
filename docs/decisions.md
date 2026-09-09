@@ -847,5 +847,13 @@ threadgroup memory cuts occupancy. `k_residual` gives each thread one point and 
 with the 8 kappa lanes as two int32 SIMD accumulators (kappa deinterleaved into real and imaginary
 lanes, 4 vector MACs per entry, reduced every 128 terms); the entry descriptors are uniform loads,
 the LDE reads coalesce along j1, and the Horner transitions are fused in. Residual 430 -> 128 ms,
-warm prove 1,548 -> 1,297 ms. `open` uses the same M = 8 lane tile (221 ms) and is the next
-candidate for the same treatment.
+warm prove 1,548 -> 1,297 ms.
+
+## Openings as one GEMM over every point (2026-09-10)
+
+`open` ran one M = 8 lane GEMM per opening point (batch = points x splits), the same skeleton at the
+same M. With `w_z` stored (slot, P, e) instead of (P, slot, e), the 8 lanes of every point are rows
+of one operand: C[(point, lane), column] with M = 8 P = 96 for ECDSA's 12 points on the regular
+64 x 64 tile, split-K over 64 slot chunks into `partial` (s, c, p, e), summed by `k_sum_splits` into
+the (p, c, e) openings rows. `k_running0` reads the new layout. Open 221 -> 40 ms, warm prove
+1,297 -> 1,097 ms. `fold` (M = 8, 19 ms) keeps the lane tile.

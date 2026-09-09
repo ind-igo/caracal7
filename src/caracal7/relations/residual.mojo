@@ -22,11 +22,11 @@ Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_reduce_signed, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_reduce_signed, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
-from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, POINT, ACC, KIND_HORNER
+from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.dft import dft_axis
@@ -107,6 +107,7 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
     comptime G2 = 2 * p.h2()
     comptime Q1 = G1 * p.h2()
     comptime Q2 = p.h1() * p.h2()
+    comptime assert BACKEND.max_terms & (BACKEND.max_terms - 1) == 0, "the reduction cadence masks k"
     var gid = Int(global_idx.x)
     if gid >= G1 * G2:
         return

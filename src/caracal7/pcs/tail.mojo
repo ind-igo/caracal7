@@ -84,7 +84,7 @@ def k_running0[p: Params](base: Base, w_z: Buf[16], gamma: Buf[16], P: Int32, ds
         return
     var acc = E(0)
     for pt in range(Int(P)):
-        acc = f_add(acc, ext_mul[4](gamma.load(base, pt), w_z.load(base, pt * N + slot)))
+        acc = f_add(acc, ext_mul[4](gamma.load(base, pt), w_z.load(base, slot * Int(P) + pt)))
     dst.store(base, slot, acc)
 
 

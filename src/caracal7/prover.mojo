@@ -89,7 +89,7 @@ struct ProverLayout:
     var residual: Int               # (G2, G1, e)
     var quotient: Int               # quotient_elems x e    Q1, Q2 interpolation scratch (residual.mojo)
     var w_tab: Int                  # (P, table_len, e)     per-point powers and Lagrange factors (open.mojo)
-    var w_z: Int                    # (P, slot, e)          evaluation queries
+    var w_z: Int                    # (slot, P, e)          evaluation queries
     var openings: Int               # (P, column, e)
     var open_partial: Int           # (P, splits, column, e) split-K partials of `open`
     var fold_y: Int                 # (slot, e)             y = sum beta_c stored(c), the level-2 message

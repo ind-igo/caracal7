@@ -1,6 +1,6 @@
 """Openings and the level-1 fold (design section 4, spec 9.1).
 
-    w_z       (P, slot, e)      the evaluation query of every opening point, on the Frobenius-real slots
+    w_z       (slot, P, e)      the evaluation query of every opening point, on the Frobenius-real slots
     openings  (P, column, e)    alpha_{c,p} = <w_{z_p}, stored(c)>, witness columns then quotient columns
     fold_y    (slot, e)         y = sum_c beta_c stored(c) over both trees, the level-2 message
 
@@ -11,8 +11,8 @@ Mon(x) for a fixed slot (9.1). Every factor depends on the point and one digit o
 per-point table (z^x on each binary axis, L(r) on each odd axis; `table_entry`) is built first and a
 slot costs four E products from it. The verifier reads the same table from the host (`host_table`).
 
-`open` and `fold` are lane GEMMs on backend.gemm_f2: C[8 F2 lanes, n] with the F byte operand
-read through the Bytes loader.
+`open` is one GEMM on backend.gemm_f2 with the 8 F2 lanes of every point as its rows, C[(point, lane),
+column]; `fold` is a lane GEMM, C[8 lanes, slot]. The F byte operand is read through the Bytes loader.
 """
 
 from std.math import ceildiv
@@ -161,12 +161,12 @@ def k_build_queries[p: Params](base: Base, points: Int32, rho1: UInt8, rho2: UIn
     var gid = Int(global_idx.x)
     if gid >= Int(points) * N:
         return
-    w_z.store(base, gid, slot_weight[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
+    w_z.store(base, (gid % N) * Int(points) + gid // N, slot_weight[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
 
 
 def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
                              z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_tab: Int, w_z: Int) raises:
-    """w_z (P, slot, e) for the P opening points derived from z: the per-point tables (P, table_len, e) into
+    """w_z (slot, P, e) for the P opening points derived from z: the per-point tables (P, table_len, e) into
     `w_tab`, then the slots."""
     comptime kt = k_point_tables[p]
     comptime k = k_build_queries[p]
@@ -188,32 +188,36 @@ def open_splits[p: Params]() -> Int:
     return s
 
 
-def k_sum_splits(base: Base, src: Buf[1], splits: Int32, elems: Int32, dst: Buf[1], dst_stride: Int32, total: Int32):
-    """dst[o * dst_stride + i] = sum_s src[(o * splits + s) * elems + i] over F, for o * elems + i < total."""
+def k_sum_splits(base: Base, src: Buf[1], splits: Int32, columns: Int32, points: Int32, dst: Buf[1], dst_stride: Int32, total: Int32):
+    """dst (point, column, e) at row stride `dst_stride` = sum over s of src (s, column, point, e)."""
     var gid = Int(global_idx.x)
     if gid >= Int(total):
         return
-    var o = gid // Int(elems)
-    var i = gid % Int(elems)
+    var i = gid % 16
+    var c = (gid // 16) % Int(columns)
+    var pt = gid // (16 * Int(columns))
     var acc: UInt32 = 0
-    for k in range(Int(splits)):
-        acc += UInt32(src.load(base, (o * Int(splits) + k) * Int(elems) + i))
-    dst.store(base, o * Int(dst_stride) + i, UInt8(acc % 127))
+    for s in range(Int(splits)):
+        acc += UInt32(src.load(base, ((s * Int(columns) + c) * Int(points) + pt) * 16 + i))
+    dst.store(base, pt * Int(dst_stride) + c * 16 + i, UInt8(acc % 127))
 
 
 def open[p: Params](ctx: DeviceContext, arena: Arena,
                     w_z: Int, points: Int, stored: Int, columns: Int, partial: Int, dst: Int, row_columns: Int) raises:
     """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`.
-    Split-K: block (p, s) reduces slots [s K, (s + 1) K) into `partial` (p, s, c, e), then one sum."""
+    One GEMM, rows (point, lane) from w_z (slot, P, e), split-K: batch s reduces slots [s K, (s + 1) K)
+    into `partial` (s, c, p, e), then one sum."""
     comptime N = p.N()
     comptime e = p.e
+    comptime assert e == 16, "k_sum_splits walks 16-byte E values"
     var splits = open_splits[p]()
     var K = N // splits
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes[kfast_=True], 1](ctx, arena, strided(
-        a=w_z, sa_m=2, sa_k=e, sa_z=K * e, sa_zz=splits * K * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
-        c=partial, sc_m=2, sc_hi=e, sc_lo=0, sc_z=columns * e, sc_zz=splits * columns * e, zd=splits), e // 2, columns, K, batch=points * splits)
+    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes[kfast_=True], 1](ctx, arena, strided(
+        a=w_z, sa_m=2, sa_k=points * e, sa_z=K * points * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
+        c=partial, sc_m=2, sc_hi=points * e, sc_lo=0, sc_z=columns * points * e), points * 8, columns, K, batch=splits)
     var total = points * columns * e
-    ctx.enqueue_function[k_sum_splits](arena.buf, Buf[1](partial), Int32(splits), Int32(columns * e), Buf[1](dst), Int32(row_columns * e), Int32(total),
+    ctx.enqueue_function[k_sum_splits](arena.buf, Buf[1](partial), Int32(splits), Int32(columns), Int32(points), Buf[1](dst),
+                                       Int32(row_columns * e), Int32(total),
                                        grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)
 
 
