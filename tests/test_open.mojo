@@ -13,7 +13,7 @@ from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace
 from caracal7.relations.ir import shift_points, point_coord
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
+from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
 from caracal7.core.bytes import list_e
 
 comptime p = CLIENT.grid(72, 32)

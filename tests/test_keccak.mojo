@@ -7,7 +7,7 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.hash import Blake3
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS
-from caracal7.relations.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
+from caracal7.workloads.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
 from caracal7.prover import Prover, load_trace, load_advice, load_public
 from caracal7.relations import value_bytes
 from caracal7.relations.statement import advice

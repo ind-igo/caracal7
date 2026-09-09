@@ -12,7 +12,7 @@ from caracal7.verifier import verify
 from caracal7.relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
 from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
 from caracal7.relations.ir import Families
-from caracal7.relations.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
+from caracal7.workloads.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
 
 comptime p = CLIENT.grid(72, 32)
 

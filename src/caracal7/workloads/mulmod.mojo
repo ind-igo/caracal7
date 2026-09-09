@@ -44,7 +44,7 @@ pins them) then the public values, VALUE bytes each, below 2^FOLDED."""
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_E, CHAL_MUL
 from caracal7.relations.statement import Statement, Layout, Term, BIT
-from caracal7.relations.bigint import Big
+from caracal7.workloads.bigint import Big
 from caracal7.workload import Workload
 
 comptime ROWS = 144         # rows per chain: 572 weight slots, up to 525 live (C_2's top coefficient at weight 519 with b below 2^260, its bit 6 at slot 525)

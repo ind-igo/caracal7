@@ -1,7 +1,7 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 
-from caracal7.relations.bigint import Big
-from caracal7.relations.ecdsa import Curve, Point, recode, skew
+from caracal7.workloads.bigint import Big
+from caracal7.workloads.ecdsa import Curve, Point, recode, skew
 
 
 def test_group_and_endomorphism() raises:

@@ -1,6 +1,6 @@
 # ECDSA on the mulmod circuits: design
 
-One secp256k1 signature verification as a fixed circuit of the chains in `relations/mulmod.mojo`. Written
+One secp256k1 signature verification as a fixed circuit of the chains in `workloads/mulmod.mojo`. Written
 2026-09-09 after three Codex reviews; the first draft had a signature-dependent circuit, a witness point
 `R`, slope-only additions and a fixed blinding point, and all four are gone. Numbers are counts, not measurements.
 
@@ -138,7 +138,7 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 
 ## 7. Implemented (2026-09-09)
 
-`relations/ecdsa.mojo`: the host arithmetic (`Curve`, affine points on `Big`, Fermat inversions, the fold
+`workloads/ecdsa.mojo`: the host arithmetic (`Curve`, affine points on `Big`, Fermat inversions, the fold
 reduction), the GLV split by the exact lattice basis, `recode`/`skew`, the blinding point by
 try-and-increment on Blake3 of the 160 public-input bytes (`r, s, e, x_Q, y_Q`, the encoding open in
 section 6, settled as the public inputs as they are), and the `Ecdsa` workload: `walk` emits the fixed

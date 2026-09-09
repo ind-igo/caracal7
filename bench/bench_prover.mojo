@@ -8,7 +8,7 @@ from caracal7.core.params import Params, CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
 from caracal7.prover import Prover, load_trace, load_advice
-from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
+from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
 
 
 

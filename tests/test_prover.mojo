@@ -14,8 +14,8 @@ from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CH
 from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
-from caracal7.relations.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
-from caracal7.relations.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
+from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
+from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)

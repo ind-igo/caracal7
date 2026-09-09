@@ -1,6 +1,6 @@
 # Arithmetic mod p: the product as a polynomial identity, additions, the canonical check
 
-The polynomial-mulmod spec on the builder (`relations/mulmod.mojo`): `a b = r`, then `r` folded to
+The polynomial-mulmod spec on the builder (`workloads/mulmod.mojo`): `a b = r`, then `r` folded to
 `f < 2^257`, congruent mod secp256k1's `p`, with no product ever committed (items 1 to 8); signed three-operand
 additions mod `p` or mod `n` on two add lanes per chain, with the canonical check, the guard and equality
 as masked additions. A circuit is a list of ops, each a product or an addition. Read the spec for the argument; this doc records what the code does where the spec left
@@ -151,7 +151,7 @@ the statement pins its circuit bytes (`Statement.pin`, `Shape.pinned`, hashed in
 verifier refuses public inputs that do not start with them. A workload whose circuit is fixed in code
 (`Ecdsa`) passes `pin=False` and derives its public data from the circuit it rebuilds, with no header.
 
-Host values are `Big` integers (`relations/bigint.mojo`, sign and 32-bit limbs): `circuit_values` walks
+Host values are `Big` integers (`workloads/bigint.mojo`, sign and 32-bit limbs): `circuit_values` walks
 the ops, takes public operands from the inputs, computes each output or free operand and the quotient,
 and refuses an instance whose checks do not hold; `circuit_trace` writes each op on its chain and lane.
 

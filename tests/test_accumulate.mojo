@@ -12,7 +12,7 @@ from caracal7.relations.accumulate import ACC, accumulate, horner, derive_chals
 from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
-from caracal7.relations.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
+from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

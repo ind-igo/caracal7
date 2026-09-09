@@ -387,7 +387,7 @@ split gates two of the spec's four Keccak rows, not only the proxy, and moves up
 
 ## Keccak-256 workload (2026-09-07)
 
-The second `Workload`, `relations/keccak.mojo`, on the bit layout of statement-layer section 8 (`docs/keccak.md`):
+The second `Workload`, `workloads/keccak.mojo`, on the bit layout of statement-layer section 8 (`docs/keccak.md`):
 a row is one bit position of the 25-lane state in one round, a chain is one round, `CLIENT.grid(64, 24 b)` for
 `b` message blocks. 142 bit columns, 284 families (142 of them Booleanity), 777 entries, 28 opening points (no accumulators, so none of the spec's boundary points), 17
 dense public columns (message bits and round constants), 29 restrictions (25 one-coefficient zero lines on the
@@ -625,7 +625,7 @@ of the slot and public factor ids, and a short product anywhere but last (slot i
 
 ## The 256-bit product: polynomial-mulmod 1 to 6 on the builder, the zero row (2026-09-09)
 
-`relations/mulmod.mojo`, `docs/mulmod.md`: `a b = r` on one chain of 144 rows, 124 bit columns, four Horner
+`workloads/mulmod.mojo`, `docs/mulmod.md`: `a b = r` on one chain of 144 rows, 124 bit columns, four Horner
 accumulators, 27 derivation rows, a chain-end family, four ripple and twelve alias families, three public
 factors. Decisions:
 
@@ -701,7 +701,7 @@ into the family, `q` four signed bits in `[-2, 7]`, the carry four signed bits, 
 `sm` (s forced to zero: equality). The modulus bits `pb{j}` become per-chain blocks, so a chain's add ops
 share one modulus (`p` or `n`) and placement groups them. The circuit is a list of ops rather than chains;
 placement of ops onto chains and lanes is automatic, and the circuit header carries 13 bytes per op. Host
-arithmetic moves from bit lists to a small big-integer type (`relations/bigint.mojo`), which the ECDSA
+arithmetic moves from bit lists to a small big-integer type (`workloads/bigint.mojo`), which the ECDSA
 host module needs anyway. A test with a negative quotient caught the fourth `q` bit shifted three slots
 instead of one in both the family and the trace writer; the signed test now forces `q = -2`.
 

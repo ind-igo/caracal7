@@ -1,7 +1,7 @@
 # Keccak-256 workload (statement-layer 8, 9; step 4 of the build order)
 
 The second `Workload` and the first real family list: 142 bit columns, 284 families, 777 entries, 28 opening
-points (the spec counts 34 with the accumulator boundary points this statement does not have). `relations/keccak.mojo`.
+points (the spec counts 34 with the accumulator boundary points this statement does not have). `workloads/keccak.mojo`.
 
 ## The idea
 

@@ -9,7 +9,7 @@ from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.pcs.encode import EncLayout, to_packed
 from caracal7.relations.ir import ENTRY, Families
-from caracal7.relations.synthetic import synthetic_statement
+from caracal7.workloads.synthetic import synthetic_statement
 from caracal7.relations.residual import lde, residual, quotient, quotient_elems
 
 comptime p = CLIENT.grid(72, 32)

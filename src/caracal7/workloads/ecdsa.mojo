@@ -7,8 +7,8 @@ curve work ever shows in a profile."""
 from caracal7.core.bytes import host_base
 from caracal7.core.hash import Blake3
 from caracal7.core.params import Params
-from caracal7.relations.bigint import Big
-from caracal7.relations.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
+from caracal7.workloads.bigint import Big
+from caracal7.workloads.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
 from caracal7.relations.statement import Statement, Layout
 from caracal7.workload import Workload
 

@@ -7,9 +7,9 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
-from caracal7.relations.bigint import Big
-from caracal7.relations.ecdsa import Curve, Point, Ecdsa, walk
-from caracal7.relations.mulmod import MUL, chain_count, circuit_values
+from caracal7.workloads.bigint import Big
+from caracal7.workloads.ecdsa import Curve, Point, Ecdsa, walk
+from caracal7.workloads.mulmod import MUL, chain_count, circuit_values
 from caracal7.workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(144, 896)

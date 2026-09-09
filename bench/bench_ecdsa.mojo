@@ -9,8 +9,8 @@ from caracal7.core.hash import Blake3
 from caracal7.prover import Prover, load_trace, load_advice, load_public
 from caracal7.relations import value_bytes
 from caracal7.relations.statement import advice
-from caracal7.relations.bigint import Big
-from caracal7.relations.ecdsa import Curve, Ecdsa
+from caracal7.workloads.bigint import Big
+from caracal7.workloads.ecdsa import Curve, Ecdsa
 from caracal7.workload import verify_workload
 
 
