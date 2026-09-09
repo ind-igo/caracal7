@@ -61,7 +61,8 @@ the coefficient bit's weight is `rho^t 2^m zeta^{j + 6 - m}`, exponents 0 to 9. 
   running difference can go negative (`x = 2, y = 0, s = 1, q p = 1` at weight 0 needs carry `-1`). Four
   carry bits, zero rows on position 3 of the idle row like the product's; the top carry is forced to zero
   by magnitudes (every value below `2^260`, `|q m| < 2^259`).
-- `l{L}{x,y,z,s}bd{j}` (16 per lane): `v = bd v`, the value is zero above weight 260.
+- `l{L}{x,y,z,s}bd{j}` (16 per lane) and `bbd{j}` (4): `v = bd v`, the value is zero above weight 260.
+  `b` needs it since a hint operand (below) has no factor or wire to bound it; `a` is bounded by its pieces.
 - `l{L}q{k}const` (4 per lane): `q` equals itself one row down, cyclic, so it is constant along the chain.
 - `l{L}q{k}z` (4 per lane): `qz q = 0`. `l{L}s{j}m` (4 per lane): `sm s = 0`.
 - `piece{t}{j}` (12): `a = s_t a`, a piece's columns are zero outside its rows. Without it the plain
@@ -69,7 +70,7 @@ the coefficient bit's weight is `rho^t 2^m zeta^{j + 6 - m}`, exponents 0 to 9. 
   one piece: a convolution coefficient can then reach 127, which the identity over F_127 reads as zero
   (found by the Codex review with a concrete operand). The public factor on `ra` used to pin the pieces
   column by column; wiring through `ha` lost that. Pieces are 88 bits so that they are row-aligned.
-- Booleanity on the 190 bit columns.
+- Booleanity on the 236 bit columns.
 
 ## Add ops: additions, subtractions, the canonical check, the guard, equality
 
@@ -127,12 +128,14 @@ the spec's non-canonical operand range.
 
 `mulmod_statement(circuit=...)` takes a list of `Op`: `mul(x, y)` or `add(x, y, sy, z, sz, s, qz, mod)`
 (with `sub`, `eq`, `canon`, `guard` as shorthands), each operand `PUB` (a public value), `FREE`, `NIL`
-(no `z`) or the index of an earlier op whose output it is. Placement is automatic: the `k`-th product
+(no `z`), `hint(h)` (witness `h` of the workload's hint list: the prover supplies it, every occurrence
+after the first is wired to the first, and nothing else binds it; a curve slope, say, which `l dx = dy`
+then forces) or the index of an earlier op whose output it is. Placement is automatic: the `k`-th product
 takes chain `k`'s product lane; add ops fill the two add lanes of chains 0, 1, ... in order, opening a new
 chain when the lanes are full or the modulus changes. Slots are `ha`, `rb`, `rf` and the four values of
 each lane (11, nine wiring products); an operand from op `k` is a wire to `k`'s output slot, a public
-operand a public factor on its slot, a public `s` a factor on the `s` slot, and every output nobody
-consumes a public factor. The output fingerprint is the plain one only: the spec's piece-weighted output
+operand a public factor on its slot, a public `s` a factor on the `s` slot, a hint occurrence a wire to
+its first occurrence, and every output nobody consumes a public factor. The output fingerprint is the plain one only: the spec's piece-weighted output
 would need three more selectors (piece boundaries are not row-aligned), so the consumer fingerprints its
 own `a` plainly with `ha` instead, one accumulator either way. Ordering chains so that edges become
 next-chain reads, the spec's open item, saves nothing here: chain-end families cannot read the next chain,
@@ -145,7 +148,8 @@ the compiled wiring; it exists because `Workload.public_data` sees only public i
 redundant: a header that differs from the compiled circuit but yields the same factor count would turn a
 canonical check into an addition (its `qz` mask off, its constant replaced by a value from the inputs). So
 the statement pins its circuit bytes (`Statement.pin`, `Shape.pinned`, hashed in the prefix), and the
-verifier refuses public inputs that do not start with them.
+verifier refuses public inputs that do not start with them. A workload whose circuit is fixed in code
+(`Ecdsa`) passes `pin=False` and derives its public data from the circuit it rebuilds, with no header.
 
 Host values are `Big` integers (`relations/bigint.mojo`, sign and 32-bit limbs): `circuit_values` walks
 the ops, takes public operands from the inputs, computes each output or free operand and the quotient,
@@ -157,7 +161,7 @@ The spec says row 0 is a zero row "certified by the chain-start opening every co
 only Z columns at the chain boundaries, and without the check the instance is unsound: the last row is
 read by the ripple (its slot 3 carries into weight 0) but ingested by nobody, so a prover can put a pile
 of two there, carry a one into weight 0, and satisfy every family with `r = a b + 1`. The test does exactly
-that, and shows the statement without zero rows accepts it. `Statement.zero(column, FIX_ONE | FIX_E)` is the fix: a `ZERO` record on the shape, and the verifier
+that, and shows the statement without zero rows accepts it. `Statement.zero(column, FIX_E)` is the fix: a `ZERO` record on the shape, and the verifier
 checks the column's opening at `(coordinate, z2)` is zero, which forces the row to zero on every chain
 (a polynomial in `X2` of degree below `h2` vanishing at random `z2`). The mulmod zeroes the five carry
 columns of position 3 on the last row; every column already has that opening, so it costs nothing.

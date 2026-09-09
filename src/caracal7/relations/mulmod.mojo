@@ -71,6 +71,7 @@ comptime ADD = 1
 comptime PUB = -1           # operand references: a public value, a free witness, no operand; s: a normal output is OUT
 comptime FREE = -2
 comptime NIL = -3
+comptime HINT = -4          # hint(h) = HINT - h: witness h, wired between its occurrences, bounded, no factor
 comptime OUT = -2
 comptime MOD_P = 0          # the modulus of an add op
 comptime MOD_N = 1
@@ -170,6 +171,12 @@ def guard(x: Int) -> Op:
     return add(x, FREE, -1, NIL, 0, PUB, 1)
 
 
+def hint(h: Int) -> Int:
+    """Operand reference to witness `h` of the hints list (a slope, say): the prover supplies it, every
+    occurrence is wired to the first, the bound `bd` holds on any lane."""
+    return HINT - h
+
+
 def single_op() -> List[Op]:
     var v: List[Op] = [mul(PUB, PUB)]
     return v^
@@ -185,14 +192,11 @@ def _place(ops: List[Op]) raises -> List[Tuple[Int, Int]]:
     var mod = -1
     for j in range(len(ops)):
         var op = ops[j]
-        if op.x >= j or op.y >= j or op.z >= j:
-            raise Error("an op operand comes from an earlier op")
+        _check_op(op, j)
         if op.kind == MUL:
             v.append((muls, -1))
             muls += 1
             continue
-        if op.kind != ADD:
-            raise Error("unknown op kind")
         if lane == LANES or (mod >= 0 and mod != op.mod and lane > 0):
             chain += 1
             lane = 0
@@ -200,6 +204,36 @@ def _place(ops: List[Op]) raises -> List[Tuple[Int, Int]]:
         v.append((chain, lane))
         lane += 1
     return v^
+
+
+def _check_op(op: Op, j: Int) raises:
+    """Every field of an op in its range, so that a circuit (from code or from a public-input header) never
+    compiles to an unbound column set: operands are public, hints or earlier outputs (an add op may also
+    take one free operand, with `qz` and a public `s`, and no `z`); `s` is an output, a constant or masked."""
+    var refs: List[Int] = [op.x, op.y, op.z]
+    var frees = 0
+    for role in range(3):
+        var r = refs[role]
+        if r >= j or (r < 0 and r != PUB and r != FREE and r != NIL and r > HINT):
+            raise Error("op " + String(j) + ": an operand is public, free, a hint or an earlier op")
+        if r == FREE:
+            frees += 1
+        if op.kind == MUL and (r == FREE or (r == NIL) != (role == 2)):
+            raise Error("op " + String(j) + ": a product takes two bound operands")
+        if op.kind == ADD and r == NIL and role != 2:
+            raise Error("op " + String(j) + ": only z may be absent")
+    if op.kind == MUL:
+        if op.s != OUT or op.sy != 0 or op.sz != 0 or op.qz != 0:
+            raise Error("op " + String(j) + ": a product has an output and no signs or masks")
+        return
+    if op.kind != ADD:
+        raise Error("unknown op kind")
+    if op.s != OUT and op.s != PUB and op.s != NIL:
+        raise Error("op " + String(j) + ": s is an output, a public constant or absent")
+    if op.sy < -1 or op.sy > 1 or op.sz < -1 or op.sz > 1 or (op.z == NIL and op.sz != 0) or op.qz < 0 or op.qz > 1 or (op.mod != MOD_P and op.mod != MOD_N):
+        raise Error("op " + String(j) + ": signs in {-1, 0, 1}, qz in {0, 1}, mod p or n")
+    if frees > 1 or (frees == 1 and (op.qz != 1 or op.s != PUB)):
+        raise Error("op " + String(j) + ": one free operand at most, with qz and a public s")
 
 
 def chain_count(ops: List[Op]) raises -> Int:
@@ -259,9 +293,10 @@ def _lane(L: Int, name: String) -> String:
     return "l" + String(L) + name
 
 
-def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op]()) raises -> Statement:
+def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True) raises -> Statement:
     """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
-    `circuit` (default one product of public operands): see `Op`."""
+    `circuit` (default one product of public operands): see `Op`. `pin` puts the circuit bytes at the head
+    of the public inputs (a workload whose circuit is fixed in code needs no header)."""
     var ops = circuit.copy() if len(circuit) > 0 else single_op()
     var at = _place(ops)
     var st = Statement()
@@ -305,7 +340,8 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op]()) raises 
     for L in range(LANES):
         for name in ["sy", "sz", "sm", "qz"]:
             st.pub(_lane(L, name), 1)
-    st.pin(circuit_bytes(ops))
+    if pin:
+        st.pin(circuit_bytes(ops))
     # rz[10 t + k] = rho^t zeta^k as element indices, -1 for 1
     var rz = List[Int](length=10 * PIECES, fill=-1)
     rz[1] = ZETA
@@ -366,6 +402,9 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op]()) raises 
     for t in range(PIECES):
         for j in range(Q):
             st.family("piece" + String(t) + String(j), [Term(1, st.read("a" + String(t) + String(j))), Term(-1, st.read("s" + String(t)), st.read("a" + String(t) + String(j)))])
+    # b below 2^260 like the add-lane values: a hint operand has no factor or wire to bound it
+    for j in range(Q):
+        st.family("bbd" + String(j), [Term(1, st.read("b" + String(j))), Term(-1, st.read("bd"), st.read("b" + String(j)))])
     if zeros:
         for k in range(CARRY):
             st.zero(_y(k, Q - 1), FIX_E)
@@ -381,15 +420,23 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op]()) raises 
     for f in _factors(ops):
         var slot = _role_slot(ops[f[0]], at[f[0]][1], f[1])
         st.public_factor("p" + String(f[0]) + "r" + String(f[1]), _slot_acc(slot), slot, at[f[0]][0])
+    var first = Dict[Int, Tuple[Int, Int]]()
     for j in range(len(ops)):
         var op = ops[j]
         var refs: List[Int] = [op.x, op.y, op.z]
         for role in range(2 if op.kind == MUL else 3):
             var src = refs[role]
+            var slot = _role_slot(op, at[j][1], role)
             if src >= 0:
                 if not _has_out(ops[src]):
                     raise Error("op " + String(src) + " has no output")
-                st.wire(_role_slot(op, at[j][1], role), at[j][0], _out_slot_of(ops[src], at[src][1]), at[src][0])
+                st.wire(slot, at[j][0], _out_slot_of(ops[src], at[src][1]), at[src][0])
+            elif src <= HINT:
+                var h = HINT - src
+                if h in first:
+                    st.wire(slot, at[j][0], first[h][0], first[h][1])
+                else:
+                    first[h] = (slot, at[j][0])
     return st^
 
 
@@ -609,8 +656,9 @@ def _input(inputs: List[List[UInt8]], next: Int) raises -> Big:
     return Big.from_bytes(inputs[next])
 
 
-def circuit_values(inputs: List[List[UInt8]], ops: List[Op]) raises -> List[OpValues]:
-    """Every op's values, public operands taken from `inputs` in circuit order (x, y, z, then a PUB s)."""
+def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = List[Big]()) raises -> List[OpValues]:
+    """Every op's values, public operands taken from `inputs` in circuit order (x, y, z, then a PUB s), hint
+    operands from `hints` by index."""
     _ = _place(ops)
     var vals = List[OpValues]()
     var next = 0
@@ -634,6 +682,8 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op]) raises -> List[OpVa
                 v.append(Big())
             elif r == NIL and op.kind == ADD and role == 2:
                 v.append(Big())
+            elif r <= HINT and HINT - r < len(hints):
+                v.append(_bounded(hints[HINT - r]))
             else:
                 raise Error("bad operand reference on op " + String(j))
         if op.kind == MUL:
@@ -822,6 +872,7 @@ def _add_lane[p: Params](layout: Layout, mut trace: List[UInt8], x2: Int, L: Int
 # ---- workload ----
 
 def _u16(mut v: List[UInt8], r: Int):
+    """Two's complement."""
     var e = 65536 + r if r < 0 else r
     v.append(UInt8(e & 255))
     v.append(UInt8(e >> 8))
@@ -829,7 +880,7 @@ def _u16(mut v: List[UInt8], r: Int):
 
 def _ref(bytes: List[UInt8], o: Int) -> Int:
     var e = Int(bytes[o]) | Int(bytes[o + 1]) << 8
-    return e - 65536 if e >= 65533 else e
+    return e - 65536 if e >= 32768 else e
 
 
 def circuit_bytes(ops: List[Op]) -> List[UInt8]:
@@ -871,22 +922,27 @@ def const_bytes(v: Big) raises -> List[UInt8]:
     return v.bytes(VALUE)
 
 
-@fieldwise_init
 struct Mulmod(Workload, Copyable, Movable):
     """A circuit of ops (products, signed additions, checks mod p or n) on the chains of a ROWS x h2 grid
     (`mulmod_statement`). Public inputs: the circuit bytes, then per public operand or constant and per
     unconsumed output, in statement order, the VALUE-byte little-endian value."""
     var inputs: List[List[UInt8]]
     var circuit: List[Op]
+    var hints: List[Big]
+
+    def __init__(out self, var inputs: List[List[UInt8]], var circuit: List[Op], var hints: List[Big] = List[Big]()):
+        self.inputs = inputs^
+        self.circuit = circuit^ if len(circuit) > 0 else single_op()
+        self.hints = hints^
 
     def statement(self) raises -> Statement:
         return mulmod_statement(circuit=self.circuit)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
-        return circuit_trace[p](layout, circuit_values(self.inputs, self.circuit), self.circuit)
+        return circuit_trace[p](layout, circuit_values(self.inputs, self.circuit, self.hints), self.circuit)
 
     def public_inputs[p: Params](self) raises -> List[UInt8]:
-        var vals = circuit_values(self.inputs, self.circuit)
+        var vals = circuit_values(self.inputs, self.circuit, self.hints)
         var v = circuit_bytes(self.circuit)
         var next = 0
         for f in _factors(self.circuit):
@@ -899,62 +955,66 @@ struct Mulmod(Workload, Copyable, Movable):
 
     @staticmethod
     def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
-        """The public blocks lo, cp, bd (the same on every chain), pb{j} (the chain's modulus bits), s{t} (the
-        rows of piece t), per lane sy, sz, sm, qz; then every factor's ingest columns in statement order: an a
-        operand in its pieces (12 columns), any other value plain (4)."""
-        comptime N = p.N()
-        if p.h1() != ROWS:
-            raise Error("the instance needs " + String(ROWS) + " rows per chain")
         var parsed = parse_circuit(public_inputs)
-        var ops = parsed[0].copy()
-        var off = parsed[1]
-        var at = _place(ops)
-        if chain_count(ops) > p.h2() or (len(public_inputs) - off) % VALUE != 0:
-            raise Error("public inputs are the circuit then " + String(VALUE) + "-byte values")
-        var data = List[UInt8](capacity=(10 + 4 * LANES) * N + (len(public_inputs) - off) // VALUE * PIECES * Q * ROWS)
+        return circuit_public_data[p](parsed[0], public_inputs, parsed[1])
+
+
+def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int) raises -> List[UInt8]:
+    """The public blocks lo, cp, bd (the same on every chain), pb{j} (the chain's modulus bits), s{t} (the
+    rows of piece t), per lane sy, sz, sm, qz; then every factor's ingest columns in statement order: an a
+    operand in its pieces (12 columns), any other value plain (4). The factor values are the VALUE-byte
+    values at `off` of `values`, in factor order."""
+    comptime N = p.N()
+    if p.h1() != ROWS:
+        raise Error("the instance needs " + String(ROWS) + " rows per chain")
+    var at = _place(ops)
+    if chain_count(ops) > p.h2() or (len(values) - off) % VALUE != 0:
+        raise Error("public inputs are the circuit then " + String(VALUE) + "-byte values")
+    var data = List[UInt8](capacity=(10 + 4 * LANES) * N + (len(values) - off) // VALUE * PIECES * Q * ROWS)
+    for _ in range(p.h2()):
+        for x1 in range(ROWS):
+            data.append(UInt8(1) if _lo_row(x1) else UInt8(0))
+    for _ in range(p.h2()):
+        for x1 in range(ROWS):
+            data.append(UInt8(1) if _cp_row(x1) else UInt8(0))
+    for _ in range(p.h2()):
+        for x1 in range(ROWS):
+            data.append(UInt8(1) if _bd_row(x1) else UInt8(0))
+    var mods = List[Int](length=p.h2(), fill=MOD_P)
+    var lanes = List[Int](length=p.h2() * LANES, fill=-1)
+    for j in range(len(ops)):
+        if at[j][1] >= 0:
+            mods[at[j][0]] = ops[j].mod
+            lanes[at[j][0] * LANES + at[j][1]] = j
+    var mcols = List[List[UInt8]]()
+    for mod in range(2):
+        mcols.append(_columns(modulus(mod).bits(FOLDED), False))
+    for j in range(Q):
+        for x2 in range(p.h2()):
+            for x1 in range(ROWS):
+                data.append(mcols[mods[x2]][j * ROWS + x1])
+    for t in range(PIECES):
         for _ in range(p.h2()):
             for x1 in range(ROWS):
-                data.append(UInt8(1) if _lo_row(x1) else UInt8(0))
-        for _ in range(p.h2()):
-            for x1 in range(ROWS):
-                data.append(UInt8(1) if _cp_row(x1) else UInt8(0))
-        for _ in range(p.h2()):
-            for x1 in range(ROWS):
-                data.append(UInt8(1) if _bd_row(x1) else UInt8(0))
-        var mods = List[Int](length=p.h2(), fill=MOD_P)
-        var lanes = List[Int](length=p.h2() * LANES, fill=-1)
-        for j in range(len(ops)):
-            if at[j][1] >= 0:
-                mods[at[j][0]] = ops[j].mod
-                lanes[at[j][0] * LANES + at[j][1]] = j
-        var mcols = List[List[UInt8]]()
-        for mod in range(2):
-            mcols.append(_columns(modulus(mod).bits(FOLDED), False))
-        for j in range(Q):
+                data.append(UInt8(1) if _piece_row(t, x1) else UInt8(0))
+    for L in range(LANES):
+        for name in range(4):
             for x2 in range(p.h2()):
-                for x1 in range(ROWS):
-                    data.append(mcols[mods[x2]][j * ROWS + x1])
-        for t in range(PIECES):
-            for _ in range(p.h2()):
-                for x1 in range(ROWS):
-                    data.append(UInt8(1) if _piece_row(t, x1) else UInt8(0))
-        for L in range(LANES):
-            for name in range(4):
-                for x2 in range(p.h2()):
-                    var j = lanes[x2 * LANES + L]
-                    var b = 0
-                    if j >= 0:
-                        var op = ops[j]
-                        var sg = op.sy if name == 0 else op.sz
-                        b = (126 if sg < 0 else sg) if name < 2 else ((1 if op.s == NIL else 0) if name == 2 else op.qz)
-                    for _ in range(ROWS):
-                        data.append(UInt8(b))
-        for f in _factors(ops):
-            data.extend(_value_columns(public_inputs, off, ops[f[0]].kind == MUL and f[1] == 0))
-            off += VALUE
-        if off != len(public_inputs):
-            raise Error("more public values than the circuit references")
-        return data^
+                var j = lanes[x2 * LANES + L]
+                var b = 0
+                if j >= 0:
+                    var op = ops[j]
+                    var sg = op.sy if name == 0 else op.sz
+                    b = (126 if sg < 0 else sg) if name < 2 else ((1 if op.s == NIL else 0) if name == 2 else op.qz)
+                for _ in range(ROWS):
+                    data.append(UInt8(b))
+    var o = off
+    for f in _factors(ops):
+        data.extend(_value_columns(values, o, ops[f[0]].kind == MUL and f[1] == 0))
+        o += VALUE
+    if o != len(values):
+        raise Error("more public values than the circuit references")
+    return data^
 
 
 def _value_columns(bytes: List[UInt8], off: Int, grouped: Bool) raises -> List[UInt8]:

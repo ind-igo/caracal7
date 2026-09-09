@@ -108,7 +108,7 @@ slots: 3 on the MUL lane, 4 per add lane).
    accumulators + 8 = 13 of the 16 the Z-tree leaf allows. `Chain` becomes one MUL op and two add ops, any
    idle.
 2. **Three-operand add op.** `x + sy y + sz z = s + q p`, `sy, sz` in `{-1, 0, +1}` per-chain public
-   columns, `q = b0 + 2 b1 + 4 b2 - 8 b3` chain-constant, `q p` as the modulus block read `k` slots down
+   columns, `q = b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`, chain-constant, `q p` as the modulus block read `k` slots down
    for `2^k p`. Carries signed 4-bit `[-8, 7]`: with inputs below `2^260` the per-weight pile is in
    `[-6, 4]` and the family residual in `[-28, 27]`, away from any nonzero multiple of 127 (Codex's
    derivation; re-derive in the doc when implemented). `bd` on all four operands; zero rows for the
@@ -135,3 +135,29 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 - secp256r1: `a = -3` (one more op per doubling), no endomorphism (256 doublings), a different fold.
 - The hash-to-curve for `B`: which hash, and whether the encoding of `(Q, r, s, e)` it takes is the
   public-input byte string as is.
+
+## 7. Implemented (2026-09-09)
+
+`relations/ecdsa.mojo`: the host arithmetic (`Curve`, affine points on `Big`, Fermat inversions, the fold
+reduction), the GLV split by the exact lattice basis, `recode`/`skew`, the blinding point by
+try-and-increment on Blake3 of the 160 public-input bytes (`r, s, e, x_Q, y_Q`, the encoding open in
+section 6, settled as the public inputs as they are), and the `Ecdsa` workload: `walk` emits the fixed
+circuit once and, per signature, the public factor values in factor order and the slope hints. The
+verifier's `public_data` runs the same walk from the public inputs. Test: `tests/test_ecdsa.mojo`.
+
+Deviations from sections 4 and 5:
+
+- The slope enters as a **hint operand** (`hint(h)` in `mulmod.mojo`): a witness with no factor, wired
+  between its three occurrences (`l dx`, `l l`, `l (x1 - x3)`), bounded by the piece selectors on `a` and a
+  new `bbd` family on `b`. The op counts of section 4 assumed that and hold: 786 MUL, 1,520 add-lane ops,
+  2,306 ops on 786 chains of the `144 x 896` grid, 221 hints, 492 public factors (each public point's
+  coordinate is a factor at every operand that reads it, `x2` twice per addition; the count of section 4
+  was per point, not per read). `q` is `b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`.
+- No circuit header: `mulmod_statement(pin=False)`. The public inputs are the 160 bytes.
+- The fixed-base tables are not constants yet: `walk` computes `2^(8 w) G` and the 32 selected multiples per
+  signature (about 800 curve operations, ponytail-marked). With the 132 doublings for the blinding constants
+  and the `Q` tables, a live walk is about 1,000 affine operations at a few milliseconds each.
+
+Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 896)`, `e = 16`: proof 683,392 bytes; the prover
+round trip test (two live walks, prove, verify) 30.5 s; the verifier's proof work under 0.4 s (the profile
+lines in the test output), the rest of its time the walk and the 492 fingerprints.

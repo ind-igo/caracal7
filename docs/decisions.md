@@ -704,3 +704,17 @@ placement of ops onto chains and lanes is automatic, and the circuit header carr
 arithmetic moves from bit lists to a small big-integer type (`relations/bigint.mojo`), which the ECDSA
 host module needs anyway. A test with a negative quotient caught the fourth `q` bit shifted three slots
 instead of one in both the family and the trace writer; the signed test now forces `q = -2`.
+
+## ECDSA on the mulmod chains (2026-09-09)
+
+`docs/ecdsa.md` implemented: the `Ecdsa` workload proves one secp256k1 signature as a fixed circuit of
+2,306 ops on 786 chains (`144 x 896`), 683 KB proof. Two builder additions on the way: a hint operand
+(`hint(h)`: a prover-supplied value wired between its occurrences and bounded, nothing else; the slope of
+each curve operation) with a `bbd` family bounding the product's `b` like the lane values, since a hint has
+no factor or wire; and `pin=False` for a workload whose circuit is fixed in code. The audit of the lane
+rewrite (one opus reviewer, Codex) found no soundness hole in the families; it found the op fields
+unvalidated (a header with `s = 3` or `mod = 2` compiled to a free lane or an out-of-range read before
+the pin check), fixed by `_check_op` in placement; the empty-circuit substitution that pinned one circuit
+and traced another; and a family test that never exercised an add lane. The verifier's curve work is
+affine on the big-integer type, about a thousand operations per signature; the fixed-base tables as
+constants and Jacobian coordinates are the upgrades if it ever matters.

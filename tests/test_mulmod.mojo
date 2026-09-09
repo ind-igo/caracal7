@@ -11,7 +11,7 @@ from caracal7.core.hash import Blake3
 from caracal7.core.field import E, ext_mul
 from caracal7.core.bytes import list_e
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from caracal7.relations.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
+from caracal7.relations.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
 from caracal7.relations.bigint import Big
 from caracal7.prover import Prover, load_trace, load_public
 from caracal7.relations import value_bytes
@@ -96,36 +96,16 @@ def test_trace_satisfies_every_bit_family() raises:
     var w = single(operand(1), operand(2))
     var trace = mulmod_trace[p](c.layout, operand(1), operand(2))
     var cw = c.layout.columns_w()
-    var cz = c.shape.columns_z
     var data = Mulmod.public_data[p](c.layout, w.public_inputs[p]())
-    var count = len(c.families) // ENTRY
-    var families = 0
-    for k in range(count):
-        families = max(families, entry(c.families, k).family + 1)
-    var skip = List[Bool](length=families, fill=False)
-    for k in range(count):
-        var en = entry(c.families, k)
-        if en.chal != 0 or en.basis != NO_BASIS or (en.col_a >= cw and en.col_a < cw + cz) or (en.col_b != NONE and en.col_b >= cw and en.col_b < cw + cz):
-            skip[en.family] = True
-    var sums = List[Int](length=families * N, fill=0)
-    var checked = 0
-    for k in range(count):
-        var en = entry(c.families, k)
-        if skip[en.family]:
-            continue
-        checked += 1
-        for x2 in range(p.h2()):
-            for x1 in range(h1):
-                if en.mult == 1 and x1 == h1 - 1:
-                    continue
-                var v = en.coef * _at(trace, data, cw, cz, en.col_a, en.dj1_a // 2, en.dj2_a // 2, x1, x2)
-                if en.col_b != NONE:
-                    v *= _at(trace, data, cw, cz, en.col_b, en.dj1_b // 2, en.dj2_b // 2, x1, x2)
-                sums[en.family * N + x2 * h1 + x1] = (sums[en.family * N + x2 * h1 + x1] + v) % 127
-    assert_true(checked > 236 + 4 * 32 + 12 + 8 * 2 + 8 * 15 + 2 * (4 * 24 + 16 + 12))
-    for i in range(families * N):
-        if sums[i] != 0:
-            raise Error("family " + String(i // N) + " fails at row " + String(i % N))
+    assert_true(_families_hold(c.families, c.shape.columns_z, cw, trace, data) > 236 + 4 * 32 + 12 + 8 * 2 + 8 * 15 + 2 * (4 * 24 + 16 + 12))
+    var P = modulus(MOD_P)
+    var ops: List[Op] = [mul(PUB, PUB), add(0, PUB, -1, PUB, -1), canon(0), guard(0), add(PUB, PUB, 1, NIL, 0, OUT, 0, MOD_N)]
+    var inputs: List[List[UInt8]] = [value_bytes_of(operand(3)), value_bytes_of(operand(4)), const_bytes(P - Big(1)), const_bytes(P - Big(1)),
+                                     const_bytes(P - Big(1)), const_bytes(Big(1)), value_bytes_of(operand(5)), value_bytes_of(operand(6))]
+    var wa = Mulmod(inputs.copy(), ops.copy())
+    var ca = mulmod_statement(True, ops).compile[p]()
+    var ta = circuit_trace[p](ca.layout, circuit_values(inputs, ops), ops)
+    _ = _families_hold(ca.families, ca.shape.columns_z, ca.layout.columns_w(), ta, Mulmod.public_data[p](ca.layout, wa.public_inputs[p]()))
     var chals = _chals()
     derived_chals(chals, c.shape.chals)
     var r = List[E]()
@@ -146,6 +126,40 @@ def test_trace_satisfies_every_bit_family() raises:
             assert_equal(data[off + x1], trace[c.layout.col(name) * N + x1])
         off += h1
     assert_equal(off, len(data))
+
+
+def _families_hold(fams: List[UInt8], cz: Int, cw: Int, trace: List[UInt8], data: List[UInt8]) raises -> Int:
+    """Every family without a challenge or a Z read sums to zero on every row; the count checked."""
+    comptime N = p.N()
+    comptime h1 = p.h1()
+    var count = len(fams) // ENTRY
+    var families = 0
+    for k in range(count):
+        families = max(families, entry(fams, k).family + 1)
+    var skip = List[Bool](length=families, fill=False)
+    for k in range(count):
+        var en = entry(fams, k)
+        if en.chal != 0 or en.basis != NO_BASIS or (en.col_a >= cw and en.col_a < cw + cz) or (en.col_b != NONE and en.col_b >= cw and en.col_b < cw + cz):
+            skip[en.family] = True
+    var sums = List[Int](length=families * N, fill=0)
+    var checked = 0
+    for k in range(count):
+        var en = entry(fams, k)
+        if skip[en.family]:
+            continue
+        checked += 1
+        for x2 in range(p.h2()):
+            for x1 in range(h1):
+                if en.mult == 1 and x1 == h1 - 1:
+                    continue
+                var v = en.coef * _at(trace, data, cw, cz, en.col_a, en.dj1_a // 2, en.dj2_a // 2, x1, x2)
+                if en.col_b != NONE:
+                    v *= _at(trace, data, cw, cz, en.col_b, en.dj1_b // 2, en.dj2_b // 2, x1, x2)
+                sums[en.family * N + x2 * h1 + x1] = (sums[en.family * N + x2 * h1 + x1] + v) % 127
+    for i in range(families * N):
+        if sums[i] != 0:
+            raise Error("family " + String(i // N) + " fails at row " + String(i % N))
+    return checked
 
 
 def _at(trace: List[UInt8], data: List[UInt8], cw: Int, cz: Int, col: Int, k1: Int, k2: Int, x1: Int, x2: Int) -> Int:
@@ -302,9 +316,10 @@ def test_add_sub_canon_circuit() raises:
     cheat.extend(const_bytes(big))
     cheat.extend(const_bytes(pm1))
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, check), cheat, True, check) != "accepted")
-    var swap: List[Op] = [add(PUB, FREE, 1, NIL, 0, PUB, 0)]
+    var swap: List[Op] = [add(PUB, PUB, 1, NIL, 0, PUB, 0)]
     var swapped = circuit_bytes(swap)
     swapped.extend(const_bytes(big))
+    swapped.extend(const_bytes(pm1 + modulus(MOD_P) - big))
     swapped.extend(const_bytes(pm1))
     var cs = mulmod_statement(True, check).compile[p]()
     var shape = mulmod_statement(True, check).compile[p]().take_shape()
@@ -361,6 +376,32 @@ def test_signed_ops_eq_guard_and_mod_n() raises:
     var c = mulmod_statement(True, circuit).compile[p]()
     vals[3].y = vals[3].y + Big(1)
     vals[3].x = vals[3].x + Big(1)
+    assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
+
+
+def test_hint_operands() raises:
+    """A slope hint on three operand slots (a of one product, a and b of another): the circuit holds with
+    the honest hint, the honest prover refuses a wrong one, and a trace whose second occurrence is the hint
+    plus p (every family holds) is rejected by the wire between the occurrences."""
+    var P = modulus(MOD_P)
+    var circuit: List[Op] = [mul(hint(0), PUB), eq(0, PUB), mul(hint(0), hint(0)), eq(2, PUB)]
+    var dx = Big.from_bytes(operand(41)).mod(P)
+    var l = Big.from_bytes(operand(42)).mod(P)
+    var inputs: List[List[UInt8]] = [const_bytes(dx), const_bytes(l.mulmod(dx, P)), const_bytes(l.mulmod(l, P))]
+    var hints: List[Big] = [l.copy()]
+    assert_equal(chain_count(circuit), 2)
+    var vals = circuit_values(inputs, circuit, hints)
+    with assert_raises(contains="does not hold"):
+        _ = circuit_values(inputs, circuit, [l + Big(1)])
+    var w = Mulmod(inputs.copy(), circuit.copy(), hints.copy())
+    var claim = w.public_inputs[p]()
+    var ctx = DeviceContext()
+    var proof = prove_workload[p, Blake3, Mulmod](ctx, w)
+    print("hint proof bytes:", len(proof))
+    assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, claim))
+    var lp = l + P
+    vals[2] = OpValues(MUL, lp.copy(), lp.copy(), Big(), Big.from_bits(folded_bits(lp.bits(WIDTH), lp.bits(WIDTH))), 0)
+    var c = mulmod_statement(True, circuit).compile[p]()
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
 
 

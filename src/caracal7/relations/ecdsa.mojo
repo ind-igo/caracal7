@@ -6,7 +6,11 @@ curve work ever shows in a profile."""
 
 from caracal7.core.bytes import host_base
 from caracal7.core.hash import Blake3
+from caracal7.core.params import Params
 from caracal7.relations.bigint import Big
+from caracal7.relations.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
+from caracal7.relations.statement import Statement, Layout
+from caracal7.workload import Workload
 
 
 @fieldwise_init
@@ -214,3 +218,287 @@ def skew(k: Big) -> Tuple[Big, Int]:
     k, 2 for odd, so 0 and 1 both recode -1."""
     var c = 2 if k.bit(0) == 1 else 1
     return (k - Big(c), c)
+
+
+# ---- the circuit ----
+
+comptime WINDOWS = 32
+comptime QW = 4             # window bits on the Q side (GLV halves below 2^128)
+comptime GW = 8             # window bits on the fixed base
+comptime INPUT = 5 * 32     # r, s, e, x_Q, y_Q, 32 little-endian bytes each
+
+
+@fieldwise_init
+struct Ref(Copyable, Movable):
+    """An op operand: `r` the reference (`PUB`, an op index, a hint) and, for a public one, its value."""
+    var r: Int
+    var v: Big
+
+
+struct Walk:
+    """One pass over the schedule of docs/ecdsa.md section 2, emitting the ops and, when `live`, the public
+    factor values in factor order (each op's public operands x, y, z, then a public s) and the slope hints.
+    The circuit is fixed: which public point a step adds changes per signature, the ops do not."""
+    var c: Curve
+    var live: Bool
+    var ops: List[Op]
+    var inputs: List[List[UInt8]]
+    var hints: List[Big]
+    var acc: Point
+    var ax: Ref
+    var ay: Ref
+
+    def __init__(out self, var c: Curve, live: Bool):
+        self.c = c^
+        self.live = live
+        self.ops = List[Op]()
+        self.inputs = List[List[UInt8]]()
+        self.hints = List[Big]()
+        self.acc = Point.identity()
+        self.ax = Ref(PUB, Big())
+        self.ay = Ref(PUB, Big())
+
+    def pub(self, v: Big) -> Ref:
+        return Ref(PUB, v.copy())
+
+    def hint(mut self, v: Big) -> Ref:
+        self.hints.append(v.copy())
+        return Ref(hint(len(self.hints) - 1), Big())
+
+    def emit(mut self, op: Op, refs: List[Ref]) raises -> Ref:
+        """Appends the op; the public values of `refs` (its operands and constant, in role order) in factor
+        order. Returns the op's output."""
+        if self.live:
+            for operand in refs:
+                if operand.r == PUB:
+                    self.inputs.append(operand.v.bytes(VALUE))
+        self.ops.append(op)
+        return Ref(len(self.ops) - 1, Big())
+
+    def mul(mut self, x: Ref, y: Ref) raises -> Ref:
+        return self.emit(mul(x.r, y.r), [x.copy(), y.copy()])
+
+    def sub(mut self, x: Ref, y: Ref) raises -> Ref:
+        return self.emit(sub(x.r, y.r), [x.copy(), y.copy()])
+
+    def add3(mut self, x: Ref, y: Ref, sy: Int, z: Ref, sz: Int) raises -> Ref:
+        return self.emit(add(x.r, y.r, sy, z.r, sz), [x.copy(), y.copy(), z.copy()])
+
+    def eq(mut self, x: Ref, y: Ref, mod: Int = MOD_P) raises:
+        _ = self.emit(eq(x.r, y.r, -1, NIL, 0, mod), [x.copy(), y.copy()])
+
+    def check(mut self, x: Ref, op: Op, const: Big) raises:
+        _ = self.emit(op, [x.copy(), self.pub(const)])
+
+    def slope(mut self, num: Big, den: Big) -> Ref:
+        return self.hint(self.c.fmul(num, self.c.finv(den)) if self.live else Big())
+
+    def start(mut self, b16: Point):
+        self.acc = b16.copy()
+        self.ax = self.pub(b16.x)
+        self.ay = self.pub(b16.y)
+
+    def addition(mut self, t: Point, x_only: Bool = False) raises:
+        """acc + t for a public finite t != +-acc: dx canonical and nonzero, l dx = dy, x3, y3."""
+        var ax = self.ax.copy()
+        var ay = self.ay.copy()
+        var x2 = self.pub(t.x)
+        var y2 = self.pub(t.y)
+        var dx = self.sub(x2, ax)
+        self.check(dx, canon(dx.r), self.c.p - Big(1))
+        self.check(dx, guard(dx.r), Big(1))
+        var dy = self.sub(y2, ay)
+        var l = self.slope(self.c.fsub(t.y, self.acc.y), self.c.fsub(t.x, self.acc.x))
+        var ldx = self.mul(l, dx)
+        self.eq(ldx, dy)
+        var ll = self.mul(l, l)
+        var x3 = self.add3(ll, ax, -1, x2, -1)
+        if x_only:
+            self.ax = x3^
+            return
+        var d = self.sub(ax, x3)
+        var ld = self.mul(l, d)
+        var y3 = self.sub(ld, ay)
+        if self.live:
+            self.acc = self.c.add(self.acc, t)
+        self.ax = x3.copy()
+        self.ay = y3.copy()
+
+    def doubling(mut self) raises:
+        """2 acc: l (2 y) = 3 x^2 (y != 0 on this curve of odd order), x3, y3."""
+        var ax = self.ax.copy()
+        var ay = self.ay.copy()
+        var xx = self.mul(ax, ax)
+        var three = self.add3(xx, xx, 1, xx, 1)
+        var yy = self.add3(ay, ay, 1, Ref(NIL, Big()), 0)
+        var x2 = Big()
+        if self.live:
+            x2 = self.c.fmul(self.acc.x, self.acc.x)
+        var l = self.slope(self.c.fadd(self.c.fadd(x2, x2), x2), self.c.fadd(self.acc.y, self.acc.y))
+        var lyy = self.mul(l, yy)
+        self.eq(lyy, three)
+        var ll = self.mul(l, l)
+        var x3 = self.add3(ll, ax, -1, ax, -1)
+        var d = self.sub(ax, x3)
+        var ld = self.mul(l, d)
+        var y3 = self.sub(ld, ay)
+        if self.live:
+            self.acc = self.c.double(self.acc)
+        self.ax = x3.copy()
+        self.ay = y3.copy()
+
+    def closing(mut self, r: Big) raises:
+        """x_R canonical and x_R = r mod n on the mod-n chain."""
+        var ax = self.ax.copy()
+        self.check(ax, canon(ax.r), self.c.p - Big(1))
+        self.eq(ax, self.pub(r), MOD_N)
+
+
+def _digit_points(c: Curve, t: Point, digits: List[Int], corr: Int) raises -> List[Point]:
+    """d t per window, window 0 with the parity correction; a small table of multiples of t."""
+    var tab: List[Point] = [Point.identity()]
+    var top = 1 << QW
+    for _ in range(top + 2):
+        tab.append(c.add(tab[len(tab) - 1], t))
+    var v = List[Point]()
+    for w in range(len(digits)):
+        var d = digits[w] + (corr if w == 0 else 0)
+        v.append(c.neg(tab[-d]) if d < 0 else tab[d].copy())
+    return v^
+
+
+def _signed(c: Curve, t: Point, k: Big) -> Point:
+    return c.neg(t) if k.neg else t.copy()
+
+
+def walk(var c: Curve, r: Big, s: Big, e: Big, q: Point, live: Bool) raises -> Walk:
+    """The fixed circuit; with `live`, the verifier's checks on (r, s, e, Q), then the public factor values
+    and hints of that signature."""
+    var w = Walk(c^, live)
+    var pts1 = List[Point]()
+    var pts2 = List[Point]()
+    var ptsg = List[Point]()
+    var b16 = Point.identity()
+    var b = Point.identity()
+    if live:
+        if r.neg or s.neg or r.is_zero() or s.is_zero() or r >= w.c.n or s >= w.c.n or e.neg or e >= w.c.n:
+            raise Error("r, s in (0, n), e below n")
+        if q.inf or not w.c.on_curve(q):
+            raise Error("Q is a finite point of the curve with canonical coordinates")
+        var inv = s.inv_mod(w.c.n)
+        var u1 = e.mulmod(inv, w.c.n)
+        var u2 = r.mulmod(inv, w.c.n)
+        var halves = w.c.split(u2)
+        for i in range(2):
+            var k = halves[0].copy() if i == 0 else halves[1].copy()
+            var base = q.copy() if i == 0 else w.c.phi(q)
+            var t = _signed(w.c, base, k)
+            var sk = skew(k.abs())
+            var pts = _digit_points(w.c, t, recode(sk[0], QW), sk[1])
+            if i == 0:
+                pts1 = pts^
+            else:
+                pts2 = pts^
+        # ponytail: the fixed-base tables recomputed per signature (about 800 curve operations); constants later
+        var sk = skew(u1)
+        var dg = recode(sk[0], GW)
+        var pw = w.c.g.copy()
+        for i in range(WINDOWS):
+            var d = dg[i] + (sk[1] if i == 0 else 0)
+            ptsg.append(w.c.mul(pw, Big(d)))
+            for _ in range(GW):
+                pw = w.c.double(pw)
+        b = w.c.blinding(public_bytes(r, s, e, q))
+        b16 = b.copy()
+        for _ in range(4):
+            b16 = w.c.double(b16)
+    else:
+        for _ in range(WINDOWS):
+            pts1.append(Point.identity())
+            pts2.append(Point.identity())
+            ptsg.append(Point.identity())
+    var t = 0
+
+    def addend(mut w: Walk, pt: Point, mut t: Int, b: Point) raises:
+        if w.live and pt.inf:
+            t += 1
+            w.addition(b)
+        else:
+            w.addition(pt)
+
+    w.start(b16)
+    addend(w, pts1[WINDOWS - 1], t, b)
+    addend(w, pts2[WINDOWS - 1], t, b)
+    for i in range(WINDOWS - 2, -1, -1):
+        for _ in range(QW):
+            w.doubling()
+        addend(w, pts1[i], t, b)
+        addend(w, pts2[i], t, b)
+    for i in range(WINDOWS):
+        addend(w, ptsg[i], t, b)
+    var close = Point.identity()
+    if live:
+        var b128 = b16.copy()
+        for _ in range(WINDOWS * QW - 4):
+            b128 = w.c.double(b128)
+        close = w.c.neg(w.c.add(b128, w.c.mul(b, Big(t))))
+    w.addition(close, x_only=True)
+    w.closing(r)
+    return w^
+
+
+def public_bytes(r: Big, s: Big, e: Big, q: Point) raises -> List[UInt8]:
+    var v = r.bytes(32)
+    v.extend(s.bytes(32))
+    v.extend(e.bytes(32))
+    v.extend(q.x.bytes(32))
+    v.extend(q.y.bytes(32))
+    return v^
+
+
+def _slice(bytes: List[UInt8], at: Int) -> Big:
+    var v = List[UInt8](capacity=32)
+    for i in range(32):
+        v.append(bytes[at + i])
+    return Big.from_bytes(v)
+
+
+struct Ecdsa(Workload, Movable):
+    """One secp256k1 signature on the mulmod chains (docs/ecdsa.md): public inputs (r, s, e, Q), the witness
+    the slopes of the fixed addition chain."""
+    var r: Big
+    var s: Big
+    var e: Big
+    var q: Point
+
+    def __init__(out self, var r: Big, var s: Big, var e: Big, var q: Point):
+        self.r = r^
+        self.s = s^
+        self.e = e^
+        self.q = q^
+
+    @staticmethod
+    def circuit() raises -> List[Op]:
+        var w = walk(Curve(), Big(), Big(), Big(), Point.identity(), False)
+        return w.ops.copy()
+
+    def statement(self) raises -> Statement:
+        return mulmod_statement(True, Ecdsa.circuit(), pin=False)
+
+    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
+        var w = walk(Curve(), self.r, self.s, self.e, self.q, True)
+        return circuit_trace[p](layout, circuit_values(w.inputs, w.ops, w.hints), w.ops)
+
+    def public_inputs[p: Params](self) raises -> List[UInt8]:
+        return public_bytes(self.r, self.s, self.e, self.q)
+
+    @staticmethod
+    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
+        if len(public_inputs) != INPUT:
+            raise Error("public inputs are r, s, e, x_Q, y_Q")
+        var w = walk(Curve(), _slice(public_inputs, 0), _slice(public_inputs, 32), _slice(public_inputs, 64),
+                     Point(_slice(public_inputs, 96), _slice(public_inputs, 128), False), True)
+        var values = List[UInt8](capacity=len(w.inputs) * VALUE)
+        for v in w.inputs:
+            values.extend(v.copy())
+        return circuit_public_data[p](w.ops, values, 0)
