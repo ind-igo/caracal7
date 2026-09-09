@@ -1,8 +1,9 @@
-"""The 256-bit product on the builder: the trace against every bit-level family and the fingerprint identity
-on the host, then the prover round trip on the 144 x 8 grid with a wrong product and the idle-row carry
-rejected."""
+"""The 256-bit product and its fold on the builder: the trace against every bit-level family (public
+selector reads included) and the fingerprint identity on the host, the folded output congruent to a b mod p
+by an independent long division, then the prover round trip on the 144 x 8 grid with a wrong result and the
+idle-row carry rejected."""
 
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT, Params
@@ -10,8 +11,9 @@ from caracal7.core.hash import Blake3
 from caracal7.core.field import E, ext_mul
 from caracal7.core.bytes import list_e
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from caracal7.relations.mulmod import Mulmod, mulmod_statement, mulmod_trace, bits_of, bytes_of, product_bits, BITS
-from caracal7.prover import Prover, load_trace
+from caracal7.relations.mulmod import Mulmod, mulmod_statement, mulmod_trace, bits_of, bytes_of, product_bits, fold_bits, folded_bits, BITS, FOLDED
+from caracal7.prover import Prover, load_trace, load_public
+from caracal7.relations import value_bytes
 from caracal7.verifier import verify
 from caracal7.workload import prove_workload, verify_workload
 
@@ -34,6 +36,77 @@ def _chals() -> List[UInt8]:
     return v^
 
 
+def _ge(a: List[Int], b: List[Int]) -> Bool:
+    for i in range(len(a) - 1, -1, -1):
+        if a[i] != b[i]:
+            return a[i] > b[i]
+    return True
+
+
+def _sub(mut a: List[Int], b: List[Int]):
+    var borrow = 0
+    for i in range(len(a)):
+        var d = a[i] - b[i] - borrow
+        a[i] = d & 1
+        borrow = 1 if d < 0 else 0
+
+
+def _p_bits(n: Int) -> List[Int]:
+    """secp256k1's p = 2^256 - 2^32 - 977 on n bits."""
+    var v = List[Int](length=n, fill=0)
+    v[BITS] = 1
+    var d = List[Int](length=n, fill=0)
+    var c = (1 << 32) + 977
+    for i in range(64):
+        d[i] = (c >> i) & 1
+    _sub(v, d)
+    return v^
+
+
+def _mod_p(bits: List[Int]) -> List[Int]:
+    """Long division, bit by bit from the top: BITS + 2 bits."""
+    var n = BITS + 2
+    var pb = _p_bits(n)
+    var rem = List[Int](length=n, fill=0)
+    for i in range(len(bits) - 1, -1, -1):
+        for k in range(n - 1, 0, -1):
+            rem[k] = rem[k - 1]
+        rem[0] = bits[i]
+        if _ge(rem, pb):
+            _sub(rem, pb)
+    return rem^
+
+
+def test_fold_is_congruent_mod_p() raises:
+    """The folded output of random operands equals a b mod p by long division and is below 2 p."""
+    for seed in range(1, 6):
+        var a = operand(seed)
+        var b = operand(seed + 7)
+        var f = folded_bits(a, b)
+        assert_equal(len(f), FOLDED)
+        var r = product_bits(bits_of(a, 0, BITS), bits_of(b, 0, BITS))
+        assert_equal(_mod_p(f), _mod_p(r))
+        var ff = f.copy()
+        ff.resize(BITS + 2, 0)
+        var p2 = _p_bits(BITS + 2)
+        _add_p2(p2)
+        assert_true(not _ge(ff, p2))
+    var one = List[Int](length=BITS + 1, fill=0)
+    one[BITS] = 1
+    var folded = fold_bits(one)
+    assert_equal(folded[32], 1)
+    assert_equal(folded[0], 1)
+    assert_equal(folded[9], 1)
+    assert_equal(folded[5], 0)
+
+
+def _add_p2(mut p2: List[Int]):
+    """p2 = 2 p in place."""
+    for k in range(len(p2) - 1, 0, -1):
+        p2[k] = p2[k - 1]
+    p2[0] = 0
+
+
 def test_product_bits() raises:
     var a: List[Int] = [1, 1, 0, 1]        # 11
     var b: List[Int] = [1, 0, 1]           # 5
@@ -43,15 +116,17 @@ def test_product_bits() raises:
 
 
 def test_trace_satisfies_every_bit_family() raises:
-    """Every family without a challenge or a Z read (Booleanity, ripple, alias) sums to zero on every row;
-    the Horner fingerprints of chain 0 meet zeta^6 R_A R_B = R_C for arbitrary challenges; the public data's
-    columns are the trace's."""
+    """Every family without a challenge or a Z read (Booleanity, ripple, alias, the fold with its selector
+    reads) sums to zero on every row; the Horner fingerprints of chain 0 meet zeta^6 R_A R_B = R_C for
+    arbitrary challenges; the public data's columns are the trace's."""
     comptime N = p.N()
     comptime h1 = p.h1()
     var c = mulmod_statement().compile[p]()
     var w = Mulmod(operand(1), operand(2))
     var trace = mulmod_trace[p](c.layout, w.a, w.b)
     var cw = c.layout.columns_w()
+    var cz = c.shape.columns_z
+    var data = Mulmod.public_data[p](c.layout, w.public_inputs[p]())
     var count = len(c.families) // ENTRY
     var families = 0
     for k in range(count):
@@ -59,7 +134,7 @@ def test_trace_satisfies_every_bit_family() raises:
     var skip = List[Bool](length=families, fill=False)
     for k in range(count):
         var en = entry(c.families, k)
-        if en.chal != 0 or en.basis != NO_BASIS or en.col_a >= cw or (en.col_b != NONE and en.col_b >= cw):
+        if en.chal != 0 or en.basis != NO_BASIS or (en.col_a >= cw and en.col_a < cw + cz) or (en.col_b != NONE and en.col_b >= cw and en.col_b < cw + cz):
             skip[en.family] = True
     var sums = List[Int](length=families * N, fill=0)
     var checked = 0
@@ -72,11 +147,11 @@ def test_trace_satisfies_every_bit_family() raises:
             for x1 in range(h1):
                 if en.mult == 1 and x1 == h1 - 1:
                     continue
-                var v = en.coef * Int(trace[en.col_a * N + ((x2 + en.dj2_a // 2) % p.h2()) * h1 + (x1 + en.dj1_a // 2) % h1])
+                var v = en.coef * _at(trace, data, cw, cz, en.col_a, en.dj1_a // 2, en.dj2_a // 2, x1, x2)
                 if en.col_b != NONE:
-                    v *= Int(trace[en.col_b * N + ((x2 + en.dj2_b // 2) % p.h2()) * h1 + (x1 + en.dj1_b // 2) % h1])
+                    v *= _at(trace, data, cw, cz, en.col_b, en.dj1_b // 2, en.dj2_b // 2, x1, x2)
                 sums[en.family * N + x2 * h1 + x1] = (sums[en.family * N + x2 * h1 + x1] + v) % 127
-    assert_true(checked > 124 + 4 * 32 + 12)
+    assert_true(checked > 164 + 4 * 32 + 12 + 8 * 2 + 8 * 15)
     for i in range(families * N):
         if sums[i] != 0:
             raise Error("family " + String(i // N) + " fails at row " + String(i % N))
@@ -94,13 +169,22 @@ def test_trace_satisfies_every_bit_family() raises:
         r.append(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals))
     var z6 = list_e(chals, Int(c.shape.ends[7]) - 1)
     assert_equal(ext_mul[4](ext_mul[4](r[0], r[1]), z6), r[2])
-    var data = Mulmod.public_data[p](c.layout, w.public_inputs[p]())
-    var off = 0
-    for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "r0", "r1", "r2", "r3"]:
+    var off = N
+    for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "f0", "f1", "f2", "f3"]:
         for x1 in range(h1):
             assert_equal(data[off + x1], trace[c.layout.col(name) * N + x1])
         off += h1
     assert_equal(off, len(data))
+
+
+def _at(trace: List[UInt8], data: List[UInt8], cw: Int, cz: Int, col: Int, k1: Int, k2: Int, x1: Int, x2: Int) -> Int:
+    """A read at (x1 + k1, x2 + k2): W from the trace, the public selector (past W and Z) from its dense block."""
+    comptime N = p.N()
+    comptime h1 = p.h1()
+    var row = ((x2 + k2) % p.h2()) * h1 + (x1 + k1) % h1
+    if col < cw:
+        return Int(trace[col * N + row])
+    return Int(data[(col - cw - cz) * N + row])
 
 
 def test_prover_round_trip() raises:
@@ -114,11 +198,15 @@ def test_prover_round_trip() raises:
 def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True) raises -> String:
     var c = mulmod_statement(zeros).compile[p]()
     var shape = mulmod_statement(zeros).compile[p]().take_shape()
-    var prover = Prover[p, Blake3](ctx, c^.take_shape(), mulmod_statement(zeros).compile[p]().families.copy())
-    load_trace[p, Blake3](ctx, prover, trace)
-    var proof = prover.prove(ctx, claim)
     var cc = mulmod_statement(zeros).compile[p]()
     var data = Mulmod.public_data[p](cc.layout, claim)
+    var blocks = List[UInt8]()
+    for i in range(value_bytes(cc.layout.publics, p.h1(), p.h2())):
+        blocks.append(data[i])
+    var prover = Prover[p, Blake3](ctx, c^.take_shape(), cc.families.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_public[p, Blake3](ctx, prover, blocks)
+    var proof = prover.prove(ctx, claim)
     try:
         _ = verify[p, Blake3](proof^, shape, claim, cc.families, data)
     except e:
@@ -127,15 +215,16 @@ def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros:
 
 
 def test_wrong_product_and_idle_carry_are_rejected() raises:
-    """An honest trace with a claimed r off by one fails the public factor; a trace that carries a one into
-    weight 0 from the idle row (every family holds, r = a b + 1 as claimed) fails the zero row, and is
-    accepted by the statement without zero rows; the same carry on an idle chain, where no public factor
-    looks, is caught by the zero row alone."""
+    """An honest trace with a claimed f off by one fails the public factor; a trace that carries a one into
+    weight 0 from the idle row (every family holds, r = a b + 1, and f + 1 as claimed because the increment
+    does not carry out of bit 255 for these operands) fails the zero row, and is accepted by the statement
+    without zero rows; the same carry on an idle chain, where no public factor looks, is caught by the zero
+    row alone. A claim past FOLDED bits is refused by the public data; a flipped copy bit fails a family."""
     var ctx = DeviceContext()
     var w = Mulmod(operand(3), operand(4))
     var c = mulmod_statement().compile[p]()
     var claim = w.public_inputs[p]()
-    var bits = bits_of(claim, 64, 2 * BITS)
+    var bits = bits_of(claim, 64, FOLDED)
     var carry = 1
     for i in range(len(bits)):
         var s = bits[i] + carry
@@ -149,6 +238,13 @@ def test_wrong_product_and_idle_carry_are_rejected() raises:
     assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 0), wrong, False), "accepted")
     assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 3), claim), "chain row is not zero")
     assert_equal(_rejected(ctx, mulmod_trace[p](c.layout, w.a, w.b, 3), claim, False), "accepted")
+    var high = claim.copy()
+    high[len(high) - 1] |= 2
+    with assert_raises(contains="exceeds"):
+        _ = Mulmod.public_data[p](c.layout, high)
+    var tampered = mulmod_trace[p](c.layout, w.a, w.b)
+    tampered[c.layout.col("h1") * p.N() + 100] ^= 1
+    assert_true(_rejected(ctx, tampered, claim) != "accepted")
 
 
 def main() raises:

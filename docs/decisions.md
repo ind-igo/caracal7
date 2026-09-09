@@ -647,3 +647,14 @@ factors. Decisions:
   one fails the joint boundary; the idle-row carry fails the zero row.
 
 Not done: the fold (spec 7) and the wiring between chains (spec 8) wait for the ECDSA composition.
+
+## The fold: polynomial-mulmod 7 with a selector column (2026-09-09)
+
+The fold reduces the 512-bit product to `f < 2^257`, congruent mod `p`, by `2^256 = 2^32 + 977`. The spec
+binds weight-aligned copies of the high half to `r` with a fingerprint "of the high half"; no accumulator in
+the IR fingerprints half a column, and every cyclic binding rotates the low half into the piles. The fold
+uses a public selector column instead: `lo` is 1 on the rows of weights below 256, the copy is `lo * r@80`,
+the pile reads `lo * r_w`. One selector and two copy column sets replace four copies and two accumulators.
+The folds need no zero rows (their piles die above weight 290 and the idle row's pile is at most one bit);
+the output fingerprint is the plain one, the piece-weighted one is left to the wiring step where its need is
+decided. `docs/mulmod.md` has the argument. The public inputs change to `a`, `b`, `f`.
