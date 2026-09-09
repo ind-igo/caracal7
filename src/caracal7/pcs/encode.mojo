@@ -452,6 +452,8 @@ def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,
         var twist = rs.base + rs.twist + k * K * 4 if m > 1 else 0
         var code_k = code + k * L0 * columns * 4
         comptime if mask & 1:
+            if b - b1 > 3:
+                raise Error("unsupported gather radix")
             comptime for B2 in [1, 2, 4, 8]:
                 if (1 << (b - b1)) == B2:
                     ctx.enqueue_function[k_rs_gather[B2]](arena.buf, Buf[4](src), Buf[4](etmp), Buf[4](rs.base + rs.ga), Buf[1](rs.base + rs.crt),

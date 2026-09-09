@@ -63,7 +63,8 @@ def run[p: Params, COLS: Int](ctx: DeviceContext) raises:
           macs / (rs_ms * 1e6), " GMAC/s, ", code_bytes / (rs_ms * 1e6), " GB/s code written)")
 
     # per-kernel split of rs_encode
-    time_mask[p, 1](ctx, arena, e, tab, "gather + 2-adic stages")
+    time_mask[p, 1](ctx, arena, e, tab, "gather")
+    time_mask[p, 16](ctx, arena, e, tab, "2-adic stages")
     time_mask[p, 2](ctx, arena, e, tab, "stage 5")
     time_mask[p, 4](ctx, arena, e, tab, "stage 7")
     time_mask[p, 8](ctx, arena, e, tab, "stage 9 (scatter to code)")
