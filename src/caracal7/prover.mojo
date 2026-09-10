@@ -180,7 +180,7 @@ struct ProverLayout:
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
         self.positions = bump.alloc(max_queries * 4)
         self.pts = bump.alloc(max_queries * 4)
-        self.ptab = bump.alloc(p.queries() * power_table_len[p]() * 4)
+        self.ptab = bump.alloc(max_queries * power_table_len[p]() * 4)
         self.partial = bump.alloc(ROUND_THREADS * 3 * p.e)
         self.batch = bump.alloc((max_v + 1) * p.e)
         self.r = bump.alloc(3 * p.e)
