@@ -1012,3 +1012,12 @@ challenge with a full E product; it is a lane product now: accumulate 22 -> 20 m
 bound by its gathered trace reads). Warm prove 663 -> 648 ms in the same session. The Merkle
 leaves (41 ms over the three trees) already load full 64-byte blocks and are compute-bound in
 the Blake3 rounds; nothing cheap there.
+
+## Not done: the gather fused into the 64-point launch (2026-09-10)
+
+A `k_rs_gather64` whose block gathers the 64 positions of one (lin, k2) and runs both radix-8 steps
+on them (etmp written once instead of written, read, written) measured 41 ms against 31 for the two
+launches, and 36.5 with the twist products removed: the block of one k2 re-reads its input rows,
+so the gather's loads and twists are done B2 = 8 times. A block that holds all eight k2 of a line
+needs 64 KB of threadgroup memory at 32 columns (32 KB at 16 columns, one block per core); not
+tried. The encoder stays at gather, 64-point block, radix 5, fused radix 7 x 9: four sweeps.
