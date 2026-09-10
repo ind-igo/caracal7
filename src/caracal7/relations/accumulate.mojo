@@ -55,7 +55,7 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_inv0, ext_one
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_inv0, ext_one, fp_ext_mul, fp_reduce, fp_canonical
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
@@ -174,10 +174,10 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
     line Z2(omega2 X2) of the small grid is the same buffer one element on."""
     if global_idx.x != 0:
         return
-    var z = ext_one[4]()
+    var z = ext_one[4]().cast[DType.float32]()
     for x2 in range(p.h2()):
-        z2.store(base, x2, z)
-        z = ext_mul[4](z, chain_prod.load(base, x2))
+        z2.store(base, x2, fp_canonical(z))
+        z = fp_reduce(fp_ext_mul[4](z, chain_prod.load(base, x2).cast[DType.float32]()))
     z2.store(base, p.h2(), ext_one[4]())
 
 
@@ -246,15 +246,16 @@ def k_horner_scan[p: Params](base: Base, acc: Buf[1], chals: Buf[16], num: Buf[1
     var x2 = global_idx.x
     if x2 >= p.h2():
         return
-    var r = E(0)
-    r[0] = acc.load(base, 6)
+    var r = SIMD[DType.float32, 16](0)
+    r[0] = Float32(acc.load(base, 6))
     var scale = ext_one[4]()
     if acc.load(base, 7) != 0:
         scale = chals.load(base, Int(acc.load(base, 7)) - 1)
-    for x1 in range(h1):
+    var scale_f = scale.cast[DType.float32]()
+    for x1 in range(h1):                            # |r| <= 190, scale canonical: the product is below 3.1 M
         var row = x2 * h1 + x1
-        zval.store(base, row, r)
-        r = f_sub(ext_mul[4](scale, r), num.load(base, row))
+        zval.store(base, row, fp_canonical(r))
+        r = fp_reduce(fp_ext_mul[4](scale_f, r) - num.load(base, row).cast[DType.float32]())
 
 
 def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, acc: Int, chals: Int, num: Int, zval: Int) raises:

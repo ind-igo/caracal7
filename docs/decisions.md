@@ -916,3 +916,15 @@ times a canonical gA power below 192 K per coordinate, 64 terms below 12.3 M): 2
 strided reads), so it keeps bytes; instead one thread now serves a slot pair, since the pair holds
 the two coordinates of one value (or, in the fixed classes, coordinate 0 of two values), which
 halves the reads and products and makes the store 2 bytes: 39.7 -> 24.2 ms.
+
+## E products on fp32 lanes: the Horner and Z2 scans (2026-09-10)
+
+At ECDSA size every accumulator is a Horner one (13 of them, plus 6 wiring products). A per-kernel
+split of `accumulate`: `k_horner_scan` 48 ms (576 threads, 144 sequential E products each),
+`k_z2` 65 ms (one thread, 576 E products per wiring product), `k_ingest` 14, `k_wire_factors` 4.
+The byte `ext_mul[4]` is the tower schoolbook with a full reduction per base product: 625 `f_mul`,
+several thousand ops. `fp_ext_mul[k]` (field.mojo) is the same schoolbook on float lanes with no
+reduction inside: 256 base fma, the sparse constants (-1, 2 + i, j, u) folded as lane arithmetic,
+lane bound 2^(2k + 1) P, so an E product of canonical values stays below 2.1 M and one `fp_reduce`
+per step keeps the recurrences exact. Horner scan 48 -> 13 ms, Z2 65 -> 6 ms, accumulate 108 -> 28
+ms. The remaining E-heavy kernels (rounds, materialize, fold, running claim, small grid) are next.

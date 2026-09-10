@@ -125,6 +125,40 @@ def fp_mul4(x: V4, y: V4) -> V4:
 
 
 @always_inline
+def fp_const_mul[k: Int](x: SIMD[DType.float32, 1 << (k - 1)]) -> SIMD[DType.float32, 1 << (k - 1)]:
+    """C_k x in the level-(k-1) field: -x, (2 + i) x, j x, u x. Every lane of the result is at most
+    three lanes of x in size."""
+    comptime if k == 1:
+        return -x
+    elif k == 2:
+        return rebind[SIMD[DType.float32, 1 << (k - 1)]](V2(2.0 * x[0] - x[1], x[0] + 2.0 * x[1]))
+    elif k == 3:
+        return rebind[SIMD[DType.float32, 1 << (k - 1)]](V4(2.0 * x[2] - x[3], x[2] + 2.0 * x[3], x[0], x[1]))
+    else:
+        var lo = x.slice[4]()
+        var hi = x.slice[4, offset=4]()
+        return rebind[SIMD[DType.float32, 1 << (k - 1)]](fp_const_mul[3](hi).join(lo))
+
+
+@always_inline
+def fp_ext_mul[k: Int](a: SIMD[DType.float32, 1 << k], b: SIMD[DType.float32, 1 << k]) -> SIMD[DType.float32, 1 << k]:
+    """Schoolbook on the tower with float lanes, no reduction: (a0 + a1 g)(b0 + b1 g) = (a0 b0 + C a1 b1)
+    + (a0 b1 + a1 b0) g. Lane bound 2^(2k + 1) P for a base product bound P: an E product of canonical
+    values is below 2.1 M, of |x| <= 190 values below 4.7 M."""
+    comptime if k == 0:
+        return a * b
+    else:
+        comptime h = 1 << (k - 1)
+        var a0 = a.slice[h]()
+        var a1 = a.slice[h, offset=h]()
+        var b0 = b.slice[h]()
+        var b1 = b.slice[h, offset=h]()
+        var lo = fp_ext_mul[k - 1](a0, b0) + fp_const_mul[k](fp_ext_mul[k - 1](a1, b1))
+        var hi = fp_ext_mul[k - 1](a0, b1) + fp_ext_mul[k - 1](a1, b0)
+        return rebind[SIMD[DType.float32, 1 << k]](lo.join(hi))
+
+
+@always_inline
 def f_add[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
     var s = a + b                                   # < 254, no overflow
     return min(s, s - 127)

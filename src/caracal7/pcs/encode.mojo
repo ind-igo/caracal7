@@ -39,7 +39,7 @@ from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
+from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul
 from caracal7.core.field import fp_reduce, fp_center, fp_canonical, fp_mul2, fp_mul4
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
@@ -146,6 +146,8 @@ def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1]
         acc[1] = acc1[0]
     base.unsafe_store[width=2](stored.at(c * N + slot), acc)
 
+
+# ---- pack: four slots on the packing digit -> one F4 symbol ----
 
 @always_inline
 def pack_slot[p: Params](i: Int, j: Int) -> Int:
