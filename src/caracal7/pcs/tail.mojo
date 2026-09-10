@@ -15,7 +15,9 @@ from std.math import ceildiv
 from std.gpu import global_idx, thread_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F4, E, E_WIDTH, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one
+from caracal7.core.field import F4, E, E_WIDTH, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical
+
+comptime EF = SIMD[DType.float32, 16]      # E on float lanes
 from caracal7.core.params import Params
 from caracal7.core.tables import RsTables, RsDomain
 from caracal7.pcs.encode import rs_encode_on, pack_index
@@ -82,10 +84,12 @@ def k_running0[p: Params](base: Base, w_z: Buf[16], gamma: Buf[16], P: Int32, ds
     var slot = global_idx.x
     if slot >= N:
         return
-    var acc = E(0)
+    var acc = EF(0)
     for pt in range(Int(P)):
-        acc = f_add(acc, ext_mul[4](gamma.load(base, pt), w_z.load(base, slot * Int(P) + pt)))
-    dst.store(base, slot, acc)
+        acc += fp_ext_mul[4](gamma.load(base, pt).cast[DType.float32](), w_z.load(base, slot * Int(P) + pt).cast[DType.float32]())
+        if pt % 4 == 3:
+            acc = fp_reduce(acc)
+    dst.store(base, slot, fp_canonical(acc))
 
 
 comptime POW_LO = 256              # pt^i = pt^(i & 255) pt^(256 (i >> 8)): the level-1 power table holds both factors
@@ -116,7 +120,7 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16]
     var slot = global_idx.x
     if slot >= N:
         return
-    var w = ext_mul[4](batch.load(base, 0), running.load(base, slot))
+    var w = fp_reduce(fp_ext_mul[4](batch.load(base, 0).cast[DType.float32](), running.load(base, slot).cast[DType.float32]()))
     var i: Int
     var j: Int
     i, j = pack_index[p](slot)
@@ -124,12 +128,14 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16]
     bj[j] = 1
     var lo = i % POW_LO
     var hi = POW_LO + i // POW_LO
-    for q in range(Int(count)):
+    for q in range(Int(count)):                     # 4 count products of canonical values, below 16 K each
         var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
-        var m = ext_mul[2](bj, pw)
+        var m = ext_mul[2](bj, pw).cast[DType.float32]()
         comptime for tau in range(4):
-            w = f_add(w, f_mul(batch.load(base, 1 + 4 * q + tau), E(m[tau])))
-    w_tilde.store(base, slot, w)
+            w = batch.load(base, 1 + 4 * q + tau).cast[DType.float32]().fma(EF(m[tau]), w)
+        if q % 256 == 255:
+            w = fp_reduce(w)
+    w_tilde.store(base, slot, fp_canonical(w))
 
 
 def k_materialize_tail(base: Base, running: Buf[16], batch: Buf[16], pts: Buf[4],
@@ -154,30 +160,36 @@ def k_round_partial(base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: 
     var dd = Int(d)
     var m = 1 << dd
     var rr = _r3(base, r)
-    var rb = InlineArray[E, 4](fill=E(0))
+    var rb = InlineArray[EF, 4](fill=EF(0))
     for a in range(m):
-        rb[a] = rbar_at(rr, a, dd)
-    var acc0 = E(0)
-    var acc1 = E(0)
-    var acc2 = E(0)
+        rb[a] = rbar_at(rr, a, dd).cast[DType.float32]()
+    # fp32 lanes: up to four products of canonical values (below 2.1 M each) per sum, reduced to
+    # |x| <= 190 before the products of sums (below 4.7 M), one reduction of each accumulator per group
+    var acc0 = EF(0)
+    var acc1 = EF(0)
+    var acc2 = EF(0)
     var groups = Int(length) // (2 * m)
     for grp in range(t, groups, ROUND_THREADS):
         var n0 = grp * 2 * m
-        var y0 = E(0)
-        var y1 = E(0)
-        var w0 = E(0)
-        var w1 = E(0)
+        var y0 = EF(0)
+        var y1 = EF(0)
+        var w0 = EF(0)
+        var w1 = EF(0)
         for a in range(m):
-            y0 = f_add(y0, ext_mul[4](rb[a], y.load(base, n0 + a)))
-            y1 = f_add(y1, ext_mul[4](rb[a], y.load(base, n0 + m + a)))
-            w0 = f_add(w0, ext_mul[4](rb[a], w_tilde.load(base, n0 + a)))
-            w1 = f_add(w1, ext_mul[4](rb[a], w_tilde.load(base, n0 + m + a)))
-        acc0 = f_add(acc0, ext_mul[4](y0, w0))
-        acc1 = f_add(acc1, ext_mul[4](y1, w1))
-        acc2 = f_add(acc2, ext_mul[4](f_sub(f_add(y1, y1), y0), f_sub(f_add(w1, w1), w0)))
-    partial.store(base, 3 * t, acc0)
-    partial.store(base, 3 * t + 1, acc1)
-    partial.store(base, 3 * t + 2, acc2)
+            y0 += fp_ext_mul[4](rb[a], y.load(base, n0 + a).cast[DType.float32]())
+            y1 += fp_ext_mul[4](rb[a], y.load(base, n0 + m + a).cast[DType.float32]())
+            w0 += fp_ext_mul[4](rb[a], w_tilde.load(base, n0 + a).cast[DType.float32]())
+            w1 += fp_ext_mul[4](rb[a], w_tilde.load(base, n0 + m + a).cast[DType.float32]())
+        y0 = fp_reduce(y0)
+        y1 = fp_reduce(y1)
+        w0 = fp_reduce(w0)
+        w1 = fp_reduce(w1)
+        acc0 = fp_reduce(acc0 + fp_ext_mul[4](y0, w0))
+        acc1 = fp_reduce(acc1 + fp_ext_mul[4](y1, w1))
+        acc2 = fp_reduce(acc2 + fp_ext_mul[4](fp_reduce(y1 + y1 - y0), fp_reduce(w1 + w1 - w0)))
+    partial.store(base, 3 * t, fp_canonical(acc0))
+    partial.store(base, 3 * t + 1, fp_canonical(acc1))
+    partial.store(base, 3 * t + 2, fp_canonical(acc2))
 
 
 def k_round_sum(base: Base, partial: Buf[16], dst: Buf[16]):
@@ -197,10 +209,10 @@ def k_fold8(base: Base, src: Buf[16], rows: Int32, r: Buf[16], dst: Buf[16]):
     if row >= Int(rows):
         return
     var rr = _r3(base, r)
-    var acc = E(0)
-    for a in range(8):
-        acc = f_add(acc, ext_mul[4](rbar_at(rr, a, 3), src.load(base, 8 * row + a)))
-    dst.store(base, row, acc)
+    var acc = EF(0)
+    for a in range(8):                              # eight products of canonical values: below 16.3 M
+        acc += fp_ext_mul[4](rbar_at(rr, a, 3).cast[DType.float32](), src.load(base, 8 * row + a).cast[DType.float32]())
+    dst.store(base, row, fp_canonical(acc))
 
 
 # ---- host launchers ----

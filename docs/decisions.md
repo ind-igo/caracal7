@@ -928,3 +928,10 @@ reduction inside: 256 base fma, the sparse constants (-1, 2 + i, j, u) folded as
 lane bound 2^(2k + 1) P, so an E product of canonical values stays below 2.1 M and one `fp_reduce`
 per step keeps the recurrences exact. Horner scan 48 -> 13 ms, Z2 65 -> 6 ms, accumulate 108 -> 28
 ms. The remaining E-heavy kernels (rounds, materialize, fold, running claim, small grid) are next.
+
+## Tail kernels on fp32 E products (2026-09-10)
+
+`k_round_partial`, `k_fold8`, `k_running0` and `k_materialize_level1` use `fp_ext_mul[4]` with the
+bounds in their comments (sums of at most eight canonical products before a reduction; the round
+kernel reduces the four partial sums before multiplying them). Rounds 0/1/2 16/7/8 -> 6/5/4 ms,
+materialize 0 10 -> 6, fold 0 4 -> 2; the tail is now about 40 ms of the prove.
