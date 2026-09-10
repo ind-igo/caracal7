@@ -273,7 +273,7 @@ struct Keccak(Workload, Copyable, Movable):
     message, then its 32-byte digest."""
     var message: List[UInt8]
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return keccak_statement()
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:

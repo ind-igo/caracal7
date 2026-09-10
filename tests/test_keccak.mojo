@@ -6,12 +6,11 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.hash import Blake3
-from caracal7.relations import entry, ENTRY, NONE, NO_BASIS
 from caracal7.workloads.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
 from caracal7.prover import Prover, load_trace, load_advice, load_public
 from caracal7.relations import value_bytes
 from caracal7.relations.statement import advice
-from caracal7.workload import prove_workload, verify_workload
+from caracal7.workload import prove_workload, verify_workload, check_families
 
 comptime p = CLIENT.grid(64, 24)
 
@@ -57,9 +56,6 @@ def test_idle_chains_keep_the_digest() raises:
 
 
 def _check_families[q: Params](bytes: Int) raises:
-    comptime N = q.N()
-    comptime h1 = q.h1()
-    comptime h2 = q.h2()
     var c = keccak_statement().compile[q]()
     assert_equal(c.shape.points, 28)
     var msg = message(bytes)
@@ -67,37 +63,7 @@ def _check_families[q: Params](bytes: Int) raises:
     var pubs = List[List[UInt8]]()
     for l in range(ABSORB):
         pubs.append(keccak_public_values[q](msg, l))
-    var w = c.layout.columns_w()
-    var count = len(c.families) // ENTRY
-    var families = 0
-    for k in range(count):
-        families = max(families, entry(c.families, k).family + 1)
-    var sums = List[Int](length=families * N, fill=0)
-    for k in range(count):
-        var en = entry(c.families, k)
-        assert_equal(en.chal, 0)
-        assert_equal(en.basis, NO_BASIS)
-        for x2 in range(h2):
-            for x1 in range(h1):
-                if (en.mult == 1 and x1 == h1 - 1) or (en.mult == 2 and x2 == h2 - 1):
-                    continue
-                var v = en.coef * _at[q](trace, pubs, w, en.col_a, en.dj1_a // 2, en.dj2_a // 2, x1, x2)
-                if en.col_b != NONE:
-                    v *= _at[q](trace, pubs, w, en.col_b, en.dj1_b // 2, en.dj2_b // 2, x1, x2)
-                sums[en.family * N + x2 * h1 + x1] = (sums[en.family * N + x2 * h1 + x1] + v) % 127
-    for i in range(families * N):
-        if sums[i] != 0:
-            raise Error("family " + String(i // N) + " fails at row " + String(i % N))
-
-
-def _at[q: Params](trace: List[UInt8], pubs: List[List[UInt8]], w: Int, col: Int, k1: Int, k2: Int, x1: Int, x2: Int) -> Int:
-    """A read at (x1 + k1, x2 + k2); public columns follow the W columns (no Z columns in this statement)."""
-    comptime N = q.N()
-    comptime h1 = q.h1()
-    var row = ((x2 + k2) % q.h2()) * h1 + (x1 + k1) % h1
-    if col < w:
-        return Int(trace[col * N + row])
-    return Int(pubs[col - w][row])
+    check_families[q](c, trace, pubs)
 
 
 def test_prover_round_trip() raises:
@@ -111,7 +77,7 @@ def test_wrong_digest_is_rejected() raises:
     """A prover that claims a wrong digest derives its restriction lines from it and fails the restriction check."""
     var ctx = DeviceContext()
     var w = Keccak(message(128))
-    var c = w.statement().compile[p]()
+    var c = w.statement[p]().compile[p]()
     var trace = w.trace[p](c.layout)
     var idx = advice[p](c.layout, trace)
     var wrong = w.public_inputs[p]()

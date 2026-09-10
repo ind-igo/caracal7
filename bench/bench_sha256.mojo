@@ -1,4 +1,4 @@
-"""Keccak-256 across message lengths: one implementation, the grid derived from the block count. Prove warm,
+"""SHA-256 across message lengths: one implementation, the grid derived from the block count. Prove warm,
 then profiled by stage; verify on the host."""
 
 from std.time import perf_counter_ns
@@ -9,7 +9,7 @@ from caracal7.core.hash import Blake3
 from caracal7.prover import Prover, load_trace, load_advice, load_public
 from caracal7.relations import value_bytes
 from caracal7.relations.statement import advice
-from caracal7.workloads.keccak import Keccak
+from caracal7.workloads.sha256 import Sha256
 from caracal7.workload import verify_workload
 
 
@@ -22,7 +22,7 @@ def run[p: Params](bytes: Int) raises:
     var msg = List[UInt8](capacity=bytes)
     for i in range(bytes):
         msg.append(UInt8((i * 37 + 11) % 256))
-    var w = Keccak(msg^)
+    var w = Sha256(msg^)
     var t0 = perf_counter_ns()
     var c = w.statement[p]().compile[p]()
     var t_compile = _ms(t0)
@@ -31,7 +31,7 @@ def run[p: Params](bytes: Int) raises:
     var t_trace = _ms(t0)
     var inputs = w.public_inputs[p]()
     t0 = perf_counter_ns()
-    var data = Keccak.public_data[p](c.layout, inputs)
+    var data = Sha256.public_data[p](c.layout, inputs)
     var t_public = _ms(t0)
     var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
     var blocks = List[UInt8](capacity=n_blocks)
@@ -61,15 +61,17 @@ def run[p: Params](bytes: Int) raises:
     var warm = (perf_counter_ns() - t0) // 1000000
     _ = prover.prove(ctx, inputs, profile=True)
     t0 = perf_counter_ns()
-    var ok = verify_workload[p, Blake3, Keccak](proof.copy(), w, inputs, profile=True)
+    var ok = verify_workload[p, Blake3, Sha256](proof.copy(), w, inputs, profile=True)
     var vms = (perf_counter_ns() - t0) // 1000000
-    print("keccak-256 of ", bytes, " B  ", p, " proof ", len(proof), " B, warm prove ", warm, " ms, verify ", vms, " ms ", ok)
+    print("sha256 of ", bytes, " B  ", p, " proof ", len(proof), " B, warm prove ", warm, " ms, verify ", vms, " ms ", ok)
     for i in range(len(prover.profile_names)):
         if prover.profile_ms[i] > 0:
             print("  ", prover.profile_ms[i], " ms  ", prover.profile_names[i])
 
 
 def main() raises:
-    run[CLIENT.grid(64, 24)](128)
-    run[CLIENT.grid(64, 192)](1024)
-    run[CLIENT.grid(64, 384)](2048)
+    run[CLIENT.grid(32, 193)](128)
+    run[CLIENT.grid(32, 321)](256)
+    run[CLIENT.grid(32, 577)](512)
+    run[CLIENT.grid(32, 1089)](1024)
+    run[CLIENT.grid(32, 2113)](2048)

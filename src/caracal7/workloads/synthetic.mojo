@@ -19,7 +19,7 @@ struct Synthetic(Workload, Copyable, Movable):
     var with_public: Bool
     var seed: Int
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return synthetic_statement(self.columns_w, self.with_accumulator, self.with_lookup, self.with_public)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
@@ -30,7 +30,7 @@ struct Synthetic(Workload, Copyable, Movable):
     def public_inputs[p: Params](self) raises -> List[UInt8]:
         if not self.with_public:
             return List[UInt8]()
-        var c = self.statement().compile[p]()
+        var c = self.statement[p]().compile[p]()
         return chain_values[p](c.layout, self.trace[p](c.layout), 0)
 
     @staticmethod
@@ -183,7 +183,7 @@ struct SyntheticHorner(Workload, Copyable, Movable):
     through three Horner accumulators and one chain-end family; no public inputs."""
     var seed: Int
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return horner_statement()
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
@@ -249,7 +249,7 @@ struct SyntheticWiring(Workload, Copyable, Movable):
     var chains: Int
     var full: Bool
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return wiring_statement(self.chains, self.full)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:

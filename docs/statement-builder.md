@@ -98,7 +98,9 @@ Tests that need a wrong trace or a wrong advice call the pieces directly.
 - A cyclic read has `k1` in `[0, h1)` and never crosses a chain end (it wraps by construction on
   the chain axis; the check is that a transition, not a cyclic read, is used where the row after
   the last must not wrap).
-- `k2 = 1` only in a linear family with the axis-2 gate.
+- A read has `k2` in `[0, h2)`, cyclic on the chain axis like `k1`; the frontend owns the wrap (SHA-256
+  masks its block-end read with a selector). The transition that must not wrap is `k2 = 1` in a linear
+  family with the axis-2 gate.
 - Every column's live rows are covered by a family or a boundary: a column read by nothing and
   constrained by nothing is an error, not a warning.
 - Kinds: a `bit` column has its Booleanity family; a `limb6` column has its range certificate
@@ -116,7 +118,7 @@ Tests that need a wrong trace or a wrong advice call the pieces directly.
 | spec feature | IR today | builder needs |
 |---|---|---|
 | cyclic read at any k1 | `dj1 = 2 k1` on G, wraps in `_read`, `shift_points` adds the point | nothing |
-| next-chain read, linear, axis-2 gate | `k2 = 1`, `mult = 2`, `add` rejects a quadratic | nothing |
+| chain-shifted read at any k2; the gated transition linear | `dj2 = 2 k2` on G, wraps in `_read`; `mult = 2`, `add` rejects a quadratic | nothing |
 | gates, F constants, basis factors, quadratic terms | entry fields | nothing |
 | challenge expressions | derivation table on `Shape.chals` (op, a, b rows; `standard_chals` is the two accumulator rows); `k_derive_chals` and `derived_chals` walk it; `chal` is a u8 index into the list | nothing (done 2026-09-07) |
 | opening points from the checks | `Shape.point_list` is an input, hashed; `required_points` is the set it must contain (boundary points only with accumulators); the verifier finds boundary points by lookup | nothing (done 2026-09-07) |

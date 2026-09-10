@@ -33,7 +33,8 @@ comptime LIMB_ROWS = 64
 
 @fieldwise_init
 struct Read(Copyable, Movable):
-    """A column at (omega1^k1 x1, omega2^k2 x2): k1 cyclic on the chain, k2 = 1 the next chain."""
+    """A column at (omega1^k1 x1, omega2^k2 x2): both shifts cyclic on their axis; a next-chain read (k2 = 1)
+    in a linear family with the axis-2 gate is the transition that does not wrap."""
     var col: String
     var k1: Int
     var k2: Int
@@ -360,8 +361,8 @@ struct Statement(Movable):
 
     def _resolve[p: Params](self, index: Dict[String, Int], r: Read, pub_at: Int, mut touched: List[Bool], mut read: List[Bool]) raises -> Int:
         """A read to a column index: W by name, else a public column past W and Z."""
-        if r.k1 < 0 or r.k1 >= p.h1() or r.k2 < 0 or r.k2 > 1:
-            raise Error("read shift: k1 in [0, h1), k2 in {0, 1}")
+        if r.k1 < 0 or r.k1 >= p.h1() or r.k2 < 0 or r.k2 >= p.h2():
+            raise Error("read shift: k1 in [0, h1), k2 in [0, h2)")
         if r.col in index:
             var i = index[r.col]
             touched[i] = True
@@ -419,8 +420,6 @@ struct Statement(Movable):
                         cb = self._resolve[p](index, t.b.value(), pub_at, touched, read)
                         k1b = t.b.value().k1
                         k2b = t.b.value().k2
-                    if (t.a.k2 == 1 or k2b == 1) and (fam.gate != GATE_2 or quadratic):
-                        raise Error("a next-chain read (k2 = 1) needs a linear family with the axis-2 gate: " + fam.name)
                     f.add(k, ((t.coef % 127) + 127) % 127, ca, k1_a=t.a.k1, k2_a=t.a.k2, col_b=cb, k1_b=k1b, k2_b=k2b,
                           mult=fam.gate, chal=0 if t.chal < 0 else t.chal + 1, basis=t.basis, basis2=t.basis2)
             elif it[0] == 2:
@@ -435,7 +434,7 @@ struct Statement(Movable):
                 var ingest = List[Tuple[Int, Int, Int, Int]]()
                 for t in a.ingest:
                     if t.a.k1 < 0 or t.a.k1 >= p.h1():
-                        raise Error("read shift: k1 in [0, h1), k2 in {0, 1}")
+                        raise Error("read shift: k1 in [0, h1)")
                     var c = self._wcol(index, t.a.col)
                     touched[c] = True
                     read[c] = True

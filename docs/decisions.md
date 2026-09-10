@@ -1163,3 +1163,31 @@ are consecutive lines, loaded and stored one F2 each), so the table loads are sh
 verify unchanged. The stages are still well above the memory bound (axis 1 moves about 160 MB per
 stage in 5 to 10 ms); the next step would fuse the three stages of a line in threadgroup memory.
 
+
+## SHA-256 workload (2026-09-11)
+
+The second bit layout (`docs/sha256.md`): a row is a bit of the 32-bit words, a chain a round, 43 bit
+columns, 72 families, 20 opening points, 8 public columns. New against Keccak: additions mod 2^32 as a
+ripple along the rows with binary carry columns, the carry into the low bit cut by a one-chain public
+selector; chain shifts beyond the next chain (the schedule 2, 7, 15, 16 chains back, the block end 63
+back), so the builder now admits any `k2` in `[0, h2)` as a cyclic read and the statement takes `Params`
+(`Workload.statement[p]`). Idle chains after the blocks hold the state under a live selector, so the
+digest and the IV are restriction lines on the last and first chain; the grid is `CLIENT.grid(32, 64 b + 1)`.
+Rejected: tracking the hash state in 8 columns of its own (16 columns with their gated copies against
+4 masked-round helpers and one selector); a boundary-chain layout with the feed-forward as extra chains
+(no legal grid size for the ethproofs lengths); next-chain reads for the working variables b .. d, f .. h
+(the feed-forward at a block end would have to change the value a read sees).
+
+Measured (M1 Pro, warm prove, minimum of one run each):
+
+| bytes | grid | proof | prove | verify |
+|---|---|---|---|---|
+| 128 | 32 x 224 | 217,392 B | 35 ms | 17 ms |
+| 256 | 32 x 336 | 225,508 B | 43 ms | 24 ms |
+| 512 | 32 x 672 | 246,812 B | 55 ms | 29 ms |
+| 1024 | 32 x 1152 | 276,360 B | 78 ms | 25 ms |
+| 2048 | 32 x 2688 | 298,616 B | 166 ms | 50 ms |
+
+At 2048 B the quotient is 34 of 166 ms: its two coset inverses are dense GEMMs at K = 2 h2 = 5376 (the
+perf TODO in residual.mojo). The host table build at h2 = 2688 is 25 s of setup (once per grid); the grid
+pads 33 blocks to 42 (2688 is the smallest legal size past 2113).

@@ -1021,7 +1021,7 @@ struct Mulmod(Workload, Copyable, Movable):
         self.circuit = circuit^ if len(circuit) > 0 else single_op()
         self.hints = hints^
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return mulmod_statement(circuit=self.circuit)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:

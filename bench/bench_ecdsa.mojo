@@ -29,7 +29,7 @@ def run[p: Params]() raises:
     var sg = k.inv_mod(c0.n).mulmod(e + r.mulmod(d, c0.n), c0.n)
     var w = Ecdsa(r^, sg^, e^, q^)
     var t0 = perf_counter_ns()
-    var c = w.statement().compile[p]()
+    var c = w.statement[p]().compile[p]()
     var t_compile = _ms(t0)
     t0 = perf_counter_ns()
     var trace = w.trace[p](c.layout)

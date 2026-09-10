@@ -447,7 +447,7 @@ struct Ecdsa(Workload, Movable):
         var w = walk(Curve(), Big(), Big(), Big(), Point.identity(), False)
         return w.ops.copy()
 
-    def statement(self) raises -> Statement:
+    def statement[p: Params](self) raises -> Statement:
         return mulmod_statement(True, Ecdsa.circuit(), pin=False)
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
