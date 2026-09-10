@@ -1106,3 +1106,21 @@ Not done: the product coefficients by popcount (the reversed piece against a sli
 replacing the 32 K increments per chain) measured the product lane 22 -> 20 ms of the writer's 57;
 the writer is the trace stores themselves (adds 14, product lane 22, fold ripples 19, the column
 copies 2), not the coefficient count. Reverted.
+
+## Measured: the level-1 coset count at the ECDSA grid (2026-09-10)
+
+`domain_for` picks the smallest domain at rate <= 1/16 (spec 9.5), four cosets of 161,280 for
+N / 4 = 20,736 symbols. The query formula of spec section 9 is sound at any rate below the 1/4
+distance bound, so the count is a trade, measured with `bench_ecdsa` on `Params` built by hand
+(warm prove and verify in one session, the profile otherwise unchanged):
+
+| cosets | rate  | queries | warm prove | proof     | verify |
+|--------|-------|---------|------------|-----------|--------|
+| 4      | 0.032 | 108     | 572 ms     | 631,856 B | 85 ms  |
+| 2      | 0.064 | 114     | 478 ms     | 637,456 B | 94 ms  |
+| 1      | 0.129 | 125     | 436 ms     | 654,464 B | 80 ms  |
+
+One coset: encode W 109 -> 55, Z 97 -> 49, Q 26 -> 12, the three Merkle trees below 8 ms each;
+the proof grows 3.6% (the openings are a small part of it) and the verifier does not move. Not
+changed: the rate rule is a spec parameter (`RATE_INV`), and every grid, test expectation and
+the Keccak profile hang off it; the switch is one `Profile` knob when it is decided.
