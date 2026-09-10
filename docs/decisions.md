@@ -1036,3 +1036,11 @@ reduced, the gate on lane pairs). Residual 100 -> 35 ms back to back under load 
 absolute numbers were 25% high). Next residual lever (Codex): 801 of the 1,152 entries have
 distinct (reads, gate) descriptors, so merging duplicates after `k_fold_alpha` would cut the loop
 by 30%.
+
+## Fold as a per-slot kernel (2026-09-10)
+
+`fold` was the last M = 8 lane GEMM: `C[8 lanes, slot] = beta[8, columns] . stored[columns, slot]`
+through the skeleton's shared-memory staging, 19 ms for the three trees. `k_fold` gives each thread
+one slot and walks the columns with the E lanes in fp32 registers (the stored byte centered, two fma
+per column, beta a uniform load); 1,024 columns stay exact. Fold 19 -> 4 ms back to back. The
+skeleton keeps the GEMMs that have a real M: lde, quotient, open, the small grid.

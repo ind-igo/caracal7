@@ -12,14 +12,15 @@ per-point table (z^x on each binary axis, L(r) on each odd axis; `table_entry`) 
 slot costs four E products from it. The verifier reads the same table from the host (`host_table`).
 
 `open` is one GEMM on backend.gemm_f2 with the 8 F2 lanes of every point as its rows, C[(point, lane),
-column]; `fold` is a lane GEMM, C[8 lanes, slot]. The F byte operand is read through the Bytes loader.
+column]; `fold` is k_fold, one thread per slot with the 8 E lanes in fp32 registers (the lane GEMM
+at M = 8 paid for its shared-memory staging, like the residual).
 """
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
-from caracal7.core.field import fp_reduce, fp_canonical, fp_ext_mul
+from caracal7.core.field import fp_reduce, fp_center, fp_canonical, fp_ext_mul
 from caracal7.relations.ir import FIX_ONE, FIX_E
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, Domains
@@ -123,6 +124,7 @@ def slot_weight[p: Params](slot: Int, base: Base, tab: Buf[16], off: Int, rho1: 
 
 
 comptime EF = SIMD[DType.float32, 16]      # E on float lanes
+comptime V8 = SIMD[DType.float32, 8]
 
 
 @always_inline
@@ -267,12 +269,34 @@ def open[p: Params](ctx: DeviceContext, arena: Arena,
                                        grid_dim=ceildiv(total, BACKEND.block), block_dim=BACKEND.block)
 
 
+def k_fold[acc: Bool](base: Base, beta: Buf[16], stored: Buf[1], columns: Int32, n: Int32, y: Buf[16]):
+    """y[slot] (+)= sum_c beta_c stored(c)[slot], one thread per slot with the 8 E lanes in fp32
+    registers: stored is one F byte per (column, slot), centered to |v| <= 63, so a term is below 8 K
+    and 1,024 columns stay exact; beta_c is a uniform load per column."""
+    var slot = Int(global_idx.x)
+    if slot >= Int(n):
+        return
+    var re = V8(0)
+    var im = V8(0)
+    comptime if acc:
+        var d = y.load(base, slot).deinterleave()
+        re = d[0].cast[DType.float32]()
+        im = d[1].cast[DType.float32]()
+    for c in range(Int(columns)):
+        var b = beta.load(base, c).deinterleave()
+        var v = V8(fp_center(stored.load(base, c * Int(n) + slot)))
+        re = b[0].cast[DType.float32]().fma(v, re)
+        im = b[1].cast[DType.float32]().fma(v, im)
+    y.store(base, slot, fp_canonical(re).interleave(fp_canonical(im)))
+
+
 def fold[p: Params, acc: Bool](ctx: DeviceContext, arena: Arena,
                                beta: Int, stored: Int, columns: Int, y: Int) raises:
     """y (slot, e) += sum_c beta_c stored(c) over one tree (beta at the tree's first column): one
-    GEMV per tree, every tree after the first accumulating."""
+    launch per tree, every tree after the first accumulating."""
     comptime N = p.N()
-    comptime e = p.e
-    launch_gemm_f2[BACKEND, LANE_TILE, Bytes[], 1, acc=acc](ctx, arena, strided(
-        a=beta, sa_m=2, sa_k=e, b=stored, sb_k=N, sb_hi=1, sb_lo=0,
-        c=y, sc_m=2, sc_hi=e, sc_lo=0), e // 2, N, columns)
+    if columns > 1024:
+        raise Error("fold: the fp32 lanes hold 1,024 columns")
+    comptime kf = k_fold[acc]
+    ctx.enqueue_function[kf](arena.buf, Buf[16](beta), Buf[1](stored), Int32(columns), Int32(N), Buf[16](y),
+                                 grid_dim=ceildiv(N, BACKEND.block), block_dim=BACKEND.block)
