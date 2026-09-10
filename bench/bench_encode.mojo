@@ -66,8 +66,7 @@ def run[p: Params, COLS: Int](ctx: DeviceContext) raises:
     time_mask[p, 1](ctx, arena, e, tab, "gather")
     time_mask[p, 16](ctx, arena, e, tab, "2-adic stages")
     time_mask[p, 2](ctx, arena, e, tab, "stage 5")
-    time_mask[p, 4](ctx, arena, e, tab, "stage 7")
-    time_mask[p, 8](ctx, arena, e, tab, "stage 9 (scatter to code)")
+    time_mask[p, 4](ctx, arena, e, tab, "stages 7 x 9 fused (scatter to code)")
 
 
 def time_mask[p: Params, mask: Int](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout, name: String) raises:

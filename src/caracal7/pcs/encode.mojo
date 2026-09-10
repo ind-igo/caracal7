@@ -38,6 +38,9 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
 from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from layout import row_major, stack_allocation
 
 from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul
 from caracal7.core.field import fp_reduce, fp_center, fp_canonical, fp_mul2, fp_mul4, fp_const_mul
@@ -297,6 +300,46 @@ def _dif8(xs: InlineArray[V4, 8], wr: InlineArray[V2, 8]) -> InlineArray[V4, 8]:
     return ys^
 
 
+def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32):
+    """The two radix-8 steps of one 64-point block (B1 = 64) in one launch: block (CW, 8) owns the
+    block of one (lin, k2) for CW columns. Thread n_lo does the S = 64 step over positions n_lo + 8 k
+    with the W_64 twiddle, the eight threads exchange canonical bytes through 8 KB of threadgroup
+    memory, then thread j does the S = 8 step over positions 8 j + k in place. Same digit order as
+    the two-launch path (`k_rs_stage2` at S = 6 then S = 3). One sweep of etmp instead of two."""
+    var c = Int(block_idx.x) * CW + Int(thread_idx.x)
+    var n_lo = Int(thread_idx.y)
+    var bb = Int(b)
+    var b2 = bb - 6
+    var blk = Int(block_idx.y)
+    var cols = Int(columns)
+    var ok = c < cols and blk < (Int(M) << b2)
+    var k2 = blk & ((1 << b2) - 1)
+    var block_base = ((((blk >> b2) << 6) << b2) + k2) * cols + c
+    var pos_step = (1 << b2) * cols
+    var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
+    var wr = InlineArray[V2, 8](fill=V2(0))       # W_8^m = gA^(m 2^b / 8)
+    comptime for m in range(8):
+        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - 3))))
+    var xs = InlineArray[V4, 8](fill=V4(0))
+    if ok:
+        comptime for k in range(8):
+            xs[k] = etmp.load(base, block_base + (n_lo + 8 * k) * pos_step).cast[DType.float32]()
+    var ys = _dif8(xs, wr)
+    comptime for e in range(8):
+        var y = ys[e]
+        comptime if e > 0:
+            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << (bb - 6)) & ((1 << bb) - 1))))
+            y = fp_mul2(ws, y)
+        sh.ptr.unsafe_store(((n_lo + 8 * e) * CW + Int(thread_idx.x)) * 4, fp_canonical(y))
+    barrier()
+    comptime for k in range(8):
+        xs[k] = sh.ptr.unsafe_load[width=4](((8 * n_lo + k) * CW + Int(thread_idx.x)) * 4).cast[DType.float32]()
+    ys = _dif8(xs, wr)
+    if ok:
+        comptime for e in range(8):
+            etmp.store(base, block_base + (8 * n_lo + e) * pos_step, fp_canonical(ys[e]))
+
+
 def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
     """One decimation-in-frequency step of size S = 2^s on the B1 digits: for each block of S positions
     (stride B2) and each n_lo < T = S / r, y[e] = W_S^(n_lo e) sum_k x[n_lo + T k] W_r^(k e), stored at
@@ -393,37 +436,17 @@ def _jw[W: SIMDLength](y: SIMD[DType.float32, W]) -> SIMD[DType.float32, W]:
         return rebind[SIMD[DType.float32, W]](_jw(y.slice[W // 2]()).join(_jw(y.slice[W // 2, offset=W // 2]())))
 
 
-def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
-                                    columns: Int32, b: Int32, M: Int32):
-    """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
-    The stride is comptime: a runtime division here costs a quarter of the encoder. The twiddles of
-    radix 3, 7, 9 lie in F (their orders divide 126); radix 5 needs F4. The r powers of w_r sit in
-    registers, indexed at compile time: r table reads per thread, not r^2. Symmetric form: with
+@always_inline
+def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: InlineArray[SIMD[DType.float32, W], r]) -> InlineArray[SIMD[DType.float32, W], r]:
+    """r-point DFT of xs (W / 4 F4 values per lane group, |x| <= 126) with the twiddles of row 1 of
+    the (r, r) table `wr`. The twiddles of radix 3, 7, 9 lie in F (their orders divide 126); radix 5
+    needs F4. The r - 1 powers sit in registers, indexed at compile time. Symmetric form: with
     c_m = (w^m + w^-m) / 2 and s_m = (w^m - w^-m) / 2, y_t = x_0 + sum_k c_(tk) (x_k + x_(r-k)) + s_(tk)
     (x_k - x_(r-k)) and y_(r-t) flips the s sum: h = (r - 1) / 2 products per pair instead of r^2.
     For radix 5 the Frobenius of F4 / F2 maps w to w^-1, so c_m lies in F2 and s_m in F2 j: the F4
     products become F2 x F4 ones. fp32 lanes: |c|, |s| <= 64, |x_k +- x_(r-k)| <= 252, every sum below
-    2^17 (radix 5: j (x_k - x_(r-k)) has lanes <= 756, sums below 2^19); one reduction per output.
-    Loads and stores bound these stages (a pass is four in-place sweeps of etmp, one per coset, near
-    the bandwidth of the strided access pattern). Two columns per thread (8-byte accesses) gains
-    only on radix 5; radix 7 and 9 spill registers at 2 (measured slower at 2 and 4)."""
-    comptime final = stride == 1
-    comptime V = 2 if r == 5 else 1
-    comptime VF = SIMD[DType.float32, 4 * V]
-    var c: Int
-    var rest: Int
-    var ok: Bool
-    c, rest, ok = _rs_thread[V](columns)
-    var n = Int(columns) - c
-    var bb = Int(b)
-    var Mi = Int(M)
-    comptime st = stride
-    if not ok or rest >= (Mi // r) << bb:
-        return
-    var t1 = rest & ((1 << bb) - 1)
-    var l = rest >> bb
-    var first_lin = (l // st) * r * st + l % st
-    var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
+    2^17 (radix 5: j (x_k - x_(r-k)) has lanes <= 756, sums below 2^19); the outputs are unreduced."""
+    comptime VF = SIMD[DType.float32, W]
     comptime h = (r - 1) // 2
     var pw = InlineArray[V4, r](fill=V4(0))         # w_r^m, row 1 of the (r, r) table
     comptime for m in range(1, r):
@@ -434,10 +457,6 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     comptime for m in range(1, h + 1):
         cw[m] = fp_reduce((pw[m] + pw[r - m]) * 64.0)
         sw[m] = fp_reduce((pw[m] - pw[r - m]) * 64.0)
-    var xs = InlineArray[VF, r](fill=VF(0))
-    comptime for k in range(r):
-        xs[k] = _ldw[V](base, etmp, ((first_lin + k * st) << bb) * Int(columns) + col_off, n)
-    var s_t1 = Mi * _t1_true(t1, bb) if final else 0
     var ys = InlineArray[VF, r](fill=VF(0))
     var sa = InlineArray[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
     var sb = InlineArray[VF, h + 1](fill=VF(0))
@@ -461,16 +480,88 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
                 odd = sb[k].fma(VF(sw[idx][0] * sign), odd)
         ys[t] = even + odd
         ys[r - t] = even - odd
+    return ys^
+
+
+@always_inline
+def _scatter(base: Base, code: Buf[4], ruri: Buf[1], lin: Int, s_t1: Int, L0: Int, bb: Int) -> Int:
+    """Leaf index of line lin's output t1: s = M t1 + 2^b ruri(lin) mod L0."""
+    var s = s_t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
+    return s - L0 if s >= L0 else s
+
+
+def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
+                                    columns: Int32, b: Int32, M: Int32):
+    """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
+    The stride is comptime: a runtime division here costs a quarter of the encoder. Loads and stores
+    bound these stages (a pass is four in-place sweeps of etmp, one per coset, near the bandwidth of
+    the strided access pattern). Two columns per thread (8-byte accesses) gains only on radix 5;
+    radix 7 and 9 spill registers at 2 (measured slower at 2 and 4)."""
+    comptime final = stride == 1
+    comptime V = 2 if r == 5 else 1
+    comptime VF = SIMD[DType.float32, 4 * V]
+    var c: Int
+    var rest: Int
+    var ok: Bool
+    c, rest, ok = _rs_thread[V](columns)
+    var n = Int(columns) - c
+    var bb = Int(b)
+    var Mi = Int(M)
+    comptime st = stride
+    if not ok or rest >= (Mi // r) << bb:
+        return
+    var t1 = rest & ((1 << bb) - 1)
+    var l = rest >> bb
+    var first_lin = (l // st) * r * st + l % st
+    var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
+    var xs = InlineArray[VF, r](fill=VF(0))
+    comptime for k in range(r):
+        xs[k] = _ldw[V](base, etmp, ((first_lin + k * st) << bb) * Int(columns) + col_off, n)
+    var ys = _dft_odd[r](base, wr, xs)
+    var s_t1 = Mi * _t1_true(t1, bb) if final else 0
     comptime for t in range(r):
         var y = fp_canonical(ys[t])
         var lin = first_lin + t * st
         comptime if final:
-            var s = s_t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
-            if s >= (Mi << bb):
-                s -= (Mi << bb)
-            _stw[V](base, code, s * Int(columns) + c, n, y)
+            _stw[V](base, code, _scatter(base, code, ruri, lin, s_t1, Mi << bb, bb) * Int(columns) + c, n, y)
         else:
             _stw[V](base, etmp, (lin << bb) * Int(columns) + col_off, n, y)
+
+
+def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: Buf[4], code: Buf[4], ruri: Buf[1],
+                                      columns: Int32, b: Int32, M: Int32):
+    """The last two odd stages in one launch: radix ra along the digit of stride rb, then radix rb
+    along the last digit with the scatter into `code`. Block (CW, max(ra, rb)) owns the ra rb lines
+    of one (t1, l) for CW columns; the exchange goes through ra rb CW F4 bytes of threadgroup
+    memory (8 KB at 63 lines). One sweep of etmp instead of two: the stages are memory-bound."""
+    var c = Int(block_idx.x) * CW + Int(thread_idx.x)
+    var y = Int(thread_idx.y)
+    var row = Int(block_idx.y)
+    var bb = Int(b)
+    var Mi = Int(M)
+    var cols = Int(columns)
+    var ok = c < cols and row < (Mi // (ra * rb)) << bb
+    var t1 = row & ((1 << bb) - 1)
+    var base_lin = (row >> bb) * ra * rb
+    var col_off = t1 * cols + c
+    var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[ra * rb * CW * 4]())
+    if ok and y < rb:                                   # radix ra over lines base + k rb + y
+        var xs = InlineArray[V4, ra](fill=V4(0))
+        comptime for k in range(ra):
+            xs[k] = etmp.load(base, ((base_lin + k * rb + y) << bb) * cols + col_off).cast[DType.float32]()
+        var ys = _dft_odd[ra](base, wa, xs)
+        comptime for t in range(ra):
+            sh.ptr.unsafe_store(((t * rb + y) * CW + Int(thread_idx.x)) * 4, fp_canonical(ys[t]))
+    barrier()
+    if ok and y < ra:                                   # radix rb over lines base + y rb + k
+        var xs = InlineArray[V4, rb](fill=V4(0))
+        comptime for k in range(rb):
+            xs[k] = sh.ptr.unsafe_load[width=4](((y * rb + k) * CW + Int(thread_idx.x)) * 4).cast[DType.float32]()
+        var ys = _dft_odd[rb](base, wb, xs)
+        var s_t1 = Mi * _t1_true(t1, bb)
+        comptime for t in range(rb):
+            var s = _scatter(base, code, ruri, base_lin + y * rb + t, s_t1, Mi << bb, bb)
+            code.store(base, s * cols + c, fp_canonical(ys[t]))
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -554,22 +645,37 @@ def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,
                                                           Int32(1 if m > 1 else 0),
                                                           grid_dim=(gx, ceildiv(M << b1, RW)), block_dim=(CW, RW))
         comptime if mask & 16:
-            var S = b1
-            while S > 0:
-                var lr = min(3, S)
-                _stage2(ctx, arena, etmp, rs.base + rs.ga, cols, b, M, S, lr, gx)
-                S -= lr
-        comptime if mask & 2:
-            if F5 > 1:
+            if b1 == 6:
+                ctx.enqueue_function[k_rs_stage64](arena.buf, Buf[4](etmp), Buf[4](rs.base + rs.ga), cols, Int32(b), Int32(M),
+                                                   grid_dim=(gx, M << (b - 6)), block_dim=(CW, 8))
+            else:
+                var S = b1
+                while S > 0:
+                    var lr = min(3, S)
+                    _stage2(ctx, arena, etmp, rs.base + rs.ga, cols, b, M, S, lr, gx)
+                    S -= lr
+        var n_odd = (1 if F5 > 1 else 0) + (1 if F7 > 1 else 0) + (1 if F9 > 1 else 0)
+        comptime if mask & 2:                          # a first odd stage alone when there are three
+            if n_odd == 3:
                 _stage[5](ctx, arena, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, F7 * F9)
-        comptime if mask & 4:
-            if F7 > 1:
-                _stage[7](ctx, arena, etmp, rs.base + rs.w7, code_k, ruri, cols, b, M, F9)
-        comptime if mask & 8:
-            if F9 == 9:
-                _stage[9](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1)
-            elif F9 == 3:
-                _stage[3](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1)
+        comptime if mask & 4:                          # the last two odd stages fused, or the only one
+            if n_odd == 1:
+                if F5 > 1:
+                    _stage[5](ctx, arena, etmp, rs.base + rs.w5, code_k, ruri, cols, b, M, 1)
+                elif F7 > 1:
+                    _stage[7](ctx, arena, etmp, rs.base + rs.w7, code_k, ruri, cols, b, M, 1)
+                elif F9 == 9:
+                    _stage[9](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1)
+                else:
+                    _stage[3](ctx, arena, etmp, rs.base + rs.w9, code_k, ruri, cols, b, M, 1)
+            elif F9 == 1:
+                _pair[5, 7](ctx, arena, etmp, rs.base + rs.w5, rs.base + rs.w7, code_k, ruri, cols, b, M)
+            else:
+                var wa = rs.base + (rs.w7 if F7 > 1 else rs.w5)
+                comptime for ra in [5, 7]:
+                    comptime for rb in [3, 9]:
+                        if (F7 > 1) == (ra == 7) and F9 == rb:
+                            _pair[ra, rb](ctx, arena, etmp, wa, rs.base + rs.w9, code_k, ruri, cols, b, M)
 
 
 def _stage2(ctx: DeviceContext, arena: Arena, etmp: Int, ga: Int, cols: Int32, b: Int, M: Int, S: Int, lr: Int, gx: Int) raises:
@@ -580,6 +686,13 @@ def _stage2(ctx: DeviceContext, arena: Arena, etmp: Int, ga: Int, cols: Int32, b
                                                  grid_dim=(gx, ceildiv((M << b) // r, RW)), block_dim=(CW, RW))
             return
     raise Error("unsupported 2-adic radix")
+
+
+def _pair[ra: Int, rb: Int](ctx: DeviceContext, arena: Arena, etmp: Int, wa: Int, wb: Int, code_k: Int, ruri: Int,
+                           cols: Int32, b: Int, M: Int) raises:
+    ctx.enqueue_function[k_rs_stage_pair[ra, rb]](arena.buf, Buf[4](etmp), Buf[4](wa), Buf[4](wb), Buf[4](code_k), Buf[1](ruri),
+                                                  cols, Int32(b), Int32(M),
+                                                  grid_dim=(ceildiv(Int(cols), CW), (1 << b) * (M // (ra * rb))), block_dim=(CW, max(ra, rb)))
 
 
 def _stage[r: Int](ctx: DeviceContext, arena: Arena, etmp: Int, wr: Int, code_k: Int, ruri: Int,

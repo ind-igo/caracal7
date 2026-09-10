@@ -179,6 +179,8 @@ def test_rs_encode_on_cosets_and_small_odd_parts() raises:
     _rs_domain_check(4608, 1, 2000, 3)     # Q = 223 > B1 = 64: several inputs per residue in the gather
     _rs_domain_check(16128, 1, 300, 5)     # b = 8: B2 = 4 in the gather
     _rs_domain_check(5040, 1, 200, 5)      # b = 4: 2-adic radix 8 then radix 2
+    _rs_domain_check(2880, 1, 300, 5)      # M = 45: the fused pair (5, 9)
+    _rs_domain_check(2240, 1, 300, 5)      # M = 35: the fused pair (5, 7)
 
 
 def main() raises:

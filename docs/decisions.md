@@ -963,3 +963,19 @@ one). Radix 7 and 9 did not move (14, 18 ms): a loads-and-stores-only variant of
 15 and 19 ms, and the strided memory probe puts one in-place sweep of etmp at about 2.2 ms, four
 sweeps (one per coset) per stage. The odd stages sit at their memory floor; the remaining lever in
 the encoder is fewer sweeps (fusing stages through threadgroup memory), not cheaper arithmetic.
+
+## Fused RS stages: the last two odd radices, the 64-point 2-adic block (2026-09-10)
+
+With the arithmetic cheap, the encoder's cost is sweeps of etmp (about 3 ms each per coset at the
+strided pattern, four cosets per stage). `k_rs_stage_pair[ra, rb]` runs the last two odd radices in
+one launch: block (CW, max(ra, rb)) owns the ra rb lines of one (t1, l), exchanges canonical bytes
+through ra rb CW F4 of threadgroup memory (8 KB at 63 lines), and the second phase scatters into
+`code`. The stages commute (Good-Thomas digits), so the digit order is unchanged. `_dft_odd` is the
+per-point DFT shared with the single-stage kernel; the first odd stage still runs alone when M has
+three odd factors (315 lines would need 40 KB at 32 columns). `k_rs_stage64` (dropped once at 2 ms
+on the integer path) is back for b >= 6, with bytes in threadgroup memory instead of floats.
+Minimums over five alternating runs at ECDSA shape: radix 7 + 9 32.3 -> 27.3 ms, 2-adic 22.0 ->
+20.7, rs_encode 80.6 -> 71.4. Bisection of the fused 2-adic kernel: full 21.4, no twiddles 18.6, no
+butterflies 16.6, neither 13.4 (loads, stores, the exchange and the canonicalization); its 8 ms of
+arithmetic matches the flop count at this GPU's rate. Register arrays are not the cost: a variant of
+the DIF-8 on one 32-lane SIMD value timed the same. Warm prove 684 -> 672 ms in the same session.
