@@ -866,3 +866,20 @@ and the `N / 4 / 256` high powers `pt^(256 h)`; the materialize loop reads both 
 F4 product. The table is 108 x 337 F4 (146 KB) and lives in the prover layout as `ptab`. Materialize
 0: 101 -> 9 ms, warm prove 1,097 -> 1,085 ms (the profile sum dropped by the 92 ms; the warm number
 carries about 50 ms of noise).
+
+## RS stages on fp32 lanes, one 2-adic launch (2026-09-10)
+
+Fusing the two radix-8 passes into one launch through threadgroup memory (`k_rs_stage64`, B1 = 64)
+gained nothing: 40 -> 38 ms at ECDSA shape. Variants of the fused kernel showed why: loads and
+stores alone take 8 ms, the arithmetic 35, and about half of the arithmetic was the integer
+reduction (`(x & 127) + (x >> 7)` three times, then the fixup: thirteen ops per lane, twenty
+reductions per eight outputs in the DIF-8). The stage kernels now hold values as float32 lanes:
+integers are exact below 2^24, a reduction is `x - 127 round(x / 127)` (multiply, round through
+1.5 * 2^23, fma: four ops), twiddles load centered in [-63, 63], and only the store canonicalizes.
+Bounds per kernel are in the docstrings; the DIF-8 sums stay below 12.3 M. The odd stages had a
+second cost: `_t1_true` (a loop) was evaluated once per output instead of once per thread, which
+was half of the radix-9 stage. rs_encode at 236 columns 148 -> 90 ms: gather 19 -> 18 (still
+integer), 2-adic 40 -> 18, radix 5 30 -> 20, radix 7 20 -> 14, radix 9 with the scatter 36 -> 18.
+A stride experiment on the radix-7 shape (loads 30 MB apart versus adjacent) showed no difference,
+so the etmp layout stays. ECDSA: encode W 197 -> 142, Z 173 -> 124, Q 49 -> 35 ms, warm prove
+1,085 -> 929 ms. Next on the same line: the gather and the GEMM skeleton's accumulators.

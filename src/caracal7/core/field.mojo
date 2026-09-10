@@ -11,7 +11,7 @@ Tower constants (docs/decisions.md):
     k=4  E  = F8[y],  y^2 = u
 """
 
-from std.math import min
+from std.math import min, floor
 from std.sys.info import is_gpu
 
 comptime P: Int = 127
@@ -83,6 +83,54 @@ def f4_mac_f2_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 2], b: SI
 def f4_mac_real_wide(mut acc: SIMD[DType.int32, 4], a: UInt8, b: SIMD[DType.uint8, 4]):
     """acc += a * b for a in F: 4 base products."""
     acc += b.cast[DType.int32]() * Int32(a)
+
+
+# ---- fp32 lanes: the ALU-bound kernels keep values as float32 (exact integers below 2^24). A value
+# is "centered" when |x| <= 63 (190 after reducing a large one); tables and buffers stay canonical.
+
+comptime V2 = SIMD[DType.float32, 2]
+comptime V4 = SIMD[DType.float32, 4]
+comptime FP_INV = Float32(1.0 / 127.0)
+comptime FP_ROUND = Float32(12582912.0)        # 1.5 * 2^23: (v + FP_ROUND) - FP_ROUND is round(v) for |v| < 2^22
+
+
+@always_inline
+def fp_reduce(x: V4) -> V4:
+    """The centered residue x - 127 round(x / 127): |result| <= 63 for |x| < 4 M, <= 190 for |x| < 2^24."""
+    var q = (x * FP_INV + FP_ROUND) - FP_ROUND
+    return q.fma(V4(-127.0), x)
+
+
+@always_inline
+def fp_center[w: SIMDLength](t: SIMD[DType.uint8, w]) -> SIMD[DType.float32, w]:
+    """A canonical value as a float in [-63, 63]; twiddles load this way so products stay small."""
+    var f = t.cast[DType.float32]()
+    return f - 127.0 * floor((f + 63.5) * FP_INV)
+
+
+@always_inline
+def fp_canonical(x: V4) -> F4:
+    """The store form 0..126 of a value with |x| < 2^24: the centered residue r, |r| <= 190, then
+    r - 127 floor((r + 1/2) / 127), exact at r = +-127 where floor(r / 127) could round wrong."""
+    var r = fp_reduce(x)
+    return (r - 127.0 * floor((r + 0.5) * FP_INV)).cast[DType.uint8]()
+
+
+@always_inline
+def fp_mul2(w: V2, y: V4) -> V4:
+    """w * y for w in F2: (w0 + w1 i)(y0 + y1 i + y2 j + y3 ij), 8 products."""
+    var ys = V4(y[1], y[0], y[3], y[2])
+    return (V4(w[1]) * V4(-1.0, 1.0, -1.0, 1.0)).fma(ys, V4(w[0]) * y)
+
+
+@always_inline
+def fp_mul4(x: V4, y: V4) -> V4:
+    """x * y in F4, the tower of f4_mac_wide; |result| <= 8 |x| |y| per coordinate."""
+    var p02 = x[0] * y[2] - x[1] * y[3] + x[2] * y[0] - x[3] * y[1]
+    var p03 = x[0] * y[3] + x[1] * y[2] + x[2] * y[1] + x[3] * y[0]
+    var q0 = x[2] * y[2] - x[3] * y[3]
+    var q1 = x[2] * y[3] + x[3] * y[2]
+    return V4(x[0] * y[0] - x[1] * y[1] + 2.0 * q0 - q1, x[0] * y[1] + x[1] * y[0] + 2.0 * q1 + q0, p02, p03)
 
 
 @always_inline

@@ -37,9 +37,13 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
 
 from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from layout import row_major, stack_allocation
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, F4, f_add, f_mul, ext_mul, f4_mac_wide, f4_mac_f2_wide, f4_mac_real_wide, f_reduce_signed, F4_MAC_MAX
+from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
+from caracal7.core.field import fp_reduce, fp_center, fp_canonical, fp_mul2, fp_mul4
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
 from caracal7.core.arena import Bump
@@ -260,6 +264,79 @@ def k_rs_gather[B2: Int](base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt:
         etmp.store(base, out + k2 * Int(columns), f_add(acc[k2], f_reduce_signed(wide[k2])))
 
 
+@always_inline
+def _dif8(xs: InlineArray[V4, 8], wr: InlineArray[V2, 8]) -> InlineArray[V4, 8]:
+    """Decimation in frequency: y[2m] = DFT4(x_n + x_(n+4)), y[2m+1] = DFT4((x_n - x_(n+4)) W_8^n),
+    DFT4 with W_4 = W_8^2 and W_8^4 = -1: 5 products, 24 sums (a dense 8 x 8 is 64 products).
+    Inputs |x| <= 190 and |W| <= 63 keep every sum below 2^24; the outputs are reduced (|y| <= 190)."""
+    var ys = InlineArray[V4, 8](fill=V4(0))
+    var a = InlineArray[V4, 4](fill=V4(0))
+    var d = InlineArray[V4, 4](fill=V4(0))
+    comptime for n in range(4):
+        a[n] = xs[n] + xs[n + 4]
+        comptime if n == 0:
+            d[n] = xs[n] - xs[n + 4]
+        else:
+            d[n] = fp_mul2(wr[n], xs[n] - xs[n + 4])
+    comptime for half in range(2):
+        var v0 = a[0] if half == 0 else d[0]
+        var v1 = a[1] if half == 0 else d[1]
+        var v2 = a[2] if half == 0 else d[2]
+        var v3 = a[3] if half == 0 else d[3]
+        var c3 = fp_mul2(wr[2], v1 - v3)
+        ys[half] = fp_reduce(v0 + v2 + v1 + v3)
+        ys[half + 2] = fp_reduce(v0 - v2 + c3)
+        ys[half + 4] = fp_reduce(v0 + v2 - v1 - v3)
+        ys[half + 6] = fp_reduce(v0 - v2 - c3)
+    return ys^
+
+
+@always_inline
+def _w8(base: Base, ga: Buf[4], bb: Int) -> InlineArray[V2, 8]:
+    """W_8^m = gA^(m 2^b / 8), centered."""
+    var wr = InlineArray[V2, 8](fill=V2(0))
+    comptime for m in range(8):
+        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - 3))))
+    return wr^
+
+
+def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32):
+    """The two radix-8 steps of one 64-point block (B1 = 64) in one launch: block (CW, 8) owns the
+    block of one (lin, k2) for 32 columns. Thread n_lo does the S = 64 step over positions n_lo + 8 k
+    with the W_64 twiddle, the eight threads exchange through 8 KB of threadgroup memory, then thread
+    j does the S = 8 step over positions 8 j + k in place. Same digit order as the two-launch path."""
+    var c = Int(block_idx.x) * CW + Int(thread_idx.x)
+    var n_lo = Int(thread_idx.y)
+    var bb = Int(b)
+    var b2 = bb - 6
+    var blk = Int(block_idx.y)
+    var cols = Int(columns)
+    var ok = c < cols and blk < (Int(M) << b2)
+    var k2 = blk & ((1 << b2) - 1)
+    var block_base = ((((blk >> b2) << 6) << b2) + k2) * cols + c
+    var pos_step = (1 << b2) * cols
+    var sh = stack_allocation[DType.float32, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
+    var wr = _w8(base, ga, bb)
+    var xs = InlineArray[V4, 8](fill=V4(0))
+    if ok:
+        comptime for k in range(8):
+            xs[k] = etmp.load(base, block_base + (n_lo + 8 * k) * pos_step).cast[DType.float32]()
+    var ys = _dif8(xs, wr)
+    comptime for e in range(8):
+        var y = ys[e]
+        comptime if e > 0:
+            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << (bb - 6)) & ((1 << bb) - 1))))
+            y = fp_reduce(fp_mul2(ws, y))
+        sh.ptr.unsafe_store(((n_lo + 8 * e) * CW + Int(thread_idx.x)) * 4, y)
+    barrier()
+    comptime for k in range(8):
+        xs[k] = sh.ptr.unsafe_load[width=4](((8 * n_lo + k) * CW + Int(thread_idx.x)) * 4)
+    ys = _dif8(xs, wr)
+    if ok:
+        comptime for e in range(8):
+            etmp.store(base, block_base + (8 * n_lo + e) * pos_step, fp_canonical(ys[e]))
+
+
 def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
     """One decimation-in-frequency step of size S = 2^s on the B1 digits: for each block of S positions
     (stride B2) and each n_lo < T = S / r, y[e] = W_S^(n_lo e) sum_k x[n_lo + T k] W_r^(k e), stored at
@@ -285,51 +362,29 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     var step = (1 << (t + b2)) * Int(columns)
     var shift = bb - ss
     var mask = (1 << bb) - 1
-    var wr = InlineArray[F2, r](fill=F2(0))       # W_r^m = gA^(m 2^b / r)
+    var wr = InlineArray[V2, r](fill=V2(0))       # W_r^m = gA^(m 2^b / r)
     comptime for m in range(r):
-        wr[m] = base.unsafe_load[width=2](ga.at(m << (bb - lr)))
-    var xs = InlineArray[F4, r](fill=F4(0))
+        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - lr))))
+    var xs = InlineArray[V4, r](fill=V4(0))
     comptime for k in range(r):
-        xs[k] = etmp.load(base, first + k * step)
-    var ys = InlineArray[F4, r](fill=F4(0))
+        xs[k] = etmp.load(base, first + k * step).cast[DType.float32]()
+    var ys = InlineArray[V4, r](fill=V4(0))
     comptime if r == 8:
-        # decimation in frequency: y[2m] = DFT4(x_n + x_(n+4)), y[2m+1] = DFT4((x_n - x_(n+4)) W_8^n),
-        # DFT4 with W_4 = W_8^2 and W_8^4 = -1: 5 products, 24 sums (a dense 8 x 8 is 64 products)
-        var a = InlineArray[SIMD[DType.int32, 4], 4](fill=SIMD[DType.int32, 4](0))
-        var d = InlineArray[SIMD[DType.int32, 4], 4](fill=SIMD[DType.int32, 4](0))
-        comptime for n in range(4):
-            var lo = xs[n].cast[DType.int32]()
-            var hi = xs[n + 4].cast[DType.int32]()
-            a[n] = lo + hi
-            comptime if n == 0:
-                d[n] = lo - hi
-            else:
-                f4_mac_f2_wide(d[n], wr[n], f_reduce_signed(lo - hi))
-        comptime for half in range(2):
-            var v0 = a[0] if half == 0 else d[0]
-            var v1 = a[1] if half == 0 else d[1]
-            var v2 = a[2] if half == 0 else d[2]
-            var v3 = a[3] if half == 0 else d[3]
-            var c3 = SIMD[DType.int32, 4](0)
-            f4_mac_f2_wide(c3, wr[2], f_reduce_signed(v1 - v3))
-            ys[half] = f_reduce_signed(v0 + v2 + v1 + v3)
-            ys[half + 2] = f_reduce_signed(v0 - v2 + c3)
-            ys[half + 4] = f_reduce_signed(v0 + v2 - v1 - v3)
-            ys[half + 6] = f_reduce_signed(v0 - v2 - c3)
+        var y8 = _dif8(rebind[InlineArray[V4, 8]](xs), rebind[InlineArray[V2, 8]](wr))
+        comptime for e in range(8):
+            ys[e] = y8[e]
     else:
         comptime for e in range(r):
-            var wide = SIMD[DType.int32, 4](0)
+            var acc = V4(0)
             comptime for k in range(r):
-                f4_mac_f2_wide(wide, wr[(e * k) % r], xs[k])
-            ys[e] = f_reduce_signed(wide)
+                acc += fp_mul2(wr[(e * k) % r], xs[k])
+            ys[e] = fp_reduce(acc)
     comptime for e in range(r):
         var y = ys[e]
         comptime if e > 0:
-            var ws = base.unsafe_load[width=2](ga.at(((e * n_lo) << shift) & mask))
-            var tw = SIMD[DType.int32, 4](0)
-            f4_mac_f2_wide(tw, ws, y)
-            y = f_reduce_signed(tw)
-        etmp.store(base, first + e * step, y)
+            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << shift) & mask)))
+            y = fp_mul2(ws, y)
+        etmp.store(base, first + e * step, fp_canonical(y))
 
 
 def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: Buf[4], ruri: Buf[1],
@@ -337,7 +392,8 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     """In-place r-point DFT along one digit of lin; the last stage (stride 1) scatters into `code`.
     The stride is comptime: a runtime division here costs a quarter of the encoder. The twiddles of
     radix 3, 7, 9 lie in F (their orders divide 126); radix 5 needs F4. The r powers of w_r sit in
-    registers, indexed at compile time: r table reads per thread, not r^2."""
+    registers, indexed at compile time: r table reads per thread, not r^2. fp32 lanes: r products of
+    |w| <= 63 by |x| <= 126 stay far below 2^24, one reduction per output."""
     comptime final = stride == 1
     var c: Int
     var rest: Int
@@ -352,32 +408,29 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     var l = rest >> bb
     var first_lin = (l // st) * r * st + l % st
     var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
-    var pw = InlineArray[F4, r](fill=F4(0))         # w_r^m, row 1 of the (r, r) table
+    var pw = InlineArray[V4, r](fill=V4(0))         # w_r^m, row 1 of the (r, r) table
     comptime for m in range(r):
-        pw[m] = wr.load(base, r + m)
-    var xs = InlineArray[F4, r](fill=F4(0))
+        pw[m] = fp_center(wr.load(base, r + m))
+    var xs = InlineArray[V4, r](fill=V4(0))
     comptime for k in range(r):
-        xs[k] = etmp.load(base, ((first_lin + k * st) << bb) * Int(columns) + col_off)
-    comptime assert r <= F4_MAC_MAX
-    var ys = InlineArray[F4, r](fill=F4(0))
+        xs[k] = etmp.load(base, ((first_lin + k * st) << bb) * Int(columns) + col_off).cast[DType.float32]()
+    var s_t1 = Mi * _t1_true(t1, bb) if final else 0
     comptime for t in range(r):
-        var wide = SIMD[DType.int32, 4](0)
+        var acc = V4(0)
         comptime for k in range(r):
             comptime if r == 5:
-                f4_mac_wide(wide, pw[(t * k) % r], xs[k])
+                acc += fp_mul4(pw[(t * k) % r], xs[k])
             else:
-                f4_mac_real_wide(wide, pw[(t * k) % r][0], xs[k])
-        ys[t] = f_reduce_signed(wide)
-    comptime for t in range(r):
-        var acc = ys[t]
+                acc = xs[k].fma(V4(pw[(t * k) % r][0]), acc)
+        var y = fp_canonical(acc)
         var lin = first_lin + t * st
         comptime if final:
-            var s = Mi * _t1_true(t1, bb) + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
+            var s = s_t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
             if s >= (Mi << bb):
                 s -= (Mi << bb)
-            code.store(base, s * Int(columns) + c, acc)
+            code.store(base, s * Int(columns) + c, y)
         else:
-            etmp.store(base, (lin << bb) * Int(columns) + col_off, acc)
+            etmp.store(base, (lin << bb) * Int(columns) + col_off, y)
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -462,6 +515,10 @@ def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,
                                                           grid_dim=(gx, ceildiv(M << b1, RW)), block_dim=(CW, RW))
         comptime if mask & 16:
             var S = b1
+            if S == 6:
+                ctx.enqueue_function[k_rs_stage64](arena.buf, Buf[4](etmp), Buf[4](rs.base + rs.ga), cols, Int32(b), Int32(M),
+                                                   grid_dim=(gx, M << (b - 6)), block_dim=(CW, 8))
+                S = 0
             while S > 0:
                 var lr = min(3, S)
                 _stage2(ctx, arena, etmp, rs.base + rs.ga, cols, b, M, S, lr, gx)
