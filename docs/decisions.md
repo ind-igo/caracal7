@@ -1191,3 +1191,25 @@ Measured (M1 Pro, warm prove, minimum of one run each):
 At 2048 B the quotient is 34 of 166 ms: its two coset inverses are dense GEMMs at K = 2 h2 = 5376 (the
 perf TODO in residual.mojo). The host table build at h2 = 2688 is 25 s of setup (once per grid); the grid
 pads 33 blocks to 42 (2688 is the smallest legal size past 2113).
+
+## Measured: SHA-256 cost per compression block (2026-09-11)
+
+`bench/bench_sha256_blocks.mojo`: one message per size, median warm prove of three runs (setup and trace
+excluded), every proof verified. Single-message SHA-256 on the M1 Pro against Jolt's 0.3275 ms per block
+on an M5 Max for a long repeated-digest chain.
+
+| bytes | blocks | grid | prove (median) | ms / block | proof | verify |
+|---|---|---|---|---|---|---|
+| 1024 | 17 | 32 x 1152 | 78 ms | 4.58 | 276,360 B | 23 ms |
+| 2048 | 33 | 32 x 2688 | 165 ms | 5.00 | 298,616 B | 34 ms |
+| 4096 | 65 | 32 x 8064 | 1228 ms | 18.9 | 342,752 B | 83 ms |
+| 7936 | 125 | 32 x 8064 | 994 ms | 7.95 | 344,864 B | 78 ms |
+
+The chain axis is capped at h2 = 8064 = 2^7 x 63 (the 2-adic part of F2* is 2^8 and G2 has order 2 h2), so
+4096 B and 7936 B share the largest grid and 4096 B wastes half of it; a longer message needs the codeword
+split. On that grid the per-row cost is 6x the 2688 one: lde 13 -> 387 ms, quotient 34 -> 326, encode W
+14 -> 172, encode Q 15 -> 181. The axis-2 plans have length 2 h2 = 16128 = 2^8 x 63 and `dft_axis` runs
+the odd part as one radix stage (63 MACs per element against 21 at h2 = 2688, with a 63 x 63 table), and
+the coset inverses of the quotient are dense GEMMs at K = 16128. The host table build is 255 s at that
+size (setup, once per grid). Next step if the large grids matter: split the odd stage (63 = 7 x 9) in the
+plan, and the coset inverses on a twisted plan (the TODO in residual.mojo).
