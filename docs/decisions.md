@@ -979,3 +979,16 @@ Minimums over five alternating runs at ECDSA shape: radix 7 + 9 32.3 -> 27.3 ms,
 butterflies 16.6, neither 13.4 (loads, stores, the exchange and the canonicalization); its 8 ms of
 arithmetic matches the flop count at this GPU's rate. Register arrays are not the cost: a variant of
 the DIF-8 on one 32-lane SIMD value timed the same. Warm prove 684 -> 672 ms in the same session.
+
+## Verifier: units grouped by shared factor lists (2026-09-10)
+
+A profile of the verifier's tail loop at ECDSA shape: building units 54 + 6 + 6 ms, the rounds and
+folds 27 + 32 + 38, the clear vector 21, with 68 K units at the end. The consistency units of one
+(position, conjugate) and the row units of one position share their factor lists across the M = 81
+odd indices and differ only by a per-r scalar, yet every fold multiplied every unit's scalar (three E
+products per unit and digit). `Unit` is now a group: a shared scalar and factor list plus a per-r
+scalar list; folds and the level weights touch the shared scalar, the clear check sums
+scalars[k] y[idx, r0 + k] per group before the one product with the factors. The query units keep
+groups of one (Par depends on r). Tail levels 178 -> 47 ms, clear vector 21 -> 15, verify 296 ->
+165 ms. Next there: the query units (15.5 K singles, about half r-free in their factors) and the
+host E product itself.

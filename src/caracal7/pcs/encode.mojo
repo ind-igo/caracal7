@@ -484,7 +484,7 @@ def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: InlineArray[SIMD
 
 
 @always_inline
-def _scatter(base: Base, code: Buf[4], ruri: Buf[1], lin: Int, s_t1: Int, L0: Int, bb: Int) -> Int:
+def _scatter(base: Base, ruri: Buf[1], lin: Int, s_t1: Int, L0: Int, bb: Int) -> Int:
     """Leaf index of line lin's output t1: s = M t1 + 2^b ruri(lin) mod L0."""
     var s = s_t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
     return s - L0 if s >= L0 else s
@@ -523,7 +523,7 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
         var y = fp_canonical(ys[t])
         var lin = first_lin + t * st
         comptime if final:
-            _stw[V](base, code, _scatter(base, code, ruri, lin, s_t1, Mi << bb, bb) * Int(columns) + c, n, y)
+            _stw[V](base, code, _scatter(base, ruri, lin, s_t1, Mi << bb, bb) * Int(columns) + c, n, y)
         else:
             _stw[V](base, etmp, (lin << bb) * Int(columns) + col_off, n, y)
 
@@ -560,7 +560,7 @@ def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: 
         var ys = _dft_odd[rb](base, wb, xs)
         var s_t1 = Mi * _t1_true(t1, bb)
         comptime for t in range(rb):
-            var s = _scatter(base, code, ruri, base_lin + y * rb + t, s_t1, Mi << bb, bb)
+            var s = _scatter(base, ruri, base_lin + y * rb + t, s_t1, Mi << bb, bb)
             code.store(base, s * cols + c, fp_canonical(ys[t]))
 
 
@@ -607,7 +607,8 @@ def pack[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout) raises:
 
 
 def rs_encode[p: Params, mask: Int = 31](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout) raises:
-    """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only."""
+    """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only:
+    1 gather, 16 the 2-adic stages, 2 a first odd stage alone, 4 the last odd stages (fused pair or single)."""
     rs_encode_on[mask](ctx, arena, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
 
 

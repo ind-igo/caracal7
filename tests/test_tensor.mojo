@@ -29,10 +29,12 @@ def _materialize(units: List[Unit], first: Int, digits: Int, m: Int) -> List[UIn
     var out = List[UInt8](length=m * (1 << count) * 16, fill=0)
     for i in range(len(units)):
         for idx in range(1 << count):
-            var at = idx + (1 << count) * units[i].r
-            var s = f_add(list_e(out, at), units[i].at(first, idx, count))
-            for t in range(16):
-                out[at * 16 + t] = s[t]
+            var w = units[i].at(first, idx, count)
+            for k in range(len(units[i].scalars)):
+                var at = idx + (1 << count) * (units[i].r0 + k)
+                var s = f_add(list_e(out, at), ext_mul[4](w, units[i].scalars[k]))
+                for t in range(16):
+                    out[at * 16 + t] = s[t]
     return out^
 
 

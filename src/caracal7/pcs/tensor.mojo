@@ -9,9 +9,10 @@ A `Unit` is one product: its r, a scalar, and a factor pair per binary digit. Fo
 multiplies the scalar by (1 - rho) f(0) + rho f(1) (the fold weight of tail.mojo); the odd digit is
 never folded, so the clear check sums the units per r against the clear vector. The verifier never
 holds a vector of length N.
-ponytail: units are per odd index, so their count and their factor lists scale with M = m1 m2 (the client
-grid 2016 x 576 has M = 567: ~440K units, ~90 MB); share factor lists between units that differ only by
-an r scalar, and widen the host E product, when that grid is measured.
+The consistency and row units of one (position, conjugate) share their factor lists across the M = m1 m2
+odd indices, so a `Unit` is a group with a per-r scalar list; the query units differ by r in their
+factors (Par depends on r) and stay single. ponytail: half of the query units are r-free in their
+factors and could group too; widen the host E product when the client grid (M = 567) is measured.
 """
 
 from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
@@ -21,14 +22,26 @@ from caracal7.core.bytes import list_e
 
 
 struct Unit(Copyable, Movable):
-    """scalar * prod_d f[2 d + bit_d(index)] on the slots with odd index r."""
-    var r: Int
+    """scalar * scalars[k] * prod_d f[2 d + bit_d(index)] on the slots with odd index r0 + k: a group of
+    units that share their factor lists and differ by the per-r scalar. Folding a digit or weighing a
+    level touches the shared scalar only, so a group of M units costs one product, not M."""
+    var r0: Int
     var scalar: E
+    var scalars: List[E]
     var f: List[E]
 
     def __init__(out self, r: Int, scalar: E, digits: Int):
-        self.r = r
+        """A single unit at odd index r."""
+        self.r0 = r
         self.scalar = scalar
+        self.scalars = [ext_one[4]()]
+        self.f = List[E](length=2 * digits, fill=ext_one[4]())
+
+    def __init__(out self, var scalars: List[E], digits: Int):
+        """A group at odd indices 0 .. len(scalars) - 1 with the given per-r scalars."""
+        self.r0 = 0
+        self.scalar = ext_one[4]()
+        self.scalars = scalars^
         self.f = List[E](length=2 * digits, fill=ext_one[4]())
 
     def geo(mut self, d0: Int, count: Int, base: E):
@@ -52,7 +65,8 @@ struct Unit(Copyable, Movable):
         self.scalar = ext_mul[4](self.scalar, f_add(ext_mul[4](f_sub(one, rho), self.f[2 * d]), ext_mul[4](rho, self.f[2 * d + 1])))
 
     def at(self, first: Int, idx: Int, count: Int) -> E:
-        """The product over digits first .. first + count - 1 at their bits in idx, times the scalar."""
+        """The product over digits first .. first + count - 1 at their bits in idx, times the shared
+        scalar (the unit at r0 + k is this times scalars[k])."""
         var w = self.scalar
         for k in range(count):
             w = ext_mul[4](w, self.f[2 * (first + k) + ((idx >> k) & 1)])
@@ -265,14 +279,16 @@ def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: Inlin
         var bhi = ext_pow[4](be, 1 << p.a1)
         var br = ext_pow[4](be, 1 << (D - 2))
         var pr = ext_one[4]()
-        for r in range(p.m1 * p.m2):
-            var u = Unit(r, ext_mul[4](mu, pr), D)
-            u.geo(0, p.a1, be)
-            u.pair(p.a1, ext_one[4](), ext_embed[4](f4_frob(iu, j)))
-            u.pair(p.a1 + 1, ext_one[4](), ext_embed[4](f4_frob(ju, j)))
-            u.geo(p.a1 + 2, p.a2 - 2, bhi)
-            out.append(u^)
+        var scalars = List[E](capacity=p.m1 * p.m2)
+        for _ in range(p.m1 * p.m2):
+            scalars.append(ext_mul[4](mu, pr))
             pr = ext_mul[4](pr, br)
+        var u = Unit(scalars^, D)
+        u.geo(0, p.a1, be)
+        u.pair(p.a1, ext_one[4](), ext_embed[4](f4_frob(iu, j)))
+        u.pair(p.a1 + 1, ext_one[4](), ext_embed[4](f4_frob(ju, j)))
+        u.geo(p.a1 + 2, p.a2 - 2, bhi)
+        out.append(u^)
 
 
 def row_units(pt: F4, weight: E, first: Int, digits: Int, m: Int, mut out: List[Unit]):
@@ -281,11 +297,13 @@ def row_units(pt: F4, weight: E, first: Int, digits: Int, m: Int, mut out: List[
     var u_digits = digits - first
     var br = ext_pow[4](be, 1 << u_digits)
     var pr = ext_one[4]()
-    for r in range(m):
-        var u = Unit(r, ext_mul[4](weight, pr), digits)
-        u.geo(first, u_digits, be)
-        out.append(u^)
+    var scalars = List[E](capacity=m)
+    for _ in range(m):
+        scalars.append(ext_mul[4](weight, pr))
         pr = ext_mul[4](pr, br)
+    var u = Unit(scalars^, digits)
+    u.geo(first, u_digits, be)
+    out.append(u^)
 
 
 def clear_value(units: List[Unit], y: Span[UInt8, _], first: Int, digits: Int) -> E:
@@ -293,6 +311,11 @@ def clear_value(units: List[Unit], y: Span[UInt8, _], first: Int, digits: Int) -
     var count = digits - first
     var acc = E(0)
     for i in range(len(units)):
+        ref u = units[i]
         for idx in range(1 << count):
-            acc = f_add(acc, ext_mul[4](units[i].at(first, idx, count), list_e(y, idx + (1 << count) * units[i].r)))
+            var w = u.at(first, idx, count)
+            var s = E(0)                                 # sum_k scalars[k] y[idx, r0 + k], then times w
+            for k in range(len(u.scalars)):
+                s = f_add(s, ext_mul[4](u.scalars[k], list_e(y, idx + (1 << count) * (u.r0 + k))))
+            acc = f_add(acc, ext_mul[4](w, s))
     return acc
