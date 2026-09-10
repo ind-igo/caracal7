@@ -1,5 +1,5 @@
 """secp256k1's field on four 64-bit limbs for the host: schoolbook products through UInt128, the reduction
-by 2^256 = 2^32 + 977 (two folds, one subtraction), Fermat inversion. `Big` stays the type the workloads
+by 2^256 = 2^32 + 977 (two folds, one subtraction), Fermat inversion on an addition chain. `Big` stays the type the workloads
 speak; `Curve` converts at its field operations."""
 
 from caracal7.workloads.bigint import Big
@@ -79,9 +79,9 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
 
     def __mul__(self, o: Fp) -> Fp:
         var r = SIMD[DType.uint64, 8](0)
-        for i in range(4):
+        comptime for i in range(4):
             var carry: UInt128 = 0
-            for j in range(4):
+            comptime for j in range(4):
                 var w = UInt128(self.l[i]) * UInt128(o.l[j]) + UInt128(r[i + j]) + carry
                 r[i + j] = w.cast[DType.uint64]()
                 carry = w >> 64
@@ -89,7 +89,7 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
         # lo + hi C: five limbs, the fifth below 2^35
         var s = L4(0)
         var carry: UInt128 = 0
-        for i in range(4):
+        comptime for i in range(4):
             var w = UInt128(r[4 + i]) * UInt128(C) + UInt128(r[i]) + carry
             s[i] = w.cast[DType.uint64]()
             carry = w >> 64
@@ -97,7 +97,7 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
         var w = carry * UInt128(C) + UInt128(s[0])
         s[0] = w.cast[DType.uint64]()
         carry = w >> 64
-        for i in range(1, 4):
+        comptime for i in range(1, 4):
             var w2 = UInt128(s[i]) + carry
             s[i] = w2.cast[DType.uint64]()
             carry = w2 >> 64
@@ -106,6 +106,13 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
         if Fp._ge(s, Fp.p()):
             s = Fp._sub(s, Fp.p())[0]
         return Fp(s)
+
+    def sqn(self, n: Int) -> Fp:
+        """self^(2^n)."""
+        var r = self
+        for _ in range(n):
+            r = r * r
+        return r
 
     def pow(self, e: L4) -> Fp:
         var r = Fp(L4(1, 0, 0, 0))
@@ -116,5 +123,21 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
         return r
 
     def inv(self) -> Fp:
-        """a^(p - 2); zero maps to zero."""
-        return self.pow(L4(0xFFFFFFFEFFFFFC2D, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF))
+        """a^(p - 2) by the addition chain of libsecp256k1 (255 squarings, 15 products): p - 2 is
+        [223 x 1][0][22 x 1][0000 1][011][01], the runs of ones from 2^n - 1 at n = 2, 3, 22, 223.
+        Zero maps to zero."""
+        var x2 = self.sqn(1) * self
+        var x3 = x2.sqn(1) * self
+        var x6 = x3.sqn(3) * x3
+        var x9 = x6.sqn(3) * x3
+        var x11 = x9.sqn(2) * x2
+        var x22 = x11.sqn(11) * x11
+        var x44 = x22.sqn(22) * x22
+        var x88 = x44.sqn(44) * x44
+        var x176 = x88.sqn(88) * x88
+        var x220 = x176.sqn(44) * x44
+        var x223 = x220.sqn(3) * x3
+        var t = x223.sqn(23) * x22
+        t = t.sqn(5) * self
+        t = t.sqn(3) * x2
+        return t.sqn(2) * self

@@ -1077,3 +1077,15 @@ per key, and uploads a `merge` table (start, count per row and the entry indices
 the row (sum kappa_i X = (sum kappa_i) X), and the residual loop walks 801 rows instead of 1,152.
 Residual 31 -> 24 ms back to back. The merge is generic (any workload with repeated reads across
 families); `residual()` keeps the unmerged path for callers that pass no table.
+
+## Host field: the inverse on an addition chain, the limb loops unrolled (2026-09-10)
+
+The ECDSA trace generator was 150 ms and the public-data walk 44, of which the curve walk (about
+650 affine additions and doublings, one field inversion each) was 43 ms in both. `Fp.inv` raised
+to p - 2 bit by bit: about 500 products, and `Fp.__mul__` ran its 4 x 4 limb loops at runtime
+with SIMD lane reads and writes (110 ns per product). Now the loops are `comptime for` (16 ns per
+product) and the inverse is libsecp256k1's chain (255 squarings, 15 products; p - 2 is
+[223 x 1][0][22 x 1][0000 1][011][01]). Inversion 54 -> 4 us, a doubling 55 -> 6 us, the walk
+43 -> 6 ms; `test_fp_matches_big` checks the inverse against `Big.inv_mod`. What remains of the
+trace's 150 ms is the trace writer (add lanes 32, product coefficients 20, fold ripples 19 ms)
+and `circuit_values` (20 ms).
