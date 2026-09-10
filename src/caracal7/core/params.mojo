@@ -2,7 +2,8 @@
 
 A `Profile` holds the deployment knobs (field, security, tail, leaf); `Profile.grid(rows_per_chain, chains)`
 derives the Params for a statement: each axis rounded up to the smallest legal size, the level-1 code domain
-by the rate rule of spec 9.5 (`domain_for`). The grid belongs to the statement, the profile to the target.
+by `domain_for` at the profile's `rate_inv` with the fewest cosets (the tail levels keep spec 9.5's rule).
+The grid belongs to the statement, the profile to the target.
 There is one profile, `CLIENT`; a second one appears with a second target (the VM), not with a second grid."""
 
 from std.math import ceildiv, log2
@@ -125,7 +126,7 @@ struct Params(TrivialRegisterPassable, Writable):
 
     def check(self) raises:
         if self.L0 == 0:
-            raise Error("grid needs the codeword split (n_cw > 1): the level-1 domain cannot hold N / 4 symbols at rate <= 1/16")
+            raise Error("grid needs the codeword split (n_cw > 1): no level-1 domain holds N / 4 symbols at the profile's rate")
         if self.e != 16:
             raise Error("e must be 16: field.mojo fixes E = F_(127^16)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
