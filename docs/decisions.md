@@ -992,3 +992,13 @@ scalars[k] y[idx, r0 + k] per group before the one product with the factors. The
 groups of one (Par depends on r). Tail levels 178 -> 47 ms, clear vector 21 -> 15, verify 296 ->
 165 ms. Next there: the query units (15.5 K singles, about half r-free in their factors) and the
 host E product itself.
+
+## Verifier: query units grouped, host product stays the convolution (2026-09-10)
+
+Eleven of the sixteen query unit kinds per point have r-free factor lists (only Mon, deltas and the
+z powers); their r dependence sits in the scalar, so they are groups now and only the five kinds
+with Par factors (q1, q2 depend on r) stay single: 15.5 K singles -> 4.9 K singles + 132 groups.
+Tail levels 47 -> 30 ms, verify 165 -> 150. The host E product was measured against the fp32
+tower product (`fp_canonical(fp_ext_mul[4](...))`): 49 ns for the 16 x 16 convolution, 68 ns for
+fp32, so the host keeps the convolution. Not done: the remaining tail cost is the singles' folds
+and the per-position symbols.
