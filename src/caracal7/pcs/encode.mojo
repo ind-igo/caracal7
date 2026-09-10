@@ -113,15 +113,18 @@ def slot_target[p: Params](slot: Int) -> Tuple[Int, Int, Int, Int]:
 
 def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1], columns: Int32):
     """stored[c, slot] = coord of c_x(r) = sum_y coeff[c, x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2),
-    the y1 sum already taken by the radix pass of `to_packed` into tmp[c, k2, x1 + 2^a1 r1]."""
+    the y1 sum already taken by the radix pass of `to_packed` into tmp[c, k2, x1 + 2^a1 r1]. One thread
+    per slot pair (t = 0, 1): the pair holds the two coordinates of one value, or in the fixed classes
+    coordinate 0 of two values (x1 = 0 and x1 = H1)."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
+    comptime H1 = 1 << (p.a1 - 1)
     var gid = Int(global_idx.x)
-    if gid >= Int(columns) * N:
+    if gid >= Int(columns) * (N // 2):
         return
-    var c = gid // N
-    var slot = gid % N
+    var c = gid // (N // 2)
+    var slot = 2 * (gid % (N // 2))
     var x1: Int
     var x2: Int
     var r: Int
@@ -131,14 +134,18 @@ def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1]
     var r2 = r // p.m1
     var k1 = x1 + (1 << p.a1) * r1
     var acc = F2(0)
+    var acc1 = F2(0)                                 # the second value of a fixed class, x1 = H1
+    var fixed = x1 == 0 and coord == 0 and slot_target[p](slot + 1)[0] == H1
     for y2 in range(p.m2):
-        var s2 = rho2.load(base, (y2 * r2) % p.m2)
-        var k2 = x2 + (1 << p.a2) * y2
-        acc = f_add(acc, f_mul(tmp.load(base, (c * h2 + k2) * h1 + k1), F2(s2)))
-    stored.store(base, gid, acc[coord])
+        var s2 = F2(rho2.load(base, (y2 * r2) % p.m2))
+        var row = (c * h2 + x2 + (1 << p.a2) * y2) * h1
+        acc = f_add(acc, f_mul(tmp.load(base, row + k1), s2))
+        if fixed:
+            acc1 = f_add(acc1, f_mul(tmp.load(base, row + k1 + H1), s2))
+    if fixed:
+        acc[1] = acc1[0]
+    base.unsafe_store[width=2](stored.at(c * N + slot), acc)
 
-
-# ---- pack: four slots on the packing digit -> one F4 symbol ----
 
 @always_inline
 def pack_slot[p: Params](i: Int, j: Int) -> Int:
@@ -238,27 +245,27 @@ def k_rs_gather[B2: Int](base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt:
     var c0 = u16(base, crt.at(lin * 2))
     var mask1 = (1 << b1) - 1
     var q = (((n1 - c0) & mask1) * Int(minv)) & mask1
-    var wide = InlineArray[SIMD[DType.int32, 4], B2](fill=SIMD[DType.int32, 4](0))
-    var acc = InlineArray[F4, B2](fill=F4(0))
+    # fp32 lanes: x (twisted and reduced, |x| <= 190) times a canonical gA power is below 192 K per
+    # coordinate; 64 terms stay below 12.3 M, exact
+    var acc = InlineArray[V4, B2](fill=V4(0))
     var terms = 0
     while q < Int(Q):
         var i = c0 + Mi * q
         if i < Int(K):
-            var x = src.load(base, i * Int(columns) + c)
+            var x = src.load(base, i * Int(columns) + c).cast[DType.float32]()
             if twisted != 0:
-                x = ext_mul[2](x, twist.load(base, i))
+                x = fp_reduce(fp_mul4(x, twist.load(base, i).cast[DType.float32]()))
             comptime for k2 in range(B2):
-                f4_mac_wide(wide[k2], ga.load(base, (i * k2) & ((1 << bb) - 1)), x)
+                acc[k2] += fp_mul4(ga.load(base, (i * k2) & ((1 << bb) - 1)).cast[DType.float32](), x)
             terms += 1
-            if terms == F4_MAC_MAX:
+            if terms == 64:
                 comptime for k2 in range(B2):
-                    acc[k2] = f_add(acc[k2], f_reduce_signed(wide[k2]))
-                    wide[k2] = 0
+                    acc[k2] = fp_reduce(acc[k2])
                 terms = 0
         q += 1 << b1
     var out = (((lin << b1) + n1) << b2) * Int(columns) + c
     comptime for k2 in range(B2):
-        etmp.store(base, out + k2 * Int(columns), f_add(acc[k2], f_reduce_signed(wide[k2])))
+        etmp.store(base, out + k2 * Int(columns), fp_canonical(acc[k2]))
 
 
 @always_inline
@@ -415,7 +422,7 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
         src = e.coeff
     comptime k3 = k_to_stored[p]
     ctx.enqueue_function[k3](arena.buf, Buf[2](src), Buf[1](e.stored), Buf[1](tab.base + tab.rho2), cols,
-                             grid_dim=grid(n_grid), block_dim=BACKEND.block)
+                             grid_dim=grid(n_grid // 2), block_dim=BACKEND.block)
     pack[p](ctx, arena, e)
 
 

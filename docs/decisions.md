@@ -907,3 +907,12 @@ in the elementwise kernels where reductions were the cost (RS stages, residual).
 `k_round_partial` ran 1024 threads, each walking N / 2048 groups of E products on bytes; the GPU
 was mostly idle and round 0 took 42 ms at N = 82,944. ROUND_THREADS is 16,384 and `k_round_sum`
 is 48 threads (one per evaluation byte) instead of one. Rounds 0/1/2: 42/10/9 -> 12/6/6 ms.
+
+## Gather on fp32 lanes, to_stored per slot pair (2026-09-10)
+
+`k_rs_gather` accumulates its sparse F4 sums on float lanes (a twisted input reduced to |x| <= 190,
+times a canonical gA power below 192 K per coordinate, 64 terms below 12.3 M): 20.6 -> 12.4 ms at
+236 columns, back to back. `k_to_stored` on float lanes measured no gain (its cost is the 2-byte
+strided reads), so it keeps bytes; instead one thread now serves a slot pair, since the pair holds
+the two coordinates of one value (or, in the fixed classes, coordinate 0 of two values), which
+halves the reads and products and makes the store 2 bytes: 39.7 -> 24.2 ms.
