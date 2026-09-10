@@ -1089,3 +1089,15 @@ product) and the inverse is libsecp256k1's chain (255 squarings, 15 products; p 
 43 -> 6 ms; `test_fp_matches_big` checks the inverse against `Big.inv_mod`. What remains of the
 trace's 150 ms is the trace writer (add lanes 32, product coefficients 20, fold ripples 19 ms)
 and `circuit_values` (20 ms).
+
+## Host: the trace per chain, the modulus parsed once, the loads as memcpy (2026-09-10)
+
+`circuit_values` and `_add_lane` parsed the modulus from hex on every add op (`modulus(op.mod)`, a
+`Big.from_hex` of 64 digits, about 13 us): `circuit_values` 21 -> 2 ms. `circuit_trace` now writes
+each chain into a (columns, h1) buffer of 34 KB and copies its columns into the column-major trace
+(`_mul_chain` holds the product lane that was inline): 81 -> 60 ms with the parse hoisted.
+`load_trace` and `_upload` copied 20 MB into the staging buffer one byte at a time through the
+`HostBuffer` subscript (82 ms): now `unsafe_memcpy`, loads 28 ms (what remains is `tile_values`
+and the public columns' `idft2`). End to end at ECDSA shape: trace 150 -> 71, public data 44 -> 8,
+loads 82 -> 28, verify 121 -> 81 (its public-data walk), warm prove 571 unchanged. `Fp.pow` had
+no caller and is gone.

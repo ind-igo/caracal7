@@ -114,14 +114,6 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
             r = r * r
         return r
 
-    def pow(self, e: L4) -> Fp:
-        var r = Fp(L4(1, 0, 0, 0))
-        for i in range(255, -1, -1):
-            r = r * r
-            if (e[i // 64] >> UInt64(i % 64)) & 1 == 1:
-                r = r * self
-        return r
-
     def inv(self) -> Fp:
         """a^(p - 2) by the addition chain of libsecp256k1 (255 squarings, 15 products): p - 2 is
         [223 x 1][0][22 x 1][0000 1][011][01], the runs of ones from 2^n - 1 at n = 2, 3, 22, 223.

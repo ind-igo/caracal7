@@ -9,6 +9,7 @@ from std.time import perf_counter_ns
 from std.math import ceildiv
 from max.gpu.host import DeviceContext, HostBuffer
 
+from std.memory import unsafe_memcpy
 from caracal7.core.params import Params
 from caracal7.core.field import F2, ext_pow
 from caracal7.core.arena import Arena, Bump
@@ -542,8 +543,7 @@ def _put_u16(mut h: HostBuffer[DType.uint8], at: Int, v: Int):
 def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: Span[UInt8, _]) raises:
     var h = ctx.enqueue_create_host_buffer[DType.uint8](len(l))
     ctx.synchronize()
-    for i in range(len(l)):
-        h[i] = l[i]
+    unsafe_memcpy(dest=h.unsafe_ptr(), src=l.unsafe_ptr(), count=len(l))
     arena.upload(ctx, off, h)
 
 
@@ -553,8 +553,7 @@ def load_trace[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H],
     if len(trace) != n:
         raise Error("trace has the wrong size")
     ctx.synchronize()
-    for i in range(n):
-        prover.trace_host[i] = trace[i]
+    unsafe_memcpy(dest=prover.trace_host.unsafe_ptr(), src=trace.unsafe_ptr(), count=n)
     prover.arena.upload(ctx, prover.layout.enc_w.trace, prover.trace_host)
 
 
