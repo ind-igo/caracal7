@@ -68,23 +68,6 @@ def f4_mac_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 4], b: SIMD[
     acc[3] += p03
 
 
-@always_inline
-def f4_mac_f2_wide(mut acc: SIMD[DType.int32, 4], a: SIMD[DType.uint8, 2], b: SIMD[DType.uint8, 4]):
-    """acc += a * b for a in F2 (coordinates (a0, a1, 0, 0)): two complex products, 8 base products."""
-    var x = a.cast[DType.int32]()
-    var y = b.cast[DType.int32]()
-    acc[0] += x[0] * y[0] - x[1] * y[1]
-    acc[1] += x[0] * y[1] + x[1] * y[0]
-    acc[2] += x[0] * y[2] - x[1] * y[3]
-    acc[3] += x[0] * y[3] + x[1] * y[2]
-
-
-@always_inline
-def f4_mac_real_wide(mut acc: SIMD[DType.int32, 4], a: UInt8, b: SIMD[DType.uint8, 4]):
-    """acc += a * b for a in F: 4 base products."""
-    acc += b.cast[DType.int32]() * Int32(a)
-
-
 # ---- fp32 lanes: the ALU-bound kernels keep values as float32 (exact integers below 2^24). A value
 # is "centered" when |x| <= 63 (190 after reducing a large one); tables and buffers stay canonical.
 
@@ -96,7 +79,9 @@ comptime FP_ROUND = Float32(12582912.0)        # 1.5 * 2^23: (v + FP_ROUND) - FP
 
 @always_inline
 def fp_reduce[w: SIMDLength](x: SIMD[DType.float32, w]) -> SIMD[DType.float32, w]:
-    """The centered residue x - 127 round(x / 127): |result| <= 63 for |x| < 4 M, <= 190 for |x| < 2^24."""
+    """The centered residue x - 127 round(x / 127): |result| <= 63 for |x| < 4 M, <= 190 for |x| < 2^24
+    (measured: 64). The rounding relies on (v + FP_ROUND) - FP_ROUND being evaluated as written; no
+    fast-math reassociation."""
     var q = (x * FP_INV + FP_ROUND) - FP_ROUND
     return q.fma(SIMD[DType.float32, w](-127.0), x)
 

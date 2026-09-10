@@ -37,9 +37,6 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
 
 from std.math import ceildiv
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from max.gpu.sync import barrier
-from max.gpu.memory import AddressSpace
-from layout import row_major, stack_allocation
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul, ext_mul, f4_mac_wide, f_reduce_signed, F4_MAC_MAX
@@ -291,52 +288,6 @@ def _dif8(xs: InlineArray[V4, 8], wr: InlineArray[V2, 8]) -> InlineArray[V4, 8]:
     return ys^
 
 
-@always_inline
-def _w8(base: Base, ga: Buf[4], bb: Int) -> InlineArray[V2, 8]:
-    """W_8^m = gA^(m 2^b / 8), centered."""
-    var wr = InlineArray[V2, 8](fill=V2(0))
-    comptime for m in range(8):
-        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - 3))))
-    return wr^
-
-
-def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32):
-    """The two radix-8 steps of one 64-point block (B1 = 64) in one launch: block (CW, 8) owns the
-    block of one (lin, k2) for 32 columns. Thread n_lo does the S = 64 step over positions n_lo + 8 k
-    with the W_64 twiddle, the eight threads exchange through 8 KB of threadgroup memory, then thread
-    j does the S = 8 step over positions 8 j + k in place. Same digit order as the two-launch path."""
-    var c = Int(block_idx.x) * CW + Int(thread_idx.x)
-    var n_lo = Int(thread_idx.y)
-    var bb = Int(b)
-    var b2 = bb - 6
-    var blk = Int(block_idx.y)
-    var cols = Int(columns)
-    var ok = c < cols and blk < (Int(M) << b2)
-    var k2 = blk & ((1 << b2) - 1)
-    var block_base = ((((blk >> b2) << 6) << b2) + k2) * cols + c
-    var pos_step = (1 << b2) * cols
-    var sh = stack_allocation[DType.float32, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
-    var wr = _w8(base, ga, bb)
-    var xs = InlineArray[V4, 8](fill=V4(0))
-    if ok:
-        comptime for k in range(8):
-            xs[k] = etmp.load(base, block_base + (n_lo + 8 * k) * pos_step).cast[DType.float32]()
-    var ys = _dif8(xs, wr)
-    comptime for e in range(8):
-        var y = ys[e]
-        comptime if e > 0:
-            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << (bb - 6)) & ((1 << bb) - 1))))
-            y = fp_reduce(fp_mul2(ws, y))
-        sh.ptr.unsafe_store(((n_lo + 8 * e) * CW + Int(thread_idx.x)) * 4, y)
-    barrier()
-    comptime for k in range(8):
-        xs[k] = sh.ptr.unsafe_load[width=4](((8 * n_lo + k) * CW + Int(thread_idx.x)) * 4)
-    ys = _dif8(xs, wr)
-    if ok:
-        comptime for e in range(8):
-            etmp.store(base, block_base + (8 * n_lo + e) * pos_step, fp_canonical(ys[e]))
-
-
 def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
     """One decimation-in-frequency step of size S = 2^s on the B1 digits: for each block of S positions
     (stride B2) and each n_lo < T = S / r, y[e] = W_S^(n_lo e) sum_k x[n_lo + T k] W_r^(k e), stored at
@@ -515,10 +466,6 @@ def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,
                                                           grid_dim=(gx, ceildiv(M << b1, RW)), block_dim=(CW, RW))
         comptime if mask & 16:
             var S = b1
-            if S == 6:
-                ctx.enqueue_function[k_rs_stage64](arena.buf, Buf[4](etmp), Buf[4](rs.base + rs.ga), cols, Int32(b), Int32(M),
-                                                   grid_dim=(gx, M << (b - 6)), block_dim=(CW, 8))
-                S = 0
             while S > 0:
                 var lr = min(3, S)
                 _stage2(ctx, arena, etmp, rs.base + rs.ga, cols, b, M, S, lr, gx)
