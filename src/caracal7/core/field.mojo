@@ -159,6 +159,21 @@ def fp_ext_mul[k: Int](a: SIMD[DType.float32, 1 << k], b: SIMD[DType.float32, 1 
 
 
 @always_inline
+def fp_ext_pow[k: Int](a: SIMD[DType.uint8, 1 << k], n: Int) -> SIMD[DType.float32, 1 << k]:
+    """a^n on float lanes, reduced after every product: |result| <= 190."""
+    var base = a.cast[DType.float32]()
+    var acc = SIMD[DType.float32, 1 << k](0)
+    acc[0] = 1
+    var m = n
+    while m > 0:
+        if m & 1:
+            acc = fp_reduce(fp_ext_mul[k](acc, base))
+        base = fp_reduce(fp_ext_mul[k](base, base))
+        m >>= 1
+    return acc
+
+
+@always_inline
 def f_add[w: SIMDLength](a: SIMD[DType.uint8, w], b: SIMD[DType.uint8, w]) -> SIMD[DType.uint8, w]:
     var s = a + b                                   # < 254, no overflow
     return min(s, s - 127)

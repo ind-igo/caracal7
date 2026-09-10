@@ -935,3 +935,9 @@ ms. The remaining E-heavy kernels (rounds, materialize, fold, running claim, sma
 bounds in their comments (sums of at most eight canonical products before a reduction; the round
 kernel reduces the four partial sums before multiplying them). Rounds 0/1/2 16/7/8 -> 6/5/4 ms,
 materialize 0 10 -> 6, fold 0 4 -> 2; the tail is now about 40 ms of the prove.
+
+## Small grid terms on fp32 E products (2026-09-10)
+
+`k_product_term`, `k_end_term`, `k_q3_coset` use `fp_ext_mul[4]` and `fp_ext_pow[4]` (reduced after
+every product). Small grid 22 -> 19 ms: the stage is many short launches (two lane DFTs per line,
+one term kernel per accumulator), so launch overhead is most of what remains.

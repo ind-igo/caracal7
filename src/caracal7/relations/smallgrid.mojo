@@ -32,7 +32,7 @@ TODO(memory): the memory chain-end rule of 6.4 adds a term to R2 here when a pro
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_inv0, ext_one
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_inv0, ext_one, fp_ext_mul, fp_ext_pow, fp_reduce, fp_canonical
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
@@ -73,17 +73,17 @@ def k_product_term[p: Params](base: Base, lines: Buf[16], nn: Int32, nd: Int32, 
     var t = global_idx.x
     if t >= n:
         return
-    var a = lines.load(base, t)
-    var b = lines.load(base, n + t)
+    var a = lines.load(base, t).cast[DType.float32]()          # fp32 lanes, every product reduced
+    var b = lines.load(base, n + t).cast[DType.float32]()
     for i in range(Int(nn)):
-        a = ext_mul[4](a, lines.load(base, (2 + i) * n + t))
+        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (2 + i) * n + t).cast[DType.float32]()))
     for i in range(Int(nd)):
-        b = ext_mul[4](b, lines.load(base, (2 + Int(nn) + i) * n + t))
-    var g = f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b)))
-    var q = ext_mul[4](ext_pow[4](alpha.load(base, 0), Int(power)), ext_mul[4](g, f_sub(b, a)))
+        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (2 + Int(nn) + i) * n + t).cast[DType.float32]()))
+    var g = f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()
+    var q = fp_ext_mul[4](fp_ext_pow[4](alpha.load(base, 0), Int(power)), fp_reduce(fp_ext_mul[4](g, fp_reduce(b - a))))
     if accumulate != 0:
-        q = f_add(q, dst.load(base, t))
-    dst.store(base, t, q)
+        q += dst.load(base, t).cast[DType.float32]()
+    dst.store(base, t, fp_canonical(q))
 
 
 def small_grid_product[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, z2: Int,
@@ -114,18 +114,18 @@ def k_end_term[p: Params](base: Base, lines: Buf[16], two: Int32, c2p: Buf[2], e
     var t = global_idx.x
     if t >= n:
         return
-    var kappa = f_mul(ext_pow[4](alpha.load(base, 0), Int(power)), E(UInt8(coef)))
+    var kappa = fp_reduce(fp_ext_pow[4](alpha.load(base, 0), Int(power)) * Float32(coef))   # fp32 lanes, every product reduced
     if chal != 0:
-        kappa = ext_mul[4](kappa, chals.load(base, Int(chal) - 1))
-    var v = lines.load(base, t)
+        kappa = fp_reduce(fp_ext_mul[4](kappa, chals.load(base, Int(chal) - 1).cast[DType.float32]()))
+    var v = lines.load(base, t).cast[DType.float32]()
     if two != 0:
-        v = ext_mul[4](v, lines.load(base, n + t))
+        v = fp_reduce(fp_ext_mul[4](v, lines.load(base, n + t).cast[DType.float32]()))
     if gate != 0:
-        v = ext_mul[4](v, f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))))
-    var q = ext_mul[4](kappa, v)
+        v = fp_reduce(fp_ext_mul[4](v, f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()))
+    var q = fp_ext_mul[4](kappa, v)
     if accumulate != 0:
-        q = f_add(q, dst.load(base, t))
-    dst.store(base, t, q)
+        q += dst.load(base, t).cast[DType.float32]()
+    dst.store(base, t, fp_canonical(q))
 
 
 def small_grid_end[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, zval: Int, columns_w: Int,
@@ -154,7 +154,7 @@ def k_q3_coset[p: Params](base: Base, r2: Buf[16], c2p: Buf[2], dst: Buf[16]):
     if t >= 2 * h2:
         return
     var d = f_sub(ext_embed[4](ext_pow[1](c2p.load(base, t), h2)), ext_one[4]())
-    dst.store(base, t, ext_mul[4](r2.load(base, t), ext_inv0[4](d)))
+    dst.store(base, t, fp_canonical(fp_ext_mul[4](r2.load(base, t).cast[DType.float32](), ext_inv0[4](d).cast[DType.float32]())))
 
 
 def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, sg: Int, q3: Int) raises:
