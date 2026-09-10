@@ -12,7 +12,7 @@ are the verifier's side of the same formulas.
 """
 
 from std.math import ceildiv
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one
@@ -23,7 +23,7 @@ from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u32, list_e
 from caracal7.core.arena import Arena
 
-comptime ROUND_THREADS = 1024      # partial sums of one sumcheck round
+comptime ROUND_THREADS = 16384     # partial sums of one sumcheck round (1024 left the GPU idle: 42 ms a round at N = 82,944)
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4
 
 
@@ -181,12 +181,14 @@ def k_round_partial(base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: 
 
 
 def k_round_sum(base: Base, partial: Buf[16], dst: Buf[16]):
-    """One thread: the round message s = (s(0), s(1), s(2)) from the partial sums."""
-    comptime for b in range(3):
-        var acc = E(0)
-        for t in range(ROUND_THREADS):
-            acc = f_add(acc, partial.load(base, 3 * t + b))
-        dst.store(base, b, acc)
+    """48 threads, one per (evaluation b, byte l): the round message s = (s(0), s(1), s(2)) from the partial sums."""
+    var i = Int(thread_idx.x)
+    if i >= 48:
+        return
+    var acc = SIMD[DType.uint8, 1](0)
+    for t in range(ROUND_THREADS):
+        acc = f_add(acc, base.unsafe_load[width=1](partial.at(3 * t) + i))
+    base.unsafe_store(dst.at(0) + i, acc)
 
 
 def k_fold8(base: Base, src: Buf[16], rows: Int32, r: Buf[16], dst: Buf[16]):
@@ -242,7 +244,7 @@ def tail_round(ctx: DeviceContext, arena: Arena,
     """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`."""
     ctx.enqueue_function[k_round_partial](arena.buf, Buf[16](w_tilde), Buf[16](y), Int32(length), Int32(digit), Buf[16](r), Buf[16](partial),
                                           grid_dim=_grid(ROUND_THREADS), block_dim=BACKEND.block)
-    ctx.enqueue_function[k_round_sum](arena.buf, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_round_sum](arena.buf, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=64)
 
 
 def tail_fold(ctx: DeviceContext, arena: Arena, src: Int, rows: Int, r: Int, dst: Int) raises:

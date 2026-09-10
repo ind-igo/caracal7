@@ -901,3 +901,9 @@ the byte path. Residual 126 -> 77 ms, warm prove 929 -> 886 ms.
 size: quotient 59 -> 174 ms, lde 104 -> 112, open 41 -> 52. The skeleton is bound by staging and
 occupancy, not by the multiply, so the float lanes only add conversions. Reverted; fp32 lanes pay
 in the elementwise kernels where reductions were the cost (RS stages, residual).
+
+## Sumcheck rounds: 16 K partial sums (2026-09-10)
+
+`k_round_partial` ran 1024 threads, each walking N / 2048 groups of E products on bytes; the GPU
+was mostly idle and round 0 took 42 ms at N = 82,944. ROUND_THREADS is 16,384 and `k_round_sum`
+is 48 threads (one per evaluation byte) instead of one. Rounds 0/1/2: 42/10/9 -> 12/6/6 ms.
