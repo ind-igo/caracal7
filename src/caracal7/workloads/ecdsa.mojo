@@ -89,13 +89,6 @@ struct Curve(Movable):
     def finv(self, a: Big) -> Big:
         return Fp.from_big(a).inv().to_big()
 
-    def fsqrt(self, a: Big) raises -> Big:
-        """p = 3 mod 4: a^((p + 1) / 4), checked."""
-        var r = self.fpow(a, (self.p + Big(1)).shr(2))
-        if self.fmul(r, r) != a:
-            raise Error("not a square")
-        return r^
-
     # ---- the group ----
 
     def on_curve(self, a: Point) -> Bool:

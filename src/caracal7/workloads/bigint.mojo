@@ -277,15 +277,6 @@ struct Big(Copyable, Movable, Equatable, Writable):
     def mulmod(self, other: Big, m: Big) raises -> Big:
         return (self * other).mod(m)
 
-    def pow_mod(self, e: Big, m: Big) raises -> Big:
-        var r = Big(1)
-        var b = self.mod(m)
-        for i in range(e.bit_length() - 1, -1, -1):
-            r = r.mulmod(r, m)
-            if e.bit(i) == 1:
-                r = r.mulmod(b, m)
-        return r^
-
     def inv_mod(self, m: Big) raises -> Big:
         """For an odd prime m: the binary extended Euclid, the cofactors kept in [0, m)."""
         var u = self.mod(m)

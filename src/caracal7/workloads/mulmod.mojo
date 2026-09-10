@@ -749,12 +749,12 @@ def _cols(layout: Layout, name: String, grouped: Bool) raises -> List[Int]:
     return v^
 
 
-def _put(mut trace: List[UInt8], N: Int, base: Int, cols: List[Int], bits: List[Int], grouped: Bool):
-    """A value's bits into the column set `cols` (or a's pieces) of the chain at `base`."""
+def _put(mut chain: List[UInt8], cols: List[Int], bits: List[Int], grouped: Bool):
+    """A value's bits into the column set `cols` (or a's pieces) of a chain buffer (column stride ROWS)."""
     for i in range(len(bits)):
         if bits[i] != 0:
             var g = _piece(i) if grouped else 0
-            trace[cols[g * Q + i % Q] * N + base + _row(i)] = 1
+            chain[cols[g * Q + i % Q] * ROWS + _row(i)] = 1
 
 
 def mulmod_trace[p: Params](layout: Layout, a: List[UInt8], b: List[UInt8], cheat: Int = -1) raises -> List[UInt8]:
@@ -816,25 +816,25 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
             continue
         unsafe_memset_zero(chain.unsafe_ptr(), columns * h1)
         for j in adds[x2]:
-            _add_lane[p](chain, h1, 0, lanes[at[j][1]], vals[j], ops[j], mbits[ops[j].mod])
+            _add_lane[p](chain, lanes[at[j][1]], vals[j], ops[j], mbits[ops[j].mod])
         if live or x2 == cheat:
-            _mul_chain[p](chain, h1, 0, x2 == cheat, vals[mul_at[x2] if live else 0], live, ca, cb, cr, cc, cy)
-            _fold_chain[p](chain, h1, 0, fold1)
-            _fold_chain[p](chain, h1, 0, fold2)
+            _mul_chain[p](chain, x2 == cheat, vals[mul_at[x2] if live else 0], live, ca, cb, cr, cc, cy)
+            _fold_chain[p](chain, fold1)
+            _fold_chain[p](chain, fold2)
         for c in range(columns):
             unsafe_memcpy(dest=trace.unsafe_ptr().unsafe_offset(c * N + x2 * h1), src=chain.unsafe_ptr().unsafe_offset(c * h1), count=h1)
     return trace^
 
 
-def _mul_chain[p: Params](mut trace: List[UInt8], N: Int, base: Int, cheat: Bool, v: OpValues, live: Bool,
+def _mul_chain[p: Params](mut chain: List[UInt8], cheat: Bool, v: OpValues, live: Bool,
                           ca: List[Int], cb: List[Int], cr: List[Int], cc: List[Int], cy: List[Int]) raises:
-    """The product lane of one chain at `base` in a trace of column stride `N`: a's pieces, b, the certified
+    """The product lane of one chain buffer (column stride h1): a's pieces, b, the certified
     coefficient bits and the pile per slot, then the carry ripple into r."""
     comptime h1 = p.h1()
     var ab = v.x.bits(WIDTH) if live else List[Int]()
     var bb = v.y.bits(WIDTH) if live else List[Int]()
-    _put(trace, N, base, ca, ab, True)
-    _put(trace, N, base, cb, bb, False)
+    _put(chain, ca, ab, True)
+    _put(chain, cb, bb, False)
     var ones_b = List[Int]()
     for j in range(len(bb)):
         if bb[j] != 0:
@@ -859,22 +859,22 @@ def _mul_chain[p: Params](mut trace: List[UInt8], N: Int, base: Int, cheat: Bool
             for m in range(CBITS):
                 var bit = b6 if m == 6 else (b5 if m == 5 else (val >> m) & 1)
                 if bit == 1:
-                    trace[cc[(t * CBITS + m) * Q + (w + m) % Q] * N + base + _row(w + m)] = 1
+                    chain[cc[(t * CBITS + m) * Q + (w + m) % Q] * h1 + _row(w + m)] = 1
                     pile[w + m] += 1
     var carry = 0
     if cheat:
-        var off = base + h1 - 1
-        trace[cc[Q - 1] * N + off] = 1
-        trace[cc[Q + Q - 1] * N + off] = 1
-        trace[cy[Q - 1] * N + off] = 1
+        var off = h1 - 1
+        chain[cc[Q - 1] * h1 + off] = 1
+        chain[cc[Q + Q - 1] * h1 + off] = 1
+        chain[cy[Q - 1] * h1 + off] = 1
         carry = 1
     for w in range(SLOTS):
         var s = carry + pile[w]
-        var at_w = base + _row(w)
-        trace[cr[w % Q] * N + at_w] = UInt8(s & 1)
+        var at_w = _row(w)
+        chain[cr[w % Q] * h1 + at_w] = UInt8(s & 1)
         carry = s >> 1
         for k in range(CARRY):
-            trace[cy[k * Q + w % Q] * N + at_w] = UInt8((carry >> k) & 1)
+            chain[cy[k * Q + w % Q] * h1 + at_w] = UInt8((carry >> k) & 1)
 
 def _fold_cols(layout: Layout, src: String, copy: String, dst: String, carry: String) raises -> List[Int]:
     """src, copy, dst (Q each), then carry (FOLD x Q)."""
@@ -886,26 +886,26 @@ def _fold_cols(layout: Layout, src: String, copy: String, dst: String, carry: St
     return v^
 
 
-def _fold_chain[p: Params](mut trace: List[UInt8], N: Int, base: Int, cols: List[Int]):
-    """The copy and the fold ripple of one chain at `base` (column stride `N`), the families of
+def _fold_chain[p: Params](mut chain: List[UInt8], cols: List[Int]):
+    """The copy and the fold ripple of one chain buffer (column stride h1), the families of
     `_fold_families` evaluated in row order; `cols` from `_fold_cols`."""
     comptime h1 = p.h1()
     var shifts = _shifts()
     for x1 in range(h1):
         if _cp_row(x1):
             for j in range(Q):
-                trace[cols[Q + j] * N + base + x1] = trace[cols[j] * N + base + (x1 + UP) % h1]
+                chain[cols[Q + j] * h1 + x1] = chain[cols[j] * h1 + (x1 + UP) % h1]
     var cy = 0
     for w in range(SLOTS):
         var x1 = _row(w)
-        var s = cy + (Int(trace[cols[w % Q] * N + base + x1]) if _lo_row(x1) else 0)
+        var s = cy + (Int(chain[cols[w % Q] * h1 + x1]) if _lo_row(x1) else 0)
         for sh in shifts:
             var at = _below(w % Q, sh)
-            s += Int(trace[cols[Q + at[1]] * N + base + (x1 + at[0]) % h1])
-        trace[cols[2 * Q + w % Q] * N + base + x1] = UInt8(s & 1)
+            s += Int(chain[cols[Q + at[1]] * h1 + (x1 + at[0]) % h1])
+        chain[cols[2 * Q + w % Q] * h1 + x1] = UInt8(s & 1)
         cy = s >> 1
         for k in range(FOLD):
-            trace[cols[3 * Q + k * Q + w % Q] * N + base + x1] = UInt8((cy >> k) & 1)
+            chain[cols[3 * Q + k * Q + w % Q] * h1 + x1] = UInt8((cy >> k) & 1)
 
 
 def _qbits(q: Int) -> List[Int]:
@@ -916,9 +916,9 @@ def _qbits(q: Int) -> List[Int]:
     return v^
 
 
-def _add_lane[p: Params](mut trace: List[UInt8], N: Int, base: Int, cols: List[Int], v: OpValues, op: Op, mb: List[Int]) raises:
-    """x, y, z, s, q and the signed carries of `_add_families` in row order on the chain at `base` (column
-    stride `N`); `cols` the lane's columns as `circuit_trace` lists them, `mb` the modulus bits."""
+def _add_lane[p: Params](mut chain: List[UInt8], cols: List[Int], v: OpValues, op: Op, mb: List[Int]) raises:
+    """x, y, z, s, q and the signed carries of `_add_families` in row order on a chain buffer (column stride
+    h1); `cols` the lane's columns as `circuit_trace` lists them, `mb` the modulus bits."""
     comptime h1 = p.h1()
     var xb = v.x.bits(WIDTH)
     var yb = v.y.bits(WIDTH)
@@ -929,11 +929,11 @@ def _add_lane[p: Params](mut trace: List[UInt8], N: Int, base: Int, cols: List[I
         var sub = List[Int]()
         for j in range(Q):
             sub.append(cols[r * Q + j])
-        _put(trace, N, base, sub, vals[r], False)
+        _put(chain, sub, vals[r], False)
     var qb = _qbits(v.q)
     for k in range(QBITS):
         for x1 in range(h1):
-            trace[cols[4 * Q + k] * N + base + x1] = UInt8(qb[k])
+            chain[cols[4 * Q + k] * h1 + x1] = UInt8(qb[k])
     var sy = op.sy
     var sz = op.sz
     var c = 0
@@ -950,7 +950,7 @@ def _add_lane[p: Params](mut trace: List[UInt8], N: Int, base: Int, cols: List[I
             raise Error("addition carry out of range")
         var e = c + 16 if c < 0 else c
         for k in range(ACARRY):
-            trace[cols[4 * Q + QBITS + k * Q + w % Q] * N + base + _row(w)] = UInt8((e >> k) & 1)
+            chain[cols[4 * Q + QBITS + k * Q + w % Q] * h1 + _row(w)] = UInt8((e >> k) & 1)
     if c != 0:
         raise Error("addition does not close")
 
