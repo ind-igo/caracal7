@@ -8,21 +8,25 @@ There is one profile, `CLIENT`; a second one appears with a second target (the V
 from std.math import ceildiv, log2
 
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
-comptime RATE_INV = 32              # rate rule of spec 9.5: the smallest domain at rate <= 1/32 ...
+comptime RATE_INV = 32              # rate rule of spec 9.5 for the tail levels: the smallest domain at rate <= 1/32 ...
 comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
 
 
-def domain_for(rows: Int) -> Tuple[Int, Int]:
+def domain_for(rows: Int, rate_inv: Int = RATE_INV, fewest_cosets: Bool = False) -> Tuple[Int, Int]:
     """(L, cosets) for `rows` symbols per column: the smallest m cosets (m in 1, 2, 4) of a divisor of H4_ORDER
-    with an odd part (the encoder scatters from an odd-radix stage) at rate <= 1/RATE_INV; else the largest
-    domain if it is at rate <= 1/RATE_MIN_INV; else (0, 0), the codeword split."""
+    with an odd part (the encoder scatters from an odd-radix stage) at rate <= 1/rate_inv; else the largest
+    domain if it is at rate <= 1/RATE_MIN_INV; else (0, 0), the codeword split. With `fewest_cosets` the
+    smallest m that has a domain wins before the size does (level 1: one coset of 161,280 beat four of
+    23,040 on prove time, proof size and verify time at the ECDSA grid, decisions.md 2026-09-10)."""
     var best = 0
     var cosets = 0
     for m in [1, 2, 4]:
+        if fewest_cosets and best != 0:
+            break
         for k in range(10):
             for odd in [3, 5, 7, 9, 15, 21, 35, 45, 63, 105, 315]:
                 var d = (1 << k) * odd
-                if m * d >= RATE_INV * rows and (best == 0 or m * d < best):
+                if m * d >= rate_inv * rows and (best == 0 or m * d < best):
                     best = m * d
                     cosets = m
     if best == 0 and 4 * H4_ORDER >= RATE_MIN_INV * rows:
@@ -52,6 +56,7 @@ struct Profile(TrivialRegisterPassable, Writable):
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
     var lambda_bits: Int    # lambda' for the query count, 103 in the spec
+    var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv (the tail keeps RATE_INV)
 
     def grid(self, rows_per_chain: Int, chains: Int) -> Params:
         """The Params of a statement with `chains` chains of `rows_per_chain` rows, padded up to legal sizes.
@@ -60,15 +65,18 @@ struct Profile(TrivialRegisterPassable, Writable):
         var ax1 = _axis(rows_per_chain)
         var ax2 = _axis(chains)
         var n = (1 << ax1[0]) * ax1[1] * (1 << ax2[0]) * ax2[1]
-        var dom = domain_for(n // 4)                     # n_cw = 1: N / 4 symbols per column
+        var dom = domain_for(n // 4, self.rate_inv, fewest_cosets=True)   # n_cw = 1: N / 4 symbols per column
         return Params(e=self.e, a1=ax1[0], m1=ax1[1], a2=ax2[0], m2=ax2[1],
                       L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
                       leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
                       tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits)
 
 
-# The client-side target: 103-bit queries, three-digit tail folds, 2,500 elements in the clear.
-comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=103)   # fold while digits remain: the tensor verifier's clear check costs units x clear length
+# The client-side target: 103-bit queries, three-digit tail folds, the level-1 domain at rate <= 1/4 (the query
+# formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode and Merkle
+# work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain (the
+# tensor verifier's clear check costs units x clear length).
+comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=103, rate_inv=4)
 
 
 @fieldwise_init

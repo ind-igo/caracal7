@@ -17,7 +17,7 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)
 
 
@@ -59,8 +59,8 @@ def test_tail_schedule_folds_a_larger_grid() raises:
 
 def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     # spec 9.5 narrow row, 1008 x 252: 6 binary digits -> two folds -> 3969 in the clear (odd digit only).
-    # The tail schedule does not depend on level 1; the grid itself needs the codeword split (63,504 symbols
-    # per column against a 645,120 domain), so no Shape is built on it until n_cw > 1 exists.
+    # The tail schedule does not depend on level 1 (63,504 symbols per column: two cosets of 161,280 at the
+    # profile's rate 1/4; the spec's 1/32 rule needed the codeword split).
     comptime narrow = CLIENT.grid(1008, 252)
     var s = tail_schedule[narrow]()
     assert_equal(len(s), 2)
@@ -69,12 +69,9 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     assert_equal(s[0].cosets, 4)
     assert_equal(s[1].rows, 3969)
     assert_equal(s[1].L, 129024)         # 4 cosets of 32256, rate 1/32.5
-    var stopped = String("")
-    try:
-        narrow.check()
-    except e:
-        stopped = String(e)
-    assert_true(stopped.startswith("grid needs the codeword split"))
+    assert_equal(narrow.L(), 322560)
+    assert_equal(narrow.m_cosets, 2)
+    narrow.check()
 
 
 def test_layout_plans_the_arena() raises:
@@ -96,10 +93,11 @@ def test_derived_grids() raises:
     comptime g = CLIENT.grid(70, 30)
     assert_equal(g.h1(), 72)
     assert_equal(g.h2(), 32)
-    assert_equal(g.L(), 18432)                        # 576 symbols per column: four cosets of 4608, rate 1/32
+    assert_equal(g.L(), 2304)                         # 576 symbols per column: one coset of 2304, rate 1/4
     comptime wide = CLIENT.grid(288, 128)
-    assert_equal(wide.L(), 322560)                    # 9216 symbols: two cosets of 161280, rate 1/35
-    assert_equal(wide.m_cosets, 2)
+    assert_equal(wide.L(), 40320)                     # 9216 symbols: one coset of 2^7 x 315, rate 0.229
+    assert_equal(wide.m_cosets, 1)
+    assert_equal(wide.queries(), 147)                # ceil(103 / log2(2 / 1.229))
     comptime proxy = CLIENT.grid(2016, 576)
     assert_equal(proxy.N(), 1161216)
     var stopped = String("")

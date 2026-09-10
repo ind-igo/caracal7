@@ -1124,3 +1124,16 @@ One coset: encode W 109 -> 55, Z 97 -> 49, Q 26 -> 12, the three Merkle trees be
 the proof grows 3.6% (the openings are a small part of it) and the verifier does not move. Not
 changed: the rate rule is a spec parameter (`RATE_INV`), and every grid, test expectation and
 the Keccak profile hang off it; the switch is one `Profile` knob when it is decided.
+
+## Level 1 at rate <= 1/4, the fewest cosets first (2026-09-10)
+
+Done, after the sweep above: `Profile` carries `rate_inv` (`CLIENT`: 4) and `Profile.grid` passes it
+to `domain_for` with `fewest_cosets`, which takes the smallest coset count that has a domain
+before the smallest size. The plain "smallest domain at rate <= 1/4" picked four cosets of 23,040
+for ECDSA (rate 0.225, 146 queries: prove 448 ms, proof 694,880 B, verify 93 ms); one coset of
+161,280 (rate 0.129, 125 queries) is better on all three: prove 433 ms, proof 654,464 B, verify
+85 ms, against 572 / 631,856 / 85 at four cosets of 161,280. The tail schedule keeps spec 9.5's
+1/32 rule and the size-first choice (`RATE_INV`), since the tail levels dominate the proof.
+Derived grids that moved: 72 x 32 to one coset of 2,304 (152 queries), 288 x 128 to one coset of
+40,320 (147 queries), and 1008 x 252 now fits on two cosets of 161,280 without the codeword split.
+The vault spec's 9.5 rule (1/32, then 1/16) no longer describes level 1.

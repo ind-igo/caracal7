@@ -8,10 +8,10 @@ def test_small_grid() raises:
     assert_equal(p.h1(), 72)
     assert_equal(p.h2(), 32)
     assert_equal(p.N(), 2304)
-    assert_equal(p.L(), 18432)
+    assert_equal(p.L(), 2304)
     assert_equal(p.leaf_columns_max(), 256)
-    # rate 2304 / (4 * 18432) = 1/32 on 4 cosets of 4608; queries = ceil(103 / log2(2 / (1 + 1/32))) = 108
-    assert_equal(p.queries(), 108)
+    # rate 2304 / (4 * 2304) = 1/4 on one coset of 2304; queries = ceil(103 / log2(2 / (1 + 1/4))) = 152
+    assert_equal(p.queries(), 152)
 
 
 def test_query_formula_matches_spec_rows() raises:

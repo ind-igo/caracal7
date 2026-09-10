@@ -127,6 +127,8 @@ def test_rs_encode_evaluates_message() raises:
     var dom = RsDomain(p.L0, p.m_cosets)                 # level 1 is m cosets of the order-L0 subgroup
     for c in range(COLS):
         for s in [0, 1, 2, 255, 256, 315, p.L0 - 1, p.L0, 2 * p.L0 + 7, p.L() - 1]:
+            if s >= p.L():                                 # one coset at rate 1/4; cosets are checked below
+                continue
             var pt = dom.point(s)
             var acc = F4(0)
             var pw = F4(1, 0, 0, 0)
