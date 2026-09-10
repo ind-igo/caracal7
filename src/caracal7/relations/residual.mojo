@@ -263,7 +263,7 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
     comptime G2 = 2 * p.h2()
     ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
-    if merge >= 0:
+    if merge >= 0 and count_g > 0:
         ctx.enqueue_function[k_merge_kappa](arena.buf, Buf[1](families), Buf[1](merge), Int32(count * 4), Int32(count_g), Buf[1](families_g),
                                             grid_dim=ceildiv(count_g, 64), block_dim=64)
     elif families_g != families:
