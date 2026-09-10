@@ -63,7 +63,8 @@ struct ProverLayout:
     var tree_z: Int
     var tree_q: Int
     var families: Int               # (entry, ENTRY)        the family table, kappa folded in on device
-    var families_g: Int             # (entry, ENTRY)        the same without the Horner basis entries: the residual GEMM's table
+    var families_g: Int             # (entry, ENTRY)        one entry per distinct (reads, gate) of the non-Horner-basis entries: the residual's table
+    var merge: Int                  # (entry, 2) u16 (start, count), then (entry) u16 indices into `families`: the entries each families_g row sums
     var accs: Int                   # (accumulator, ACC)    accumulator descriptors
     var shifts: Int                 # (P, POINT)            opening points as (dj1, dj2) on G
     var num: Int                    # (row, e)              the Z stage: N, D, 1/D, Z per accumulator in turn
@@ -128,6 +129,7 @@ struct ProverLayout:
         self.tree_q = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
         self.families = bump.alloc(shape.entries * ENTRY)
         self.families_g = bump.alloc(shape.entries * ENTRY)
+        self.merge = bump.alloc(shape.entries * 6)
         self.accs = bump.alloc(len(shape.accs))
         self.shifts = bump.alloc(shape.points * POINT)
         self.num = bump.alloc(N * p.e)
@@ -232,15 +234,41 @@ struct Prover[p: Params, H: Hash]:
                 for i in range(first - 32, first):
                     keep[i] = False
         var fg = ctx.enqueue_create_host_buffer[DType.uint8](len(self.families))
+        var mg = ctx.enqueue_create_host_buffer[DType.uint8](self.shape.entries * 6)
         ctx.synchronize()
+        # one families_g row per distinct (reads, gate) descriptor; `merge` lists the entries whose
+        # kappas it sums (they share X(point), so sum kappa_i X = (sum kappa_i) X)
+        var row_of = Dict[String, Int]()
+        var members = List[List[Int]]()
         for i in range(self.shape.entries):
-            if keep[i]:
+            if not keep[i]:
+                continue
+            var key = String("")
+            for j in range(16, 29):
+                key += String(Int(self.families[i * ENTRY + j])) + ","
+            var u = row_of.get(key, -1)
+            if u < 0:
+                u = self.entries_g
+                row_of[key] = u
+                members.append(List[Int]())
                 for j in range(ENTRY):
-                    fg[self.entries_g * ENTRY + j] = self.families[i * ENTRY + j]
+                    fg[u * ENTRY + j] = self.families[i * ENTRY + j]
                 self.entries_g += 1
+            members[u].append(i)
         for i in range(self.entries_g * ENTRY, len(fg)):
             fg[i] = 0
+        for i in range(self.shape.entries * 6):
+            mg[i] = 0
+        var idx_off = self.shape.entries * 4
+        var at = 0
+        for u in range(self.entries_g):
+            _put_u16(mg, u * 4, at)
+            _put_u16(mg, u * 4 + 2, len(members[u]))
+            for i in members[u]:
+                _put_u16(mg, idx_off + 2 * at, i)
+                at += 1
         self.arena.upload(ctx, self.layout.families_g, fg)
+        self.arena.upload(ctx, self.layout.merge, mg)
         self.arena.upload(ctx, self.layout.shifts, ph)
         if len(self.shape.accs) > 0:
             _upload(ctx, self.arena, self.layout.accs, self.shape.accs)
@@ -379,7 +407,7 @@ struct Prover[p: Params, H: Hash]:
             lde[Self.p](ctx, self.arena, L.pub_coeff, S.columns_p, L.tables, L.ltmp, L.lde + (S.columns_w + S.columns_z) * 4 * N * 2)
         self._mark(ctx, profile, "lde", t0)
         residual[Self.p](ctx, self.arena, L.lde, L.families, S.entries, L.tables, L.alpha, L.stage1, L.residual,
-                         L.families_g, self.entries_g, L.accs, len(S.accs) // ACC)
+                         L.families_g, self.entries_g, L.accs, len(S.accs) // ACC, L.merge)
         self._mark(ctx, profile, "residual", t0)
         quotient[Self.p](ctx, self.arena, L.residual, L.tables, L.quotient, L.enc_q.trace)
         self._mark(ctx, profile, "quotient", t0)
@@ -502,6 +530,11 @@ def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
     for lvl in shape.tail:
         n += multiproof_region[H](8 * p.e, lvl.L, lvl.queries)
     return n
+
+
+def _put_u16(mut h: HostBuffer[DType.uint8], at: Int, v: Int):
+    h[at] = UInt8(v & 255)
+    h[at + 1] = UInt8(v >> 8)
 
 
 def _upload(ctx: DeviceContext, arena: Arena, off: Int, l: Span[UInt8, _]) raises:

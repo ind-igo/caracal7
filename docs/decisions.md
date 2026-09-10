@@ -1055,3 +1055,14 @@ them; `tail_round` now picks 16,384, 4,096 or 1,024 partials by the group count,
 parameter of both kernels (a runtime thread count as the loop stride made level 0's rounds 6 -> 13
 ms; the comptime one keeps them at 5). Back to back at ECDSA size: materialize 1 5 -> 1 ms,
 materialize 2 2 -> 0, rounds 6 / 4 / 4 -> 5 / 2 / 1, warm prove 590 -> 580.
+
+## Residual: one row per distinct descriptor (2026-09-10)
+
+Of the 1,152 non-Horner-basis entries at ECDSA size, 801 have distinct (reads, gate) descriptors:
+the rest are the same X(point) under a different kappa (another family, coefficient or challenge).
+`Prover.__init__` now keys the kept entries by their 13 descriptor bytes, writes one `families_g` row
+per key, and uploads a `merge` table (start, count per row and the entry indices). After
+`k_fold_alpha` on the full table, `k_merge_kappa` sums the folded kappas of each row's entries into
+the row (sum kappa_i X = (sum kappa_i) X), and the residual loop walks 801 rows instead of 1,152.
+Residual 31 -> 24 ms back to back. The merge is generic (any workload with repeated reads across
+families); `residual()` keeps the unmerged path for callers that pass no table.

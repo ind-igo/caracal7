@@ -65,6 +65,20 @@ def k_fold_alpha(base: Base, families: Buf[1], count: Int32, alpha: Buf[16], cha
     Buf[16](ent.at(0)).store(base, 0, kappa)
 
 
+def k_merge_kappa(base: Base, families: Buf[1], merge: Buf[1], idx_off: Int32, count_g: Int32, families_g: Buf[1]):
+    """kappa_g[u] = sum of the folded kappas of the entries `merge` lists for row u, one thread per row."""
+    var u = Int(global_idx.x)
+    if u >= Int(count_g):
+        return
+    var start = u16(base, merge.at(4 * u))
+    var n = u16(base, merge.at(4 * u + 2))
+    var kappa = E(0)
+    for t in range(start, start + n):
+        var i = u16(base, merge.at(Int(idx_off) + 2 * t))
+        kappa = f_add(kappa, Buf[16](families.at(i * ENTRY)).load(base, 0))
+    Buf[16](families_g.at(u * ENTRY)).store(base, 0, kappa)
+
+
 @always_inline
 def _read[p: Params](base: Base, lde: Buf[2], at: Int, j1: Int, j2: Int) -> F2:
     """c(shift point) for the read descriptor (col, dj1, dj2) at `at`; shifts are below the domain size."""
@@ -240,15 +254,19 @@ def lde[p: Params](ctx: DeviceContext, arena: Arena,
 
 def residual[p: Params](ctx: DeviceContext, arena: Arena,
                         lde_buf: Int, families: Int, count: Int, tab: TableLayout, alpha: Int, chals: Int, dst: Int,
-                        families_g: Int, count_g: Int, accs: Int, n_accs: Int) raises:
+                        families_g: Int, count_g: Int, accs: Int, n_accs: Int, merge: Int = -1) raises:
     """dst (j2, j1, e) = sum_entry kappa_entry X_entry(point): the fused pass of statement-layer 5,
-    k_residual over `families_g` (the table without the Horner basis entries; may be `families` itself)
-    plus the Horner transitions from `families` (all entries, kappa folded) and the `accs` descriptors."""
+    k_residual over `families_g` (one row per distinct descriptor when `merge` lists the entries each
+    row sums, else the table without the Horner basis entries, or `families` itself) plus the Horner
+    transitions from `families` (all entries, kappa folded) and the `accs` descriptors."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
-    if families_g != families:
+    if merge >= 0:
+        ctx.enqueue_function[k_merge_kappa](arena.buf, Buf[1](families), Buf[1](merge), Int32(count * 4), Int32(count_g), Buf[1](families_g),
+                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
+    elif families_g != families:
         ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[16](alpha), Buf[16](chals),
                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
     comptime V = 2 if p.h2() % 2 == 0 else 1
