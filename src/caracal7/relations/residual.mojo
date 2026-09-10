@@ -18,7 +18,7 @@ transforms radix stages:
                are not in the table it walks: k_horner, one thread per point after it, reads the e
                coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
     quotient   q1m over G1 -> Q1 on the coset; qinv1 (GEMM), then dft_axis over G2 -> the A, B
-               coefficients; q2m, qinv2 -> the Q2 coefficients; dft_axis per axis to their values on H
+               coefficients; q2m, the qinv2p plan -> the Q2 coefficients; dft_axis per axis to their values on H
                (the three dense axis-2 GEMMs at K = 2 h2 and h2 were 40 of the stage's 57 ms)"""
 
 from std.math import ceildiv
@@ -308,8 +308,7 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
         c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, G1)
-    # TODO(perf): steps 2 and 5 (about 10 ms together at the ECDSA grid) are dense GEMMs because of the
-    # output twist g^-k; a plan table with the twist folded into its last stage would put them on dft_axis.
+    # ponytail: step 2 stays a dense h1 x h1 GEMM (2 KB, 32 wide); put it on a plan like step 5 if it shows up
     # 2. axis 1: coset values t -> coefficients k1
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,
@@ -321,10 +320,9 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
         c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * 8, h1)
-    # 5. axis 2: coset values t2 -> coefficients k2
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
-        a=tab.base + tab.qinv2, sa_m=h2 * 2, sa_k=2, b=t2, sb_k=e, sb_hi=h2 * e, sb_lo=2,
-        c=q2coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), h2, h1 * 8, h2)
+    # 5. axis 2: coset values t2 -> coefficients k2, the output twist g2^-k inside the plan's last stage;
+    #    a row of t2 is 8 F2 lanes, written transposed as (k2, k1, e); t1 (dead) is the scratch
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, t2, q2coef, t1, 8, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
     # 6, 7. values on H of A, B, Q2: axis 1 over the 3 h2 coefficient rows -> v1 (3, k2, x1, e), then
     #    axis 2 with a row of x1 as 8 h1 lanes -> vals (3, x2, x1, e). Scratch: vals, then q1c and t1
     #    (dead); the coefficients stay intact for the tests

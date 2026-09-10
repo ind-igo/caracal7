@@ -1206,10 +1206,44 @@ on an M5 Max for a long repeated-digest chain.
 | 7936 | 125 | 32 x 8064 | 994 ms | 7.95 | 344,864 B | 78 ms |
 
 The chain axis is capped at h2 = 8064 = 2^7 x 63 (the 2-adic part of F2* is 2^8 and G2 has order 2 h2), so
-4096 B and 7936 B share the largest grid and 4096 B wastes half of it; a longer message needs the codeword
-split. On that grid the per-row cost is 6x the 2688 one: lde 13 -> 387 ms, quotient 34 -> 326, encode W
+4096 B and 7936 B share the largest grid and 4096 B wastes half of it; a longer message needs another trace
+layout (the codeword split extends the commitment domain, not the trace axis). On that grid the per-row cost is 6x the 2688 one: lde 13 -> 387 ms, quotient 34 -> 326, encode W
 14 -> 172, encode Q 15 -> 181. The axis-2 plans have length 2 h2 = 16128 = 2^8 x 63 and `dft_axis` runs
 the odd part as one radix stage (63 MACs per element against 21 at h2 = 2688, with a 63 x 63 table), and
 the coset inverses of the quotient are dense GEMMs at K = 16128. The host table build is 255 s at that
 size (setup, once per grid). Next step if the large grids matter: split the odd stage (63 = 7 x 9) in the
 plan, and the coset inverses on a twisted plan (the TODO in residual.mojo).
+
+## The coset transforms on the radix plan (2026-09-11)
+
+The 255 s setup at h2 = 8064 was the host build of six dense twiddle tables (`winv2`, `qinv2` at h2^2 and
+`wfwd2`, `ginv2`, `cinv2` at (2 h2)^2, `cfwd2` at 2 h2 x h2 entries, one `ext_pow` each): 2.1 GB at
+h2 = 8064, held in the arena for the small grid's lane GEMMs and the quotient's step 5. They were the
+transforms that never moved onto `dft_axis` because of their coset twist. `_dft_tables` now takes
+`twist_in` and `twist_out` for the transform `twist_out^j sum_k root^(j k) twist_in^k x[k]`: the input
+twist splits over the digits of k (k3 into T3, k2 into T2, k1 into T1) and the output twist over j, which
+the last stage knows in full (jj + n2 n3 j1). Four plan tables replace the six dense ones: `qinv2p`
+(quotient step 5, output twist g2^-k), `cfwd2p` (coefficients to the small grid's coset, input twist
+gamma2^k), `cinv2p` (back, output twist gamma2^-k) and `gfwd2p` (coefficients to G2); the small grid's
+inverse DFT is the existing `inv2`. A small-grid line is one `dft_axis` line of 8 F2 lanes; lines with a
+stride (chain ends, `h1 e` apart) are gathered first (`k_gather_line`, two scratch units `SG_SCR`).
+Step 2 of the quotient stays a dense 32 x 32 GEMM.
+
+Measured (M1 Pro, `bench_sha256_blocks`, nothing else running; the earlier table was taken with a
+review process on the host):
+
+| bytes | blocks | grid | setup | prove (median) | ms / block | verify |
+|---|---|---|---|---|---|---|
+| 1024 | 17 | 32 x 1152 | 0.08 s | 74 ms | 4.32 | 22 ms |
+| 2048 | 33 | 32 x 2688 | 0.26 s | 141 ms | 4.28 | 32 ms |
+| 4096 | 65 | 32 x 8064 | 2.1 s | 798 ms | 12.3 | 75 ms |
+| 7936 | 125 | 32 x 8064 | 1.9 s | 781 ms | 6.25 | 75 ms |
+
+Setup 255 s -> 2 s at h2 = 8064 (25 s -> 0.26 s at 2688), warm prove 994 -> 781 ms. The 24% gap between
+the two 8064 proofs of the earlier table is gone (798 against 781); a rerun with a Codex review on the
+host gave 1139 and 1133, so that gap was host contention after the 5-minute table build, not the grid.
+Stage profile at h2 = 8064 against 2688 (3x the rows): encode W 135 against 14 ms, lde 265 against 11,
+quotient 80 against 9, encode Q 146 against 15. Encode and quotient scale with the rows; the LDE is 8x
+per row. Its axis-2 plan is DftPlan(16128, 8064) with n1 = 63 against n1 = 21 at 2688: 95 against 53
+MACs per element, and `k_radix[63, 63, V=4]` holds 126 int32x4 accumulators per thread, past the register
+file. Next: split the odd stage (63 = 7 x 9) in the plan.

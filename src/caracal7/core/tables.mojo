@@ -233,7 +233,6 @@ struct TableLayout(TrivialRegisterPassable):
     """Byte offsets of every table inside the arena, relative to `base`."""
     var base: Int
     var winv1: Int      # (h1, h1, 2)   F2: h1^-1 * omega1^(-t k), row k, col t
-    var winv2: Int      # (h2, h2, 2)
     var rho1: Int       # (m1)          F: rho1^y
     var rho2: Int       # (m2)
     var rho1t: Int      # (m1, m1, 2)   F2: rho1^(r y), the radix table of the to_stored digit pass (encode.mojo)
@@ -241,17 +240,12 @@ struct TableLayout(TrivialRegisterPassable):
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
     var g1p: Int        # (2 h1, 2)     g1^j
     var g2p: Int        # (2 h2, 2)
-    var wfwd2: Int      # (2 h2, 2 h2, 2)
     var q1m: Int        # (h1, 2 h1, 2) Q1 on the coset from R on G1: 63 at j = 2t + 1, 64 * (1/h1) sum_k g1^((2t + 1 - 2s) k) at j = 2s
     var q2m: Int        # (h1, h1, 2)   63 * winv1: Q2 = S1 / (-2) on H1, coefficients from values
     var qinv1: Int      # (h1, h1, 2)   coset values t -> coefficient k: g1^-k h1^-1 omega1^(-t k)
-    var ginv2: Int      # (2 h2, 2 h2, 2) G2 values j -> coefficient k: (2 h2)^-1 g2^(-j k)
-    var qinv2: Int      # (h2, h2, 2)   coset values t -> coefficient k: g2^-k h2^-1 omega2^(-t k)
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
     var c2p: Int        # (2 h2, 2)     the coset points c_t = gamma2 g2^t of the small grid (smallgrid.mojo)
-    var cfwd2: Int      # (2 h2, h2, 2) coefficient k -> value at c_t: gamma2^k g2^(t k)
-    var cinv2: Int      # (2 h2, 2 h2, 2) coset values t -> coefficient k: (2 h2)^-1 gamma2^-k g2^(-t k)
     var fwd1: Int       # DftPlan(2 h1, h1) stage tables of the axis-1 forward DFT (dft.mojo)
     var inv1: Int       # DftPlan(h1, h1) stage tables of the axis-1 inverse DFT, h1^-1 folded in
     var fwd2: Int       # the same on axis 2
@@ -259,13 +253,16 @@ struct TableLayout(TrivialRegisterPassable):
     var ginv2p: Int     # DftPlan(2 h2, 2 h2) of the G2 inverse (residual.quotient step 3), (2 h2)^-1 folded in
     var hfwd1: Int      # DftPlan(h1, h1) of the forward DFT onto H1 (coefficients -> values, quotient step 6)
     var hfwd2: Int      # the same on H2
+    var qinv2p: Int     # DftPlan(h2, h2) of quotient step 5: coset values t -> coefficient k, g2^-k h2^-1 omega2^(-t k)
+    var gfwd2p: Int     # DftPlan(2 h2, 2 h2) coefficients -> values on G2 (smallgrid.mojo)
+    var cfwd2p: Int     # DftPlan(2 h2, h2) coefficient k -> value at the small grid's coset point c_t = gamma2 g2^t: gamma2^k g2^(t k)
+    var cinv2p: Int     # DftPlan(2 h2, 2 h2) coset values t -> coefficient k: (2 h2)^-1 gamma2^-k g2^(-t k)
     var bytes: Int
 
     def __init__[p: Params](out self, base: Int):
         var off = 0
         self.base = base
         self.winv1 = off; off += p.h1() * p.h1() * 2
-        self.winv2 = off; off += p.h2() * p.h2() * 2
         self.rho1 = off; off += p.m1
         self.rho2 = off; off += p.m2
         self.rho1t = off; off += p.m1 * p.m1 * 2
@@ -273,17 +270,12 @@ struct TableLayout(TrivialRegisterPassable):
         self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
         self.g2p = off; off += 2 * p.h2() * 2
-        self.wfwd2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
         self.q1m = off; off += p.h1() * 2 * p.h1() * 2
         self.q2m = off; off += p.h1() * p.h1() * 2
         self.qinv1 = off; off += p.h1() * p.h1() * 2
-        self.ginv2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
-        self.qinv2 = off; off += p.h2() * p.h2() * 2
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
         self.c2p = off; off += 2 * p.h2() * 2
-        self.cfwd2 = off; off += 2 * p.h2() * p.h2() * 2
-        self.cinv2 = off; off += 2 * p.h2() * 2 * p.h2() * 2
         self.fwd1 = off; off += DftPlan(2 * p.h1(), p.h1()).bytes()
         self.inv1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
         self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
@@ -291,6 +283,10 @@ struct TableLayout(TrivialRegisterPassable):
         self.ginv2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
         self.hfwd1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
         self.hfwd2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
+        self.qinv2p = off; off += DftPlan(p.h2(), p.h2()).bytes()
+        self.gfwd2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
+        self.cfwd2p = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
+        self.cinv2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
         self.bytes = off
 
 
@@ -315,9 +311,6 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     for k in range(p.h1()):
         for tt in range(p.h1()):
             _put(h, t.winv1 + (k * p.h1() + tt) * 2, f_mul(ext_pow[1](w1_inv, (tt * k) % p.h1()), F2(inv_h1)))
-    for k in range(p.h2()):
-        for tt in range(p.h2()):
-            _put(h, t.winv2 + (k * p.h2() + tt) * 2, f_mul(ext_pow[1](w2_inv, (tt * k) % p.h2()), F2(inv_h2)))
     for y in range(p.m1):
         h[t.rho1 + y] = f_pow(SIMD[DType.uint8, 1](d.rho1), y)[0]
     for y in range(p.m2):
@@ -339,22 +332,29 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     return h^
 
 
-def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8):
-    """The three stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3."""
+def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8,
+                twist_in: F2 = F2(1, 0), twist_out: F2 = F2(1, 0)):
+    """The three stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3.
+    The transform twist_out^j sum_k root^(j k) twist_in^k x[k] (a coset evaluation or its inverse) splits
+    over the digits: twist_in^(n1 n2 k3) into T3, twist_in^(n1 k2) into T2, twist_in^k1 twist_out^j into T1."""
     var n = plan.n
     var n1 = plan.n1
     var n2 = plan.n2
     var n3 = plan.n3
     for j3 in range(n3):
         for k3 in range(plan.k3):
-            _put(h, at + plan.t3() + (j3 * plan.k3 + k3) * 2, f_mul(ext_pow[1](root, (n1 * n2 * j3 * k3) % n), F2(scale)))
+            var w = f_mul(ext_pow[1](root, (n1 * n2 * j3 * k3) % n), F2(scale))
+            _put(h, at + plan.t3() + (j3 * plan.k3 + k3) * 2, ext_mul[1](w, ext_pow[1](twist_in, n1 * n2 * k3)))
         for j2 in range(n2):
             for k2 in range(n2):
-                _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_pow[1](root, (n1 * (j3 + n3 * j2) * k2) % n))
+                var w = ext_pow[1](root, (n1 * (j3 + n3 * j2) * k2) % n)
+                _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_mul[1](w, ext_pow[1](twist_in, n1 * k2)))
     for jj in range(n2 * n3):
         for j1 in range(n1):
+            var tj = ext_pow[1](twist_out, jj + n2 * n3 * j1)
             for k1 in range(n1):
-                _put(h, at + plan.t1() + ((jj * n1 + j1) * n1 + k1) * 2, ext_pow[1](root, ((jj + n2 * n3 * j1) * k1) % n))
+                var w = ext_mul[1](ext_pow[1](root, ((jj + n2 * n3 * j1) * k1) % n), ext_pow[1](twist_in, k1))
+                _put(h, at + plan.t1() + ((jj * n1 + j1) * n1 + k1) * 2, ext_mul[1](w, tj))
 
 
 def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: Domains) raises:
@@ -363,16 +363,10 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
     var g1_inv = ext_pow[1](d.g1, 2 * h1 - 1)
     var g2_inv = ext_pow[1](d.g2, 2 * h2 - 1)
     var inv_h1 = F2(f_inv(UInt8(h1 % 127)))
-    var inv_h2 = F2(f_inv(UInt8(h2 % 127)))
-    var inv_2h2 = F2(f_inv(UInt8((2 * h2) % 127)))
     for j in range(2 * h1):
         _put(h, t.g1p + j * 2, ext_pow[1](d.g1, j))
     for j in range(2 * h2):
         _put(h, t.g2p + j * 2, ext_pow[1](d.g2, j))
-        for k in range(2 * h2):
-            _put(h, t.wfwd2 + (j * 2 * h2 + k) * 2, ext_pow[1](d.g2, (j * k) % (2 * h2)))
-        for k in range(2 * h2):
-            _put(h, t.ginv2 + (j * 2 * h2 + k) * 2, f_mul(ext_pow[1](g2_inv, (j * k) % (2 * h2)), inv_2h2))
     var e1 = ext_pow[1](d.omega1, h1 - 1)
     var e2 = ext_pow[1](d.omega2, h2 - 1)
     for j in range(2 * h1):
@@ -394,10 +388,6 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
             _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))
             var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                       # g1^-k / h1
             _put(h, t.qinv1 + (k * h1 + tt) * 2, ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1))))
-    for tt in range(h2):
-        for k in range(h2):
-            var w = f_mul(ext_pow[1](g2_inv, k), inv_h2)
-            _put(h, t.qinv2 + (k * h2 + tt) * 2, ext_mul[1](w, ext_pow[1](g2_inv, (2 * tt * k) % (2 * h2))))
     # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it)
     var gam = f2_primitive()
     if ext_pow[1](gam, h2) == F2(1):
@@ -405,14 +395,8 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
     var gam_inv = ext_pow[1](gam, F2_ORDER - 1)
     for tt in range(2 * h2):
         _put(h, t.c2p + tt * 2, ext_mul[1](gam, ext_pow[1](d.g2, tt)))
-    for k in range(2 * h2):
-        var gk = ext_pow[1](gam, k)
-        var gki = ext_pow[1](gam_inv, k)
-        for tt in range(2 * h2):
-            if k < h2:
-                _put(h, t.cfwd2 + (tt * h2 + k) * 2, ext_mul[1](gk, _get2(h, t.wfwd2 + (tt * 2 * h2 + k) * 2)))
-            _put(h, t.cinv2 + (k * 2 * h2 + tt) * 2, ext_mul[1](gki, _get2(h, t.ginv2 + (k * 2 * h2 + tt) * 2)))
-
-
-def _get2(h: HostBuffer[DType.uint8], off: Int) -> F2:
-    return F2(h[off], h[off + 1])
+    # the axis-2 plans with a coset twist: before 2026-09-11 these were dense h2^2 tables, 2 GB and 255 s at h2 = 8064
+    _dft_tables(h, t.qinv2p, DftPlan(h2, h2), ext_pow[1](d.omega2, h2 - 1), f_inv(UInt8(h2 % 127)), twist_out=g2_inv)
+    _dft_tables(h, t.gfwd2p, DftPlan(2 * h2, 2 * h2), d.g2, 1)
+    _dft_tables(h, t.cfwd2p, DftPlan(2 * h2, h2), d.g2, 1, twist_in=gam)
+    _dft_tables(h, t.cinv2p, DftPlan(2 * h2, 2 * h2), g2_inv, f_inv(UInt8((2 * h2) % 127)), twist_out=gam_inv)

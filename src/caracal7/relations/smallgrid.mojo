@@ -7,17 +7,18 @@ degree < h2 from their values on H2,
 
 For a permutation accumulator num = [Z(e1, X2), N(e1, X2)], den = [D(e1, X2)]; for a wiring product
 (accumulate.k_wire_factors) num and den are the two slots' factor lines. Every line is evaluated on
-the coset c_t = gamma2 g2^t of G2 (tables c2p, cfwd2: winv2 to coefficients, then to the 2 h2 coset values),
+the coset c_t = gamma2 g2^t of G2 (plans inv2 to coefficients, then cfwd2p to the 2 h2 coset values),
 the terms are pointwise products there, and Q3 = R2 / (X2^h2 - 1) is a pointwise division (c^h2 - 1 is
-never zero off G2; exact for an honest R2, which vanishes on H2), then cinv2 to coefficients and wfwd2
-to values on G2. The DFTs are lane GEMMs on the skeleton: the E vector is the 8-lane A operand, the F2
-table is B. The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(omega2^h2) = 1
+never zero off G2; exact for an honest R2, which vanishes on H2), then cinv2p to coefficients and gfwd2p
+to values on G2. The DFTs are dft_axis plans over one line of 8 F2 lanes, the coset twists folded into
+the stage tables (tables.mojo); before 2026-09-11 they were dense h2^2 tables. The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(omega2^h2) = 1
 after the last chain. Before 2026-09-09 the products were coefficient convolutions, O(h2^2) serial per
 output; ECDSA's six wiring products took 260 ms.
 
 Scratch (SG_* offsets in units of h2 e): lines (6, 2 h2, e) the coset values of a, b and up to four lines;
 coef (h2, e); r2 (2 h2, e) R2 on the coset summed over the terms; q3c (2 h2, e) the Q3 coefficients;
-q3 (2 h2, e) its values on G2 in generator order, the proof's clear vector.
+q3 (2 h2, e) its values on G2 in generator order, the proof's clear vector; scr (2 h2, e) the gathered input
+line and the plans' scratch.
 
 The lookup (6.3) needs no term of its own: its chain-end D_end(x2) is the factor kernel's cyclic
 row + 1 read (accumulate.mojo), so its line is the same (W) pair.
@@ -35,34 +36,39 @@ from max.gpu.host import DeviceContext
 from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_inv0, ext_one, fp_ext_mul, fp_ext_pow, fp_reduce, fp_canonical
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
-from caracal7.core.backend import BACKEND, Tile, Strided, launch_gemm_f2, strided
+from caracal7.core.backend import BACKEND
+from caracal7.core.dft import DftPlan, dft_axis
 
 comptime SG_LINES = 0       # scratch offsets in units of h2 e: six lines on the coset, 2 h2 values each
 comptime SG_COEF = 12       # a line's h2 coefficients on the way to the coset
 comptime SG_R2 = 13         # R2 on the coset, summed over the terms (2 h2)
 comptime SG_Q3C = 15        # the Q3 coefficients (2 h2)
-comptime SG_TOTAL = 17
-
-comptime DFT_TILE = Tile(BM=8, BN=64, BK=32, TM=1, TN=2)   # 8 lanes x a short N: 256 threads per block, unlike LANE_TILE's 32
+comptime SG_SCR = 17        # a gathered line (h2) or a plan's scratch (2 h2)
+comptime SG_TOTAL = 19
 from caracal7.core.bytes import Base, Buf, get_u16
 from caracal7.relations.ir import END, NONE
 from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
 
-def lane_dft[p: Params](ctx: DeviceContext, arena: Arena, src: Int, stride: Int, table: Int, n: Int, k: Int, dst: Int) raises:
-    """dst[j] = sum_i v[i] table[j, i] in E, j < n, i < k: v[i] at src + i stride, table (n, k, 2) F2, dst (n, e)."""
-    launch_gemm_f2[BACKEND, DFT_TILE, Strided, 1](ctx, arena, strided(
-        a=src, sa_m=2, sa_k=stride, b=table, sb_k=2, sb_hi=k * 2, sb_lo=0,
-        c=dst, sc_m=2, sc_hi=p.e, sc_lo=0), p.e // 2, n, k)
+def k_gather_line[p: Params](base: Base, src: Buf[1], stride: Int32, dst: Buf[16]):
+    """dst[t] = the E value at src + t stride, t < h2: a line as contiguous rows for dft_axis."""
+    var t = global_idx.x
+    if t >= p.h2():
+        return
+    dst.store(base, t, base.unsafe_load[width=16](src.at(t * Int(stride))))
 
 
 def _line_on_coset[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, src: Int, stride: Int, sg: Int, dst: Int) raises:
-    """h2 values on H2 at src (stride bytes apart) -> the line's 2 h2 values on the coset c: winv2, then cfwd2."""
+    """h2 values on H2 at src (stride bytes apart) -> the line's 2 h2 values on the coset c: inv2 to
+    coefficients, then cfwd2p (the twist gamma2^k inside the plan)."""
     comptime h2 = p.h2()
+    comptime B = BACKEND.block
     var coef = sg + SG_COEF * h2 * p.e
-    lane_dft[p](ctx, arena, src, stride, tab.base + tab.winv2, h2, h2, coef)
-    lane_dft[p](ctx, arena, coef, 16, tab.base + tab.cfwd2, 2 * h2, h2, dst)
+    var scr = sg + SG_SCR * h2 * p.e
+    ctx.enqueue_function[k_gather_line[p]](arena.buf, Buf[1](src), Int32(stride), Buf[16](scr), grid_dim=ceildiv(h2, B), block_dim=B)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, scr, coef, scr, 8, 1, tab.base + tab.inv2)
+    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, coef, dst, scr, 8, 1, tab.base + tab.cfwd2p)
 
 
 def k_product_term[p: Params](base: Base, lines: Buf[16], nn: Int32, nd: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8,
@@ -165,8 +171,9 @@ def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLay
     var q3v = sg + SG_LINES * h2 * p.e
     ctx.enqueue_function[k_q3_coset[p]](arena.buf, Buf[16](sg + SG_R2 * h2 * p.e), Buf[2](tab.base + tab.c2p), Buf[16](q3v),
                                         grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    lane_dft[p](ctx, arena, q3v, 16, tab.base + tab.cinv2, 2 * h2, 2 * h2, sg + SG_Q3C * h2 * p.e)
-    lane_dft[p](ctx, arena, sg + SG_Q3C * h2 * p.e, 16, tab.base + tab.wfwd2, 2 * h2, 2 * h2, q3)
+    var scr = sg + SG_SCR * h2 * p.e
+    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, q3v, sg + SG_Q3C * h2 * p.e, scr, 8, 1, tab.base + tab.cinv2p)
+    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, sg + SG_Q3C * h2 * p.e, q3, scr, 8, 1, tab.base + tab.gfwd2p)
 
 
 # ---- host side ----
