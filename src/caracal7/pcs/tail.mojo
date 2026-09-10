@@ -16,8 +16,6 @@ from std.gpu import global_idx, thread_idx
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F4, E, E_WIDTH, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical
-
-comptime EF = SIMD[DType.float32, 16]      # E on float lanes
 from caracal7.core.params import Params
 from caracal7.core.tables import RsTables, RsDomain
 from caracal7.pcs.encode import rs_encode_on, pack_index
@@ -25,6 +23,7 @@ from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u32, list_e
 from caracal7.core.arena import Arena
 
+comptime EF = SIMD[DType.float32, 16]      # E on float lanes
 comptime ROUND_THREADS = 16384     # partial sums of one sumcheck round (1024 left the GPU idle: 42 ms a round at N = 82,944)
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4
 
@@ -133,7 +132,7 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16]
         var m = ext_mul[2](bj, pw).cast[DType.float32]()
         comptime for tau in range(4):
             w = batch.load(base, 1 + 4 * q + tau).cast[DType.float32]().fma(EF(m[tau]), w)
-        if q % 256 == 255:
+        if q % 128 == 127:                          # 512 terms: 512 * 126^2 + 190 < 2^24, no cancellation here
             w = fp_reduce(w)
     w_tilde.store(base, slot, fp_canonical(w))
 

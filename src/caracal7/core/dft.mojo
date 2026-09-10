@@ -90,43 +90,45 @@ struct Radix(TrivialRegisterPassable, DevicePassable):
         return "Radix"
 
 
-def k_radix[r: Int, kin: Int, bytes_in: Bool](base: Base, o: Radix):
-    """y[j] = sum_k T[j, k] x[k] for one thread's line; x is F (one byte) when bytes_in."""
+def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1](base: Base, o: Radix):
+    """y[j] = sum_k T[j, k] x[k] for one thread's V consecutive inner positions (V = 1 when the
+    inner stride is not 2 bytes); x is F (one byte) when bytes_in. The 2 V byte loads and stores
+    are what the stage is bound by at V = 1."""
     comptime assert kin * 2 * 126 * 126 < 127 * (1 << 15), "a stage's accumulator stays below WIDE_BIAS"
+    comptime assert V == 1 or not bytes_in
     var t = global_idx.x
     if t >= Int(o.total):
         return
-    var inner = t % Int(o.inner)
+    var inner = (t % Int(o.inner)) * V
     var rest = t // Int(o.inner)
     var pre = rest % Int(o.od)
     var line = rest // Int(o.od)
     var src = Int(o.src) + line * Int(o.so_line) + pre * Int(o.so_pre) + inner * Int(o.si)
     var dst = Int(o.dst) + line * Int(o.to_line) + pre * Int(o.to_pre) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
-    var x0 = InlineArray[Int32, kin](fill=0)
-    var x1 = InlineArray[Int32, kin](fill=0)
+    var x0 = InlineArray[SIMD[DType.int32, V], kin](fill=0)
+    var x1 = InlineArray[SIMD[DType.int32, V], kin](fill=0)
     comptime for k in range(kin):
         comptime if bytes_in:
             x0[k] = Int32(base[unsafe_offset=src + k * Int(o.sk)])
         else:
-            var v = base.unsafe_load[width=2](src + k * Int(o.sk))
-            x0[k] = Int32(v[0])
-            x1[k] = Int32(v[1])
+            var v = base.unsafe_load[width=2 * V](src + k * Int(o.sk)).deinterleave()
+            x0[k] = rebind[SIMD[DType.int32, V]](v[0].cast[DType.int32]())
+            x1[k] = rebind[SIMD[DType.int32, V]](v[1].cast[DType.int32]())
     comptime for j in range(r):
-        var re: Int32 = 0
-        var im: Int32 = 0
+        var re = SIMD[DType.int32, V](0)
+        var im = SIMD[DType.int32, V](0)
         comptime for k in range(kin):
             var w = base.unsafe_load[width=2](tab + (j * kin + k) * 2)
             var w0 = Int32(w[0])
             var w1 = Int32(w[1])
             re += w0 * x0[k] - w1 * x1[k]
             im += w0 * x1[k] + w1 * x0[k]
-        var v = F2(f_reduce_signed(SIMD[DType.int32, 1](re))[0], f_reduce_signed(SIMD[DType.int32, 1](im))[0])
-        base.unsafe_store[width=2](dst + j * Int(o.tj), v)
+        base.unsafe_store[width=2 * V](dst + j * Int(o.tj), f_reduce_signed(re).interleave(f_reduce_signed(im)))
 
 
-def _stage[r: Int, kin: Int, bytes_in: Bool](ctx: DeviceContext, arena: Arena, o: Radix) raises:
-    comptime kernel = k_radix[r, kin, bytes_in]
+def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:
+    comptime kernel = k_radix[r, kin, bytes_in, V]
     ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
 
 
@@ -147,16 +149,18 @@ def dft_axis[p: Params, forward: Bool, axis: Int, bytes_in: Bool = False](
     comptime assert n1 * n2 * k3 == h, "the input length must split as n1 n2 k3"
     var R = W * 2
     var Ri = W if bytes_in else R
-    _stage[n3, k3, bytes_in](ctx, arena, Radix(
+    comptime V = 4 if axis == 2 else 1          # axis 2 rows are W = G1 F2 values, contiguous: 8-byte accesses
+    comptime assert axis == 1 or p.h1() % V == 0     # W is h1 or 2 h1
+    _stage[n3, k3, bytes_in, 1 if bytes_in else V](ctx, arena, Radix(
         src=src, so_line=h * Ri, so_pre=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
         dst=dst, to_line=n * R, to_pre=0, tj=n1 * n2 * R, ti=2,
-        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W, total=lines * n1 * n2 * W))
-    _stage[n2, n2, False](ctx, arena, Radix(
+        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V, total=lines * n1 * n2 * W // V))
+    _stage[n2, n2, False, V](ctx, arena, Radix(
         src=dst, so_line=n * R, so_pre=n1 * n2 * R, sk=n1 * R, si=2,
         dst=scratch, to_line=n * R, to_pre=n1 * R, tj=n3 * n1 * R, ti=2,
-        tab=tab + plan.t2(), od=n3, tabmod=n3, inner=n1 * W, total=lines * n3 * n1 * W))
+        tab=tab + plan.t2(), od=n3, tabmod=n3, inner=n1 * W // V, total=lines * n3 * n1 * W // V))
     # ponytail: at n1 = 1 this stage is a copy; skip it when a grid with a power-of-two axis matters
-    _stage[n1, n1, False](ctx, arena, Radix(
+    _stage[n1, n1, False, V](ctx, arena, Radix(
         src=scratch, so_line=n * R, so_pre=n1 * R, sk=R, si=2,
         dst=dst, to_line=n * R, to_pre=R, tj=n2 * n3 * R, ti=2,
-        tab=tab + plan.t1(), od=n2 * n3, tabmod=n2 * n3, inner=W, total=lines * n2 * n3 * W))
+        tab=tab + plan.t1(), od=n2 * n3, tabmod=n2 * n3, inner=W // V, total=lines * n2 * n3 * W // V))

@@ -941,3 +941,12 @@ materialize 0 10 -> 6, fold 0 4 -> 2; the tail is now about 40 ms of the prove.
 `k_product_term`, `k_end_term`, `k_q3_coset` use `fp_ext_mul[4]` and `fp_ext_pow[4]` (reduced after
 every product). Small grid 22 -> 19 ms: the stage is many short launches (two lane DFTs per line,
 one term kernel per accumulator), so launch overhead is most of what remains.
+
+## Radix stages vectorized along the inner axis (2026-09-10)
+
+Variants of `lde` at 236 columns: full 50 ms, loads and stores only 26, MACs without reductions
+45. The 2-byte per-thread accesses reach about 50 GB/s. `k_radix[V]` now serves V = 4 consecutive
+inner positions per thread (8-byte loads and stores, the same uniform table reads) on axis 2,
+where a row is W = h1 or 2 h1 contiguous F2 values; axis 1 stays at V = 1 (W = 1). lde 50 -> 41
+ms for the W columns. The remaining cost is the dense stage matrices (radix 16 x 8, 8 x 8, 9 x 9
+on axis 2); a Cooley-Tukey split of the 16 and 9 would cut the MACs further.

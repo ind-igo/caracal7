@@ -143,8 +143,10 @@ def fp_const_mul[k: Int](x: SIMD[DType.float32, 1 << (k - 1)]) -> SIMD[DType.flo
 @always_inline
 def fp_ext_mul[k: Int](a: SIMD[DType.float32, 1 << k], b: SIMD[DType.float32, 1 << k]) -> SIMD[DType.float32, 1 << k]:
     """Schoolbook on the tower with float lanes, no reduction: (a0 + a1 g)(b0 + b1 g) = (a0 b0 + C a1 b1)
-    + (a0 b1 + a1 b0) g. Lane bound 2^(2k + 1) P for a base product bound P: an E product of canonical
-    values is below 2.1 M, of |x| <= 190 values below 4.7 M."""
+    + (a0 b1 + a1 b0) g. Lane bound 2^(2k - 1) P for k >= 1 and a base product bound P: level 1
+    doubles (C1 = -1), every level above multiplies by 4 (lo = p00 + C p11 with |C x| <= 3 |x|).
+    An E product of canonical values is below 2.1 M, of |x| <= 190 values below 4.7 M (the exact
+    coefficient bound is 44 P; review 2026-09-10)."""
     comptime if k == 0:
         return a * b
     else:
