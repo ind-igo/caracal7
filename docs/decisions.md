@@ -1152,3 +1152,14 @@ dense `wfwd1` table is gone, `ginv2` and `wfwd2` stay for the small-grid and cos
 inverses (10 ms together) carry an output twist g^-k that a plan table would fold into its last
 stage, and Q1 (7 ms) is not a DFT.
 
+## Radix stages on single-lane rows: four lines per thread (2026-09-10)
+
+Per stage at the ECDSA grid, the axis-1 transforms (W = 1: one F2 per thread) ran 3 to 5x slower per
+element than the axis-2 ones (W = 2 h1, V = 4 lanes per thread): a thread there loads its r x kin
+table (16 to 81 two-byte loads) for one element of work, and the LDE's axis 1 alone was 21 ms for W and
+19 for Z. `k_radix` now takes LB lines per thread when V = 1 (LB = 4: the lanes of the SIMD accumulator
+are consecutive lines, loaded and stored one F2 each), so the table loads are shared four ways. LDE
+77 -> 60 ms, encode W 58 -> 51, Z 51 -> 45, warm prove 397 -> 379 ms (minimum of three runs), proof and
+verify unchanged. The stages are still well above the memory bound (axis 1 moves about 160 MB per
+stage in 5 to 10 ms); the next step would fuse the three stages of a line in threadgroup memory.
+

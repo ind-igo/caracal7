@@ -26,6 +26,7 @@ from caracal7.core.arena import Arena
 struct DftPlan(TrivialRegisterPassable):
     """n = n1 n2 n3 and the nonzero inputs k3 of stage 3 (k_in = n1 n2 k3)."""
     var n: Int
+    var k_in: Int
     var n1: Int
     var n2: Int
     var n3: Int
@@ -41,6 +42,7 @@ struct DftPlan(TrivialRegisterPassable):
             t //= 2
             a += 1
         self.n = n
+        self.k_in = k_in
         self.n1 = odd
         self.n2 = 1 << (a // 2)
         self.n3 = 1 << (a - a // 2)
@@ -89,45 +91,60 @@ struct Radix(TrivialRegisterPassable, DevicePassable):
         return "Radix"
 
 
-def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1](base: Base, o: Radix):
+def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
     """y[j] = sum_k T[j, k] x[k] for one thread's V consecutive inner positions (V = 1 when the
-    inner stride is not 2 bytes); x is F (one byte) when bytes_in. The 2 V byte loads and stores
-    are what the stage is bound by at V = 1."""
+    inner stride is not 2 bytes) or, at V = 1, LB consecutive lines: the lanes share the table loads,
+    which outnumber the data loads r-fold. x is F (one byte) when bytes_in."""
     comptime assert kin * 2 * 126 * 126 < 127 * (1 << 15), "a stage's accumulator stays below WIDE_BIAS"
-    comptime assert V == 1 or not bytes_in
+    comptime assert V == 1 or (not bytes_in and LB == 1)
+    comptime VL = V * LB
     var t = global_idx.x
     if t >= Int(o.total):
         return
     var inner = (t % Int(o.inner)) * V
     var rest = t // Int(o.inner)
     var pre = rest % Int(o.od)
-    var line = rest // Int(o.od)
+    var line = (rest // Int(o.od)) * LB
     var src = Int(o.src) + line * Int(o.so_line) + pre * Int(o.so_pre) + inner * Int(o.si)
     var dst = Int(o.dst) + line * Int(o.to_line) + pre * Int(o.to_pre) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
-    var x0 = InlineArray[SIMD[DType.int32, V], kin](fill=0)
-    var x1 = InlineArray[SIMD[DType.int32, V], kin](fill=0)
+    var x0 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
+    var x1 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
     comptime for k in range(kin):
-        comptime if bytes_in:
+        comptime if LB > 1:
+            comptime for l in range(LB):
+                comptime if bytes_in:
+                    x0[k][l] = Int32(base[unsafe_offset=src + l * Int(o.so_line) + k * Int(o.sk)])
+                else:
+                    var v = base.unsafe_load[width=2](src + l * Int(o.so_line) + k * Int(o.sk))
+                    x0[k][l] = Int32(v[0])
+                    x1[k][l] = Int32(v[1])
+        elif bytes_in:
             x0[k] = Int32(base[unsafe_offset=src + k * Int(o.sk)])
         else:
             var v = base.unsafe_load[width=2 * V](src + k * Int(o.sk)).deinterleave()
-            x0[k] = rebind[SIMD[DType.int32, V]](v[0].cast[DType.int32]())
-            x1[k] = rebind[SIMD[DType.int32, V]](v[1].cast[DType.int32]())
+            x0[k] = rebind[SIMD[DType.int32, VL]](v[0].cast[DType.int32]())
+            x1[k] = rebind[SIMD[DType.int32, VL]](v[1].cast[DType.int32]())
     comptime for j in range(r):
-        var re = SIMD[DType.int32, V](0)
-        var im = SIMD[DType.int32, V](0)
+        var re = SIMD[DType.int32, VL](0)
+        var im = SIMD[DType.int32, VL](0)
         comptime for k in range(kin):
             var w = base.unsafe_load[width=2](tab + (j * kin + k) * 2)
             var w0 = Int32(w[0])
             var w1 = Int32(w[1])
             re += w0 * x0[k] - w1 * x1[k]
             im += w0 * x1[k] + w1 * x0[k]
-        base.unsafe_store[width=2 * V](dst + j * Int(o.tj), f_reduce_signed(re).interleave(f_reduce_signed(im)))
+        var rr = f_reduce_signed(re)
+        var ii = f_reduce_signed(im)
+        comptime if LB > 1:
+            comptime for l in range(LB):
+                base.unsafe_store[width=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
+        else:
+            base.unsafe_store[width=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
 
 
-def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:
-    comptime kernel = k_radix[r, kin, bytes_in, V]
+def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:
+    comptime kernel = k_radix[r, kin, bytes_in, V, LB]
     ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
 
 
@@ -146,23 +163,26 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     comptime n3 = plan.n3
     comptime k3 = plan.k3
     comptime h = n1 * n2 * k3
+    comptime assert h == plan.k_in, "the input length must split as n1 n2 k3"
     comptime V3 = 1 if bytes_in else V          # byte input is one byte per position
-    if W % V != 0:
-        raise Error("dft_axis: W is not a multiple of V")
+    comptime LB = 4 if V == 1 else 1            # single-lane rows: four lines per thread instead
+    comptime LB3 = 4 if V3 == 1 else 1
+    if W % V != 0 or lines % LB != 0:
+        raise Error("dft_axis: W is not a multiple of V, or lines of LB")
     var R = W * 2
     var Ri = W if bytes_in else R
     var dl = dst_line if dst_line > 0 else n * R
     var dj = dst_j if dst_j > 0 else R
-    _stage[n3, k3, bytes_in, V3](ctx, arena, Radix(
+    _stage[n3, k3, bytes_in, V3, LB3](ctx, arena, Radix(
         src=src, so_line=h * Ri, so_pre=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
         dst=dst, to_line=n * R, to_pre=0, tj=n1 * n2 * R, ti=2,
-        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines * n1 * n2 * W // V3))
-    _stage[n2, n2, False, V](ctx, arena, Radix(
+        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines // LB3 * n1 * n2 * W // V3))
+    _stage[n2, n2, False, V, LB](ctx, arena, Radix(
         src=dst, so_line=n * R, so_pre=n1 * n2 * R, sk=n1 * R, si=2,
         dst=scratch, to_line=n * R, to_pre=n1 * R, tj=n3 * n1 * R, ti=2,
-        tab=tab + plan.t2(), od=n3, tabmod=n3, inner=n1 * W // V, total=lines * n3 * n1 * W // V))
+        tab=tab + plan.t2(), od=n3, tabmod=n3, inner=n1 * W // V, total=lines // LB * n3 * n1 * W // V))
     # ponytail: at n1 = 1 this stage is a copy; skip it when a grid with a power-of-two axis matters
-    _stage[n1, n1, False, V](ctx, arena, Radix(
+    _stage[n1, n1, False, V, LB](ctx, arena, Radix(
         src=scratch, so_line=n * R, so_pre=n1 * R, sk=R, si=2,
         dst=dst, to_line=dl, to_pre=dj, tj=n2 * n3 * dj, ti=2,
-        tab=tab + plan.t1(), od=n2 * n3, tabmod=n2 * n3, inner=W // V, total=lines * n2 * n3 * W // V))
+        tab=tab + plan.t1(), od=n2 * n3, tabmod=n2 * n3, inner=W // V, total=lines // LB * n2 * n3 * W // V))
