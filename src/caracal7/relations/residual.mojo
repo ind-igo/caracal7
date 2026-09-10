@@ -10,19 +10,19 @@ Buffers (bytes; slowest ... fastest):
     trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
 Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8):
     lde        axis 1: C[line, j1] = sum_k coeff[line, k] g1^(j1 k); axis 2 per column likewise
-    residual   the one stage that is not a GEMM launch: k_residual, one thread per point, gathers
-               X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point) and accumulates
-               the 8 kappa lanes in registers (the GEMM skeleton's shared-memory staging cost more than
-               the gather at M = 8). The 2 e basis entries of a Horner transition are not in the table it
-               walks: it reads the e coordinate columns as one E value R(point) and adds
-               alpha^f gate (R(omega1 x) - scale R)
+    residual   the one stage that is not a GEMM launch: k_residual, one thread per column position and
+               two rows, gathers X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point)
+               and accumulates the 8 kappa lanes per row in registers (the GEMM skeleton's shared-memory
+               staging cost more than the gather at M = 8). The 2 e basis entries of a Horner transition
+               are not in the table it walks: k_horner, one thread per point after it, reads the e
+               coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
     quotient   q1m over G1 -> Q1 on the coset; qinv1, ginv2 -> the A, B coefficients;
                q2m, qinv2 -> the Q2 coefficients; forward DFTs to their values on H"""
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2
+from caracal7.core.field import F2, E, V2, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
@@ -31,6 +31,8 @@ from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.dft import dft_axis
 from std.gpu import global_idx
+
+comptime V8 = SIMD[DType.float32, 8]
 
 
 def quotient_elems[p: Params]() -> Int:
@@ -93,66 +95,101 @@ def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E
     return r
 
 
-def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2],
-                          families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[16]):
-    """dst[point] = sum over entries of kappa X(point) + the Horner transitions, one thread per point
-    with the 8 kappa lanes accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
+def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2], dst: Buf[16]):
+    """dst[point] = sum over entries of kappa X(point), one thread per column position and V rows
+    (the rows 2 t apart share the entry descriptors and kappa, and have V loads in flight) with the 8
+    kappa lanes per row accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
     is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane on fp32 lanes, 128
-    terms between reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even rows; R is
-    zero on H x H for a satisfied statement, so the last quadrant's threads write zero. A Horner
-    accumulator adds gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)) with kappa_A = alpha^f and
-    kappa_B = -alpha^f scale, the folded kappas of its basis-0 entries (ir.Families.horner puts the
-    2 e basis entries just before the ingest range), R read from the e coordinate columns as one E."""
+    terms between reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even
+    rows; R is zero on H x H for a satisfied statement, so the last quadrant's threads write zero. The
+    Horner transitions are k_horner's, launched after this one."""
+    comptime G1 = 2 * p.h1()
+    comptime G2 = 2 * p.h2()
+    comptime V = 2 if p.h2() % 2 == 0 else 1
+    comptime Q1 = G1 * p.h2()
+    comptime Q2 = p.h1() * p.h2()
+    comptime R1 = Q1 // V
+    comptime R2 = Q2 // V
+    comptime assert BACKEND.max_terms & (BACKEND.max_terms - 1) == 0, "the reduction cadence masks k"
+    var gid = Int(global_idx.x)
+    if gid >= R1 + R2 + Q2:
+        return
+    var j1: Int
+    var j2: Int
+    if gid < R1:
+        j2 = 2 * V * (gid // G1) + 1
+        j1 = gid % G1
+    elif gid < R1 + R2:
+        var g = gid - R1
+        j2 = 2 * V * (g // p.h1())
+        j1 = 2 * (g % p.h1()) + 1
+    else:
+        var g = gid - R1 - R2
+        j2 = 2 * (g // p.h1())
+        j1 = 2 * (g % p.h1())
+        dst.store(base, j2 * G1 + j1, E(0))
+        return
+    var g1f = fp_center(gate1.load(base, j1))
+    var g2f = InlineArray[V2, V](fill=V2(0))
+    var re = InlineArray[V8, V](fill=V8(0))
+    var im = InlineArray[V8, V](fill=V8(0))
+    comptime for t in range(V):
+        g2f[t] = fp_center(gate2.load(base, j2 + 2 * t))
+    # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
+    # |v| <= 190; a term kappa v is below 48 K, 128 of them below 6.2 M, exact in fp32
+    for k in range(Int(count)):
+        var ent = fam.at(k * ENTRY)
+        var second = u16(base, ent + 22) != NONE
+        var mult = fam.load(base, k * ENTRY + 28)
+        var kap = Buf[16](ent).load(base, 0).deinterleave()
+        var kre = kap[0].cast[DType.float32]()
+        var kim = kap[1].cast[DType.float32]()
+        comptime for t in range(V):
+            var v = _read[p](base, lde, ent + 16, j1, j2 + 2 * t).cast[DType.float32]()
+            if second:
+                v = fp_mul_f2(v, _read[p](base, lde, ent + 22, j1, j2 + 2 * t).cast[DType.float32]())
+            if mult == 1:
+                v = fp_mul_f2(v, g1f)
+            elif mult == 2:
+                v = fp_mul_f2(v, g2f[t])
+            v = fp_reduce(v)
+            var v0 = V8(v[0])
+            var v1 = V8(v[1])
+            re[t] = kim.fma(-v1, kre.fma(v0, re[t]))
+            im[t] = kim.fma(v0, kre.fma(v1, im[t]))
+        if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
+            comptime for t in range(V):
+                re[t] = fp_reduce(re[t])
+                im[t] = fp_reduce(im[t])
+    comptime for t in range(V):
+        dst.store(base, (j2 + 2 * t) * G1 + j1, fp_canonical(re[t]).interleave(fp_canonical(im[t])))
+
+
+def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[16]):
+    """dst[point] += gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)) for every Horner accumulator, one
+    thread per point of the odd rows and the odd columns of the even rows (the rest is zero), with
+    kappa_A = alpha^f and kappa_B = -alpha^f scale, the folded kappas of its basis-0 entries
+    (ir.Families.horner puts the 2 e basis entries just before the ingest range), R read from the e
+    coordinate columns as one E. fp32 lanes: the two E products of canonical values unreduced (below
+    2.1 M each), the sum reduced to |x| <= 190, times the centered gate on lane pairs (below 24 K),
+    the running total and dst below 1 M, canonicalized at the store."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     comptime Q1 = G1 * p.h2()
     comptime Q2 = p.h1() * p.h2()
-    comptime assert BACKEND.max_terms & (BACKEND.max_terms - 1) == 0, "the reduction cadence masks k"
     var gid = Int(global_idx.x)
-    if gid >= G1 * G2:
+    if gid >= Q1 + Q2:
         return
     var j1: Int
     var j2: Int
     if gid < Q1:
         j2 = 2 * (gid // G1) + 1
         j1 = gid % G1
-    elif gid < Q1 + Q2:
+    else:
         j2 = 2 * ((gid - Q1) // p.h1())
         j1 = 2 * ((gid - Q1) % p.h1()) + 1
-    else:
-        j2 = 2 * ((gid - Q1 - Q2) // p.h1())
-        j1 = 2 * ((gid - Q1 - Q2) % p.h1())
-        dst.store(base, j2 * G1 + j1, E(0))
-        return
-    var g1 = gate1.load(base, j1)
-    var g1f = fp_center(g1)
-    var g2f = fp_center(gate2.load(base, j2))
-    var re = SIMD[DType.float32, 8](0)
-    var im = SIMD[DType.float32, 8](0)
-    # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
-    # |v| <= 190; a term kappa v is below 48 K, 128 of them below 6.2 M, exact in fp32
-    for k in range(Int(count)):
-        var ent = fam.at(k * ENTRY)
-        var v = _read[p](base, lde, ent + 16, j1, j2).cast[DType.float32]()
-        if u16(base, ent + 22) != NONE:
-            v = fp_mul_f2(v, _read[p](base, lde, ent + 22, j1, j2).cast[DType.float32]())
-        var mult = fam.load(base, k * ENTRY + 28)
-        if mult == 1:
-            v = fp_mul_f2(v, g1f)
-        elif mult == 2:
-            v = fp_mul_f2(v, g2f)
-        v = fp_reduce(v)
-        var kap = Buf[16](ent).load(base, 0).deinterleave()
-        var kre = kap[0].cast[DType.float32]()
-        var kim = kap[1].cast[DType.float32]()
-        var v0 = SIMD[DType.float32, 8](v[0])
-        var v1 = SIMD[DType.float32, 8](v[1])
-        re = kim.fma(-v1, kre.fma(v0, re))
-        im = kim.fma(v0, kre.fma(v1, im))
-        if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
-            re = fp_reduce(re)
-            im = fp_reduce(im)
-    var acc = fp_canonical(re).interleave(fp_canonical(im))
+    var g = fp_center(gate1.load(base, j1))
+    var acc = dst.load(base, j2 * G1 + j1).cast[DType.float32]()
     var jn = j1 + 2
     if jn >= G1:
         jn -= G1
@@ -162,15 +199,13 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
             continue
         var col = u16(base, d.at(0))
         var first = u16(base, d.at(2))
-        var ka = Buf[16](families.at((first - 32) * ENTRY)).load(base, 0)
-        var kb = Buf[16](families.at((first - 31) * ENTRY)).load(base, 0)
-        var v = f_add(ext_mul[4](ka, _z_read[p](base, lde, col, jn, j2)), ext_mul[4](kb, _z_read[p](base, lde, col, j1, j2)))
-        comptime for l in range(8):                      # times the gate, an F2 scalar, lane by lane
-            var w = ext_mul[1](F2(v[2 * l], v[2 * l + 1]), g1)
-            v[2 * l] = w[0]
-            v[2 * l + 1] = w[1]
-        acc = f_add(acc, v)
-    dst.store(base, j2 * G1 + j1, acc)
+        var ka = Buf[16](families.at((first - 32) * ENTRY)).load(base, 0).cast[DType.float32]()
+        var kb = Buf[16](families.at((first - 31) * ENTRY)).load(base, 0).cast[DType.float32]()
+        var v = fp_reduce(fp_ext_mul[4](ka, _z_read[p](base, lde, col, jn, j2).cast[DType.float32]())
+                          + fp_ext_mul[4](kb, _z_read[p](base, lde, col, j1, j2).cast[DType.float32]()))
+        var h = v.deinterleave()                        # times the gate, an F2 scalar, lane by lane
+        acc += (h[0] * g[0] - h[1] * g[1]).interleave(h[0] * g[1] + h[1] * g[0])
+    dst.store(base, j2 * G1 + j1, fp_canonical(acc))
 
 
 def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups: Int32):
@@ -216,11 +251,17 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
     if families_g != families:
         ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[16](alpha), Buf[16](chals),
                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
+    comptime V = 2 if p.h2() % 2 == 0 else 1
+    comptime T = (G1 * p.h2()) // V + (p.h1() * p.h2()) // V + p.h1() * p.h2()
     comptime kr = k_residual[p]
     ctx.enqueue_function[kr](arena.buf, Buf[2](lde_buf), Buf[1](families_g), Int32(count_g),
-                             Buf[2](tab.base + tab.gate1), Buf[2](tab.base + tab.gate2),
-                             Buf[1](families), Buf[1](accs), Int32(n_accs), Buf[16](dst),
-                             grid_dim=ceildiv(G1 * G2, BACKEND.block), block_dim=BACKEND.block)
+                             Buf[2](tab.base + tab.gate1), Buf[2](tab.base + tab.gate2), Buf[16](dst),
+                             grid_dim=ceildiv(T, BACKEND.block), block_dim=BACKEND.block)
+    if n_accs > 0:
+        comptime kh = k_horner[p]
+        ctx.enqueue_function[kh](arena.buf, Buf[2](lde_buf), Buf[2](tab.base + tab.gate1),
+                                 Buf[1](families), Buf[1](accs), Int32(n_accs), Buf[16](dst),
+                                 grid_dim=ceildiv(G1 * p.h2() + p.h1() * p.h2(), BACKEND.block), block_dim=BACKEND.block)
 
 
 def quotient[p: Params](ctx: DeviceContext, arena: Arena,

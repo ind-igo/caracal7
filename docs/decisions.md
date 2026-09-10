@@ -1021,3 +1021,18 @@ launches, and 36.5 with the twist products removed: the block of one k2 re-reads
 so the gather's loads and twists are done B2 = 8 times. A block that holds all eight k2 of a line
 needs 64 KB of threadgroup memory at 32 columns (32 KB at 16 columns, one block per core); not
 tried. The encoder stays at gather, 64-point block, radix 5, fused radix 7 x 9: four sweeps.
+
+## Residual: the Horner transitions in their own fp32 kernel, two rows per thread (2026-09-10)
+
+Variants of the fp32 `k_residual` at ECDSA size (1,152 entries, 13 Horner accumulators), minimums:
+shipped 77 ms; the same loop with the descriptor and kappa loads hoisted 71; without the LDE reads
+62; without the kappa MAC 60; with no memory access at all 60. The loop was not bound by its loads
+or its arithmetic: without the Horner section at the end (26 byte-path `ext_mul[4]` and 8
+`ext_mul[1]` per point, register-heavy) the same loop ran in 41 ms, and with two rows per thread
+in 30. Four rows per thread spilled (130 ms). Now `k_residual` takes two rows per column position
+(the descriptors and kappa loaded once, two gathers in flight) and `k_horner`, one thread per
+active point after it, adds the transitions on fp32 lanes (`fp_ext_mul[4]` unreduced, the sum
+reduced, the gate on lane pairs). Residual 100 -> 35 ms back to back under load (the same window;
+absolute numbers were 25% high). Next residual lever (Codex): 801 of the 1,152 entries have
+distinct (reads, gate) descriptors, so merging duplicates after `k_fold_alpha` would cut the loop
+by 30%.
