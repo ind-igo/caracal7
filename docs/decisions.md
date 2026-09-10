@@ -883,3 +883,13 @@ integer), 2-adic 40 -> 18, radix 5 30 -> 20, radix 7 20 -> 14, radix 9 with the 
 A stride experiment on the radix-7 shape (loads 30 MB apart versus adjacent) showed no difference,
 so the etmp layout stays. ECDSA: encode W 197 -> 142, Z 173 -> 124, Q 49 -> 35 ms, warm prove
 1,085 -> 929 ms. Next on the same line: the gather and the GEMM skeleton's accumulators.
+
+## Residual on fp32 lanes (2026-09-10)
+
+Variants of `k_residual` at ECDSA size: the shipped integer kernel 185 ms in the harness, without
+the two F2 products 90, without the LDE reads 96, on fp32 lanes 52. The products were the cost:
+`ext_mul[1]` reduces every base product (five `f_mul`, about forty ops), and the kappa MAC was
+four integer vector multiplies. Now the gathered value and its products are float lanes (a read
+<= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced once to |v| <= 190),
+the kappa lanes are two fma pairs, reduced every 128 terms as before. The Horner transitions keep
+the byte path. Residual 126 -> 77 ms, warm prove 929 -> 886 ms.

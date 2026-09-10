@@ -95,10 +95,10 @@ comptime FP_ROUND = Float32(12582912.0)        # 1.5 * 2^23: (v + FP_ROUND) - FP
 
 
 @always_inline
-def fp_reduce(x: V4) -> V4:
+def fp_reduce[w: SIMDLength](x: SIMD[DType.float32, w]) -> SIMD[DType.float32, w]:
     """The centered residue x - 127 round(x / 127): |result| <= 63 for |x| < 4 M, <= 190 for |x| < 2^24."""
     var q = (x * FP_INV + FP_ROUND) - FP_ROUND
-    return q.fma(V4(-127.0), x)
+    return q.fma(SIMD[DType.float32, w](-127.0), x)
 
 
 @always_inline
@@ -109,11 +109,17 @@ def fp_center[w: SIMDLength](t: SIMD[DType.uint8, w]) -> SIMD[DType.float32, w]:
 
 
 @always_inline
-def fp_canonical(x: V4) -> F4:
+def fp_canonical[w: SIMDLength](x: SIMD[DType.float32, w]) -> SIMD[DType.uint8, w]:
     """The store form 0..126 of a value with |x| < 2^24: the centered residue r, |r| <= 190, then
     r - 127 floor((r + 1/2) / 127), exact at r = +-127 where floor(r / 127) could round wrong."""
     var r = fp_reduce(x)
     return (r - 127.0 * floor((r + 0.5) * FP_INV)).cast[DType.uint8]()
+
+
+@always_inline
+def fp_mul_f2(a: V2, b: V2) -> V2:
+    """a * b in F2: (a0 + a1 i)(b0 + b1 i), 4 products."""
+    return V2(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
 
 
 @always_inline

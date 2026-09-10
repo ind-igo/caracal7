@@ -22,7 +22,7 @@ Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_reduce_signed, ext_mul, ext_pow
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
@@ -97,8 +97,8 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
                           families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[16]):
     """dst[point] = sum over entries of kappa X(point) + the Horner transitions, one thread per point
     with the 8 kappa lanes accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
-    is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane, 128 terms between
-    reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even rows; R is
+    is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane on fp32 lanes, 128
+    terms between reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even rows; R is
     zero on H x H for a satisfied statement, so the last quadrant's threads write zero. A Horner
     accumulator adds gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)) with kappa_A = alpha^f and
     kappa_B = -alpha^f scale, the folded kappas of its basis-0 entries (ir.Families.horner puts the
@@ -125,30 +125,34 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         dst.store(base, j2 * G1 + j1, E(0))
         return
     var g1 = gate1.load(base, j1)
-    var g2 = gate2.load(base, j2)
-    var re = SIMD[DType.int32, 8](0)
-    var im = SIMD[DType.int32, 8](0)
+    var g1f = fp_center(g1)
+    var g2f = fp_center(gate2.load(base, j2))
+    var re = SIMD[DType.float32, 8](0)
+    var im = SIMD[DType.float32, 8](0)
+    # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
+    # |v| <= 190; a term kappa v is below 48 K, 128 of them below 6.2 M, exact in fp32
     for k in range(Int(count)):
         var ent = fam.at(k * ENTRY)
-        var v = _read[p](base, lde, ent + 16, j1, j2)
+        var v = _read[p](base, lde, ent + 16, j1, j2).cast[DType.float32]()
         if u16(base, ent + 22) != NONE:
-            v = ext_mul[1](v, _read[p](base, lde, ent + 22, j1, j2))
+            v = fp_mul_f2(v, _read[p](base, lde, ent + 22, j1, j2).cast[DType.float32]())
         var mult = fam.load(base, k * ENTRY + 28)
         if mult == 1:
-            v = ext_mul[1](v, g1)
+            v = fp_mul_f2(v, g1f)
         elif mult == 2:
-            v = ext_mul[1](v, g2)
+            v = fp_mul_f2(v, g2f)
+        v = fp_reduce(v)
         var kap = Buf[16](ent).load(base, 0).deinterleave()
-        var kre = kap[0].cast[DType.int32]()
-        var kim = kap[1].cast[DType.int32]()
-        var v0 = Int32(v[0])
-        var v1 = Int32(v[1])
-        re += kre * v0 - kim * v1
-        im += kre * v1 + kim * v0
+        var kre = kap[0].cast[DType.float32]()
+        var kim = kap[1].cast[DType.float32]()
+        var v0 = SIMD[DType.float32, 8](v[0])
+        var v1 = SIMD[DType.float32, 8](v[1])
+        re = kim.fma(-v1, kre.fma(v0, re))
+        im = kim.fma(v0, kre.fma(v1, im))
         if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
-            re = f_reduce_signed(re).cast[DType.int32]()
-            im = f_reduce_signed(im).cast[DType.int32]()
-    var acc = f_reduce_signed(re).interleave(f_reduce_signed(im))
+            re = fp_reduce(re)
+            im = fp_reduce(im)
+    var acc = fp_canonical(re).interleave(fp_canonical(im))
     var jn = j1 + 2
     if jn >= G1:
         jn -= G1
