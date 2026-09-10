@@ -950,3 +950,16 @@ inner positions per thread (8-byte loads and stores, the same uniform table read
 where a row is W = h1 or 2 h1 contiguous F2 values; axis 1 stays at V = 1 (W = 1). lde 50 -> 41
 ms for the W columns. The remaining cost is the dense stage matrices (radix 16 x 8, 8 x 8, 9 x 9
 on axis 2); a Cooley-Tukey split of the 16 and 9 would cut the MACs further.
+
+## Odd RS radices in symmetric form (2026-09-10)
+
+`k_rs_stage` pairs x_k with x_(r-k): with c_m = (w^m + w^-m) / 2 and s_m = (w^m - w^-m) / 2,
+y_t = x_0 + sum_k c_(tk) (x_k + x_(r-k)) + s_(tk) (x_k - x_(r-k)) and y_(r-t) flips the s sum, so a
+radix-r point costs (r - 1)^2 / 2 products instead of r^2. For radix 5 the Frobenius of F4 / F2
+sends w to w^-1, so c_m lies in F2 and s_m in F2 j and the F4 x F4 products become F2 x F4 ones;
+the constants are formed in the kernel from the existing w^m row. Radix 5 at ECDSA shape 19.4 ->
+13.8 ms (with two columns per thread; four spills, and radix 7 and 9 are slower at any width above
+one). Radix 7 and 9 did not move (14, 18 ms): a loads-and-stores-only variant of the kernel takes
+15 and 19 ms, and the strided memory probe puts one in-place sweep of etmp at about 2.2 ms, four
+sweeps (one per coset) per stage. The odd stages sit at their memory floor; the remaining lever in
+the encoder is fewer sweeps (fusing stages through threadgroup memory), not cheaper arithmetic.
