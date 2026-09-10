@@ -1022,6 +1022,17 @@ so the gather's loads and twists are done B2 = 8 times. A block that holds all e
 needs 64 KB of threadgroup memory at 32 columns (32 KB at 16 columns, one block per core); not
 tried. The encoder stays at gather, 64-point block, radix 5, fused radix 7 x 9: four sweeps.
 
+Tried later the same day: a `k_rs_gather64` whose block holds one whole line (all eight k2 of
+64 rows) in 32 KB of threadgroup memory, each thread gathering 64 / TY rows and then running
+64 / TY (k2, n_lo) pairs of the two radix-8 steps, etmp written once. Blocks of 480, 512 and
+1,024 threads do not launch at all (the output stays zero, 0.07 ms: the register footprint of
+the gather loop plus the radix steps caps the threadgroup at 256 threads, and `enqueue_function`
+does not report it). The shapes that launch, (8, 32) at 16 KB and (16, 16) at 32 KB, measured 39
+and 45 ms against 31 for the two launches at ECDSA shape (four cosets, 236 columns, mask 17,
+alternating minimums). One block per core is the whole occupancy, and the gather's sparse loads
+need the latency hiding that the two-launch path gets from small blocks. Closed: the gather does
+not fuse into the 2-adic block on this GPU.
+
 ## Residual: the Horner transitions in their own fp32 kernel, two rows per thread (2026-09-10)
 
 Variants of the fp32 `k_residual` at ECDSA size (1,152 entries, 13 Horner accumulators), minimums:
