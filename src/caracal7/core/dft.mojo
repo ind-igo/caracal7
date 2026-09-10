@@ -149,12 +149,13 @@ def dft_axis[p: Params, forward: Bool, axis: Int, bytes_in: Bool = False](
     comptime assert n1 * n2 * k3 == h, "the input length must split as n1 n2 k3"
     var R = W * 2
     var Ri = W if bytes_in else R
-    comptime V = 4 if axis == 2 else 1          # axis 2 rows are W = G1 F2 values, contiguous: 8-byte accesses
-    comptime assert axis == 1 or p.h1() % V == 0     # W is h1 or 2 h1
-    _stage[n3, k3, bytes_in, 1 if bytes_in else V](ctx, arena, Radix(
+    comptime V = 4 if axis == 2 else 1          # axis 2 rows are W = h1 or 2 h1 contiguous F2 values: 8-byte accesses
+    comptime V3 = 1 if bytes_in else V          # byte input is one byte per position
+    comptime assert p.h1() % V == 0             # holds for every profile (h1 = 2^a1 m1, a1 >= 2)
+    _stage[n3, k3, bytes_in, V3](ctx, arena, Radix(
         src=src, so_line=h * Ri, so_pre=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
         dst=dst, to_line=n * R, to_pre=0, tj=n1 * n2 * R, ti=2,
-        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V, total=lines * n1 * n2 * W // V))
+        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines * n1 * n2 * W // V3))
     _stage[n2, n2, False, V](ctx, arena, Radix(
         src=dst, so_line=n * R, so_pre=n1 * n2 * R, sk=n1 * R, si=2,
         dst=scratch, to_line=n * R, to_pre=n1 * R, tj=n3 * n1 * R, ti=2,
