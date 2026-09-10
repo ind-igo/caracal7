@@ -225,19 +225,18 @@ def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], acc: Buf[1]
     var x1 = row % h1
     var first = u16(base, acc.at(2))
     var count = u16(base, acc.at(4))
-    var s = E(0)
-    for i in range(first, first + count):
+    var s = SIMD[DType.float32, 16](0)          # a scalar times an E value is a lane product: coef c_a
+    for i in range(first, first + count):       # below 2^14, times a canonical challenge below 2^21, reduced
         var o = i * ENTRY
         var col = u16(base, families.at(o + 16))
         var k1 = u16(base, families.at(o + 18)) // 2
-        var v = E(0)
-        v[0] = trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1)
-        v = f_mul(v, E(families.load(base, o + 29)))
+        var t = Float32(Int(trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1))) * Float32(Int(families.load(base, o + 29)))
         var chal = Int(families.load(base, o + 32))
         if chal != 0:
-            v = ext_mul[4](v, chals.load(base, chal - 1))
-        s = f_add(s, v)
-    num.store(base, row, s)
+            s += fp_reduce(chals.load(base, chal - 1).cast[DType.float32]() * t)
+        else:
+            s[0] += fp_reduce(t)
+    num.store(base, row, fp_canonical(s))
 
 
 def k_horner_scan[p: Params](base: Base, acc: Buf[1], chals: Buf[16], num: Buf[16], zval: Buf[16]):

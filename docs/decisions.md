@@ -1002,3 +1002,13 @@ Tail levels 47 -> 30 ms, verify 165 -> 150. The host E product was measured agai
 tower product (`fp_canonical(fp_ext_mul[4](...))`): 49 ns for the 16 x 16 convolution, 68 ns for
 fp32, so the host keeps the convolution. Not done: the remaining tail cost is the singles' folds
 and the per-position symbols.
+
+## build_queries and ingest on fp32 lanes (2026-09-10)
+
+`k_build_queries` evaluates `slot_weight` once per (point, slot): about six E products on the byte
+path. `_slot_weight_fp` is the device copy on fp32 lanes (the verifier keeps `slot_weight` and the
+convolution product): build_queries 14 -> 4 ms. `k_ingest` multiplied a scalar-embedded E by the
+challenge with a full E product; it is a lane product now: accumulate 22 -> 20 ms (the kernel is
+bound by its gathered trace reads). Warm prove 663 -> 648 ms in the same session. The Merkle
+leaves (41 ms over the three trees) already load full 64-byte blocks and are compute-bound in
+the Blake3 rounds; nothing cheap there.

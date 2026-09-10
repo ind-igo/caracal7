@@ -19,6 +19,7 @@ from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
+from caracal7.core.field import fp_reduce, fp_canonical, fp_ext_mul
 from caracal7.relations.ir import FIX_ONE, FIX_E
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, Domains
@@ -121,6 +122,51 @@ def slot_weight[p: Params](slot: Int, base: Base, tab: Buf[16], off: Int, rho1: 
     return ext_mul[4](w, L)
 
 
+comptime EF = SIMD[DType.float32, 16]      # E on float lanes
+
+
+@always_inline
+def _slot_weight_fp[p: Params](slot: Int, base: Base, tab: Buf[16], off: Int, rho1: UInt8, rho2: UInt8) -> E:
+    """`slot_weight` for the device on fp32 lanes: the same factors, every product reduced (canonical
+    table values, |x| <= 190 between products, E products below 4.7 M)."""
+    comptime H1 = 1 << (p.a1 - 1)
+    comptime H2 = 1 << (p.a2 - 1)
+    comptime A1 = 1 << p.a1
+    comptime A2 = 1 << p.a2
+    var x1: Int
+    var x2: Int
+    var r: Int
+    var coord: Int
+    x1, x2, r, coord = slot_target[p](slot)
+    var r1 = r % p.m1
+    var r2 = r // p.m1
+    var L = fp_reduce(fp_ext_mul[4](tab.load(base, off + A1 + A2 + r1).cast[DType.float32](),
+                                    tab.load(base, off + A1 + A2 + p.m1 + r2).cast[DType.float32]()))
+    var mon = fp_reduce(fp_ext_mul[4](tab.load(base, off + x1).cast[DType.float32](),
+                                      tab.load(base, off + A1 + x2).cast[DType.float32]()))
+    var x1p = (slot >> 1) % H1
+    var x2s = ((slot >> 1) // H1) % A2
+    var w: EF
+    if x1p == 0 and (x2s == 0 or x2s == H2):
+        w = mon                                              # fixed slot: c_x(r) lies in F
+    else:
+        var par = EF(0)
+        par[0] = 1
+        if x1 != 0:
+            var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
+            par = fp_reduce(tab.load(base, off + A1 - x1).cast[DType.float32]() * Float32(Int(_scal(rho1, (r1 * s1) % p.m1))))
+        if x2 != 0:
+            var s2 = ((1 << (7 - p.a2)) * x2 - 1) % p.m2
+            var f2 = fp_reduce(tab.load(base, off + A1 + A2 - x2).cast[DType.float32]() * Float32(Int(_scal(rho2, (r2 * s2) % p.m2))))
+            par = fp_reduce(fp_ext_mul[4](par, f2))
+        if coord == 0:
+            w = mon + par
+        else:                                                # i (mon - par): (re, im) -> (-im, re) per F2 pair
+            var d = (mon - par).deinterleave()
+            w = (-d[1]).interleave(d[0])
+    return fp_canonical(fp_ext_mul[4](w, L))
+
+
 @always_inline
 def _scal(rho: UInt8, k: Int) -> UInt8:
     return f_pow(SIMD[DType.uint8, 1](rho), k)[0]
@@ -161,7 +207,7 @@ def k_build_queries[p: Params](base: Base, points: Int32, rho1: UInt8, rho2: UIn
     var gid = Int(global_idx.x)
     if gid >= Int(points) * N:
         return
-    w_z.store(base, (gid % N) * Int(points) + gid // N, slot_weight[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
+    w_z.store(base, (gid % N) * Int(points) + gid // N, _slot_weight_fp[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
 
 
 def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
