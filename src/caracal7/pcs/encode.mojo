@@ -50,7 +50,7 @@ from caracal7.core.arena import Bump
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
-from caracal7.core.dft import dft_axis, Radix, _stage as radix_stage
+from caracal7.core.dft import dft_axis, DftPlan, Radix, _stage as radix_stage
 
 comptime CW = 32                    # columns per SIMD group in the RS passes (block x)
 comptime RW = 8                     # (t1, line) rows per block (block y)
@@ -87,8 +87,8 @@ def idft2[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, ctmp: Int, co
     scratch, into coeff."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
-    dft_axis[p, False, 1, bytes_in=True](ctx, arena, trace, ctmp, coeff, 1, columns * h2, tab.base + tab.inv1)
-    dft_axis[p, False, 2](ctx, arena, ctmp, coeff, ctmp, h1, columns, tab.base + tab.inv2)
+    dft_axis[DftPlan(h1, h1), bytes_in=True](ctx, arena, trace, ctmp, coeff, 1, columns * h2, tab.base + tab.inv1)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, ctmp, coeff, ctmp, h1, columns, tab.base + tab.inv2)
 
 
 # ---- to_stored: mixed basis on the odd digit, Frobenius-real slots (spec 9.1) ----

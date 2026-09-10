@@ -8,16 +8,18 @@ Buffers (bytes; slowest ... fastest):
     residual  (j2, j1, e)              R = sum_j alpha^j R_j on G
     quotient  five E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
     trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
-Every stage is a launch of backend.gemm_f2 ("shapes are GEMMs", design section 8):
-    lde        axis 1: C[line, j1] = sum_k coeff[line, k] g1^(j1 k); axis 2 per column likewise
+The coset steps are launches of backend.gemm_f2 ("shapes are GEMMs", design section 8), the full-length
+transforms radix stages:
+    lde        dft_axis per axis (three radix stages, dft.mojo): coefficients k -> the points of G
     residual   the one stage that is not a GEMM launch: k_residual, one thread per column position and
                two rows, gathers X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point)
                and accumulates the 8 kappa lanes per row in registers (the GEMM skeleton's shared-memory
                staging cost more than the gather at M = 8). The 2 e basis entries of a Horner transition
                are not in the table it walks: k_horner, one thread per point after it, reads the e
                coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
-    quotient   q1m over G1 -> Q1 on the coset; qinv1, ginv2 -> the A, B coefficients;
-               q2m, qinv2 -> the Q2 coefficients; forward DFTs to their values on H"""
+    quotient   q1m over G1 -> Q1 on the coset; qinv1 (GEMM), then dft_axis over G2 -> the A, B
+               coefficients; q2m, qinv2 -> the Q2 coefficients; dft_axis per axis to their values on H
+               (the three dense axis-2 GEMMs at K = 2 h2 and h2 were 40 of the stage's 57 ms)"""
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
@@ -29,7 +31,7 @@ from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
-from caracal7.core.dft import dft_axis
+from caracal7.core.dft import dft_axis, DftPlan
 from std.gpu import global_idx
 
 comptime V8 = SIMD[DType.float32, 8]
@@ -248,8 +250,8 @@ def lde[p: Params](ctx: DeviceContext, arena: Arena,
     comptime h2 = p.h2()
     comptime G1 = 2 * h1
     var half = columns * h2 * G1 * 2
-    dft_axis[p, True, 1](ctx, arena, coeff, ltmp, ltmp + half, 1, columns * h2, tab.base + tab.fwd1)
-    dft_axis[p, True, 2](ctx, arena, ltmp, dst, ltmp, G1, columns, tab.base + tab.fwd2)
+    dft_axis[DftPlan(G1, h1)](ctx, arena, coeff, ltmp, ltmp + half, 1, columns * h2, tab.base + tab.fwd1)
+    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, ltmp, dst, ltmp, G1, columns, tab.base + tab.fwd2)
 
 
 def residual[p: Params](ctx: DeviceContext, arena: Arena,
@@ -300,7 +302,7 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     var q1coef = t1 + h1 * G2 * e           # (k2, k1, e)  rows k2 < h2: A; rows k2 >= h2: B
     var q2coef = q1coef + G2 * h1 * e       # (k2, k1, e)  right after B: A, B, Q2 are N e apart
     var t2 = q2coef + h2 * h1 * e           # (k1, t2, e)
-    var v1 = t2 + h1 * h2 * e               # (3, x1, k2, e)
+    var v1 = t2 + h1 * h2 * e               # (3, k2, x1, e)
     var vals = v1 + 3 * N * e               # (3, x2, x1, e)
     # 1. Q1 on the coset from R over all of G1: q1m (t, j1)
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
@@ -310,10 +312,9 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,
         c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, h1)
-    # 3. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
-        a=tab.base + tab.ginv2, sa_m=G2 * 2, sa_k=2, b=t1, sb_k=e, sb_hi=G2 * e, sb_lo=2,
-        c=q1coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), G2, h1 * 8, G2)
+    # 3. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B, the h1 lines of E rows as 8 F2
+    #    lanes, written transposed as (k2, k1, e); t1 is the scratch (dead after stage 3)
+    dft_axis[DftPlan(G2, G2), 4](ctx, arena, t1, q1coef, t1, 8, h1, tab.base + tab.ginv2p, dst_line=e, dst_j=h1 * e)
     # 4. Q2 = S1 / (-2) on H1 x g2 H2: axis 1 from the even j1 of the odd j2 rows, q2m = 63 winv1
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
@@ -322,13 +323,11 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv2, sa_m=h2 * 2, sa_k=2, b=t2, sb_k=e, sb_hi=h2 * e, sb_lo=2,
         c=q2coef, sc_m=h1 * e, sc_hi=e, sc_lo=2), h2, h1 * 8, h2)
-    # 6, 7. values on H of A, B, Q2 (batch of three): the even rows of g_l^(j k) are omega_l^(x k)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
-        a=tab.base + tab.wfwd1, sa_m=2 * h1 * 2, sa_k=2, b=q1coef, sb_k=e, sb_hi=h1 * e, sb_lo=2,
-        c=v1, sc_m=h2 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h1, h2 * 8, h1, batch=3)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
-        a=tab.base + tab.wfwd2, sa_m=4 * h2 * 2, sa_k=2, b=v1, sb_k=e, sb_hi=h2 * e, sb_lo=2,
-        c=vals, sc_m=h1 * e, sc_hi=e, sc_lo=2, sb_z=N * e, sc_z=N * e), h2, h1 * 8, h2, batch=3)
+    # 6, 7. values on H of A, B, Q2: axis 1 over the 3 h2 coefficient rows -> v1 (3, k2, x1, e), then
+    #    axis 2 with a row of x1 as 8 h1 lanes -> vals (3, x2, x1, e). Scratch: vals, then q1c and t1
+    #    (dead); the coefficients stay intact for the tests
+    dft_axis[DftPlan(h1, h1), 4](ctx, arena, q1coef, v1, vals, 8, 3 * h2, tab.base + tab.hfwd1)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, v1, vals, q1c, 8 * h1, 3, tab.base + tab.hfwd2)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
     ctx.enqueue_function[k8](arena.buf, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)

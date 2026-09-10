@@ -1137,3 +1137,18 @@ for ECDSA (rate 0.225, 146 queries: prove 448 ms, proof 694,880 B, verify 93 ms)
 Derived grids that moved: 72 x 32 to one coset of 2,304 (152 queries), 288 x 128 to one coset of
 40,320 (147 queries), and 1008 x 252 now fits on two cosets of 161,280 without the codeword split.
 The vault spec's 9.5 rule (1/32, then 1/16) no longer describes level 1.
+
+## Quotient: the full-length transforms on the radix plan (2026-09-10)
+
+Per step at the ECDSA grid the quotient's 57 ms were: Q1 on the coset 7, coset -> k1 4, G2 values
+-> k2 (a dense GEMM at K = 2 h2 = 1152) 20, Q2 coset 2, coset -> k2 6, coefficients -> values on H
+(two dense GEMMs at K = h1 and h2, batch 3) 20, values -> trace 1. The three dense transforms now
+run on `dft_axis`, which takes its `DftPlan` as a parameter (the callers name the plan instead of an
+axis and a direction) and an output stride pair, so the G2 inverse writes its result transposed into
+the (k2, k1) layout the next steps read. Three plan tables: the G2 inverse of length 2 h2 with
+(2 h2)^-1 folded in, and the forward h -> h transforms onto H1 and H2 (about 30 KB together; the
+dense `wfwd1` table is gone, `ginv2` and `wfwd2` stay for the small-grid and coset tables). Quotient
+57 -> 19 ms, warm prove 439 -> 397 ms, proof and verify unchanged. Left dense: the two coset
+inverses (10 ms together) carry an output twist g^-k that a plan table would fold into its last
+stage, and Q1 (7 ms) is not a DFT.
+
