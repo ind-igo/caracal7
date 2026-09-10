@@ -238,6 +238,8 @@ struct Prover[p: Params, H: Hash]:
         ctx.synchronize()
         # one families_g row per distinct (reads, gate) descriptor; `merge` lists the entries whose
         # kappas it sums (they share X(point), so sum kappa_i X = (sum kappa_i) X)
+        if self.shape.entries > 65535:
+            raise Error("Prover: the merge table indexes entries as u16")
         var row_of = Dict[String, Int]()
         var members = List[List[Int]]()
         for i in range(self.shape.entries):
