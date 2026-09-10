@@ -587,9 +587,9 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
     var src: Int
     comptime if m1 > 1:
         radix_stage[m1, m1, False](ctx, arena, Radix(
-            src=e.coeff, so_line=p.h1() * 2, so_pre=0, sk=B1 * 2, si=2,
-            dst=e.ctmp, to_line=p.h1() * 2, to_pre=0, tj=B1 * 2, ti=2,
-            tab=tab.base + tab.rho1t, od=1, tabmod=1, inner=B1, total=e.columns * p.h2() * B1))
+            src=e.coeff, so_line=p.h1() * 2, so_pre=0, so_pre_lo=0, sk=B1 * 2, si=2,
+            dst=e.ctmp, to_line=p.h1() * 2, to_pre=0, to_pre_lo=0, tj=B1 * 2, ti=2,
+            tab=tab.base + tab.rho1t, od=1, od_lo=1, tabmod=1, inner=B1, total=e.columns * p.h2() * B1))
         src = e.ctmp
     else:
         src = e.coeff

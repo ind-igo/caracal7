@@ -13,7 +13,7 @@ from std.memory import unsafe_memcpy
 from caracal7.core.params import Params
 from caracal7.core.field import F2, ext_pow
 from caracal7.core.arena import Arena, Bump
-from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
+from caracal7.core.tables import F2_ORDER, Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
 from caracal7.pcs.encode import EncLayout, encode, idft2
 from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
@@ -207,6 +207,8 @@ struct Prover[p: Params, H: Hash]:
     def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
         if len(families) != shape.entries * ENTRY:
             raise Error("family table does not match shape.entries")
+        if shape.accumulators() > 0 and 2 * Self.p.h2() == F2_ORDER:
+            raise Error("the small grid needs a coset of G2 inside F2*: accumulators need h2 < 8064")
         self.shape = shape^
         self.families = families^
         self.entries_g = 0

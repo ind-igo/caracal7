@@ -334,13 +334,16 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
 
 def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8,
                 twist_in: F2 = F2(1, 0), twist_out: F2 = F2(1, 0)):
-    """The three stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3.
+    """The stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3.
     The transform twist_out^j sum_k root^(j k) twist_in^k x[k] (a coset evaluation or its inverse) splits
-    over the digits: twist_in^(n1 n2 k3) into T3, twist_in^(n1 k2) into T2, twist_in^k1 twist_out^j into T1."""
+    over the digits: twist_in^(n1 n2 k3) into T3, twist_in^(n1 k2) into T2, twist_in^k1 twist_out^j into T1,
+    or with the odd split twist_in^(na kb) into Tb and twist_in^ka twist_out^j into Ta."""
     var n = plan.n
     var n1 = plan.n1
     var n2 = plan.n2
     var n3 = plan.n3
+    var na = plan.na
+    var nb = plan.nb
     for j3 in range(n3):
         for k3 in range(plan.k3):
             var w = f_mul(ext_pow[1](root, (n1 * n2 * j3 * k3) % n), F2(scale))
@@ -350,11 +353,18 @@ def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, sc
                 var w = ext_pow[1](root, (n1 * (j3 + n3 * j2) * k2) % n)
                 _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_mul[1](w, ext_pow[1](twist_in, n1 * k2)))
     for jj in range(n2 * n3):
-        for j1 in range(n1):
-            var tj = ext_pow[1](twist_out, jj + n2 * n3 * j1)
-            for k1 in range(n1):
-                var w = ext_mul[1](ext_pow[1](root, ((jj + n2 * n3 * j1) * k1) % n), ext_pow[1](twist_in, k1))
-                _put(h, at + plan.t1() + ((jj * n1 + j1) * n1 + k1) * 2, ext_mul[1](w, tj))
+        for jb in range(nb):
+            var tj = ext_pow[1](twist_out, jj + n2 * n3 * jb) if na == 1 else F2(1, 0)
+            for kb in range(nb):
+                var w = ext_mul[1](ext_pow[1](root, (na * (jj + n2 * n3 * jb) * kb) % n), ext_pow[1](twist_in, na * kb))
+                _put(h, at + plan.t1() + ((jj * nb + jb) * nb + kb) * 2, ext_mul[1](w, tj))
+            if na > 1:
+                for ja in range(na):
+                    var j = jj + n2 * n3 * (jb + nb * ja)
+                    var tja = ext_pow[1](twist_out, j)
+                    for ka in range(na):
+                        var w = ext_mul[1](ext_pow[1](root, (j * ka) % n), ext_pow[1](twist_in, ka))
+                        _put(h, at + plan.ta() + (((jb + nb * jj) * na + ja) * na + ka) * 2, ext_mul[1](w, tja))
 
 
 def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: Domains) raises:
@@ -388,15 +398,17 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
             _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))
             var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                       # g1^-k / h1
             _put(h, t.qinv1 + (k * h1 + tt) * 2, ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1))))
-    # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it)
+    # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it).
+    # At 2 h2 = F2_ORDER, G2 is all of F2* and there is no coset: its tables stay unset and the prover
+    # refuses a statement with accumulators (prover.mojo)
     var gam = f2_primitive()
-    if ext_pow[1](gam, h2) == F2(1):
-        raise Error("gamma2 G2 meets G2: h2 must be a proper divisor of F2_ORDER")
+    _dft_tables(h, t.qinv2p, DftPlan(h2, h2), ext_pow[1](d.omega2, h2 - 1), f_inv(UInt8(h2 % 127)), twist_out=g2_inv)
+    _dft_tables(h, t.gfwd2p, DftPlan(2 * h2, 2 * h2), d.g2, 1)
+    if _is_one[1](ext_pow[1](gam, 2 * h2)):
+        return
     var gam_inv = ext_pow[1](gam, F2_ORDER - 1)
     for tt in range(2 * h2):
         _put(h, t.c2p + tt * 2, ext_mul[1](gam, ext_pow[1](d.g2, tt)))
-    # the axis-2 plans with a coset twist: before 2026-09-11 these were dense h2^2 tables, 2 GB and 255 s at h2 = 8064
-    _dft_tables(h, t.qinv2p, DftPlan(h2, h2), ext_pow[1](d.omega2, h2 - 1), f_inv(UInt8(h2 % 127)), twist_out=g2_inv)
-    _dft_tables(h, t.gfwd2p, DftPlan(2 * h2, 2 * h2), d.g2, 1)
+    # the coset plans: before 2026-09-11 these were dense h2^2 tables, 2 GB and 255 s at h2 = 8064
     _dft_tables(h, t.cfwd2p, DftPlan(2 * h2, h2), d.g2, 1, twist_in=gam)
     _dft_tables(h, t.cinv2p, DftPlan(2 * h2, 2 * h2), g2_inv, f_inv(UInt8((2 * h2) % 127)), twist_out=gam_inv)

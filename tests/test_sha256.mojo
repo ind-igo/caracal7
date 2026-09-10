@@ -75,6 +75,19 @@ def test_prover_round_trip() raises:
     assert_true(verify_workload[p, Blake3, Sha256](proof^, w, w.public_inputs[p]()))
 
 
+def _round_trip[q: Params](ctx: DeviceContext, bytes: Int) raises:
+    var w = Sha256(message(bytes))
+    var proof = prove_workload[q, Blake3, Sha256](ctx, w)
+    assert_true(verify_workload[q, Blake3, Sha256](proof^, w, w.public_inputs[q]()))
+
+
+def test_prover_round_trip_on_split_odd_axes() raises:
+    """The chain axis with odd part 63 (252 = 4 x 63) and 21 (336 = 16 x 21): the plans split the odd stage."""
+    var ctx = DeviceContext()
+    _round_trip[CLIENT.grid(32, 250)](ctx, 128)
+    _round_trip[CLIENT.grid(32, 321)](ctx, 256)
+
+
 def test_wrong_digest_is_rejected() raises:
     var ctx = DeviceContext()
     var w = Sha256(message(128))

@@ -1247,3 +1247,38 @@ quotient 80 against 9, encode Q 146 against 15. Encode and quotient scale with t
 per row. Its axis-2 plan is DftPlan(16128, 8064) with n1 = 63 against n1 = 21 at 2688: 95 against 53
 MACs per element, and `k_radix[63, 63, V=4]` holds 126 int32x4 accumulators per thread, past the register
 file. Next: split the odd stage (63 = 7 x 9) in the plan.
+
+## The odd radix stage splits (2026-09-11)
+
+At h2 = 8064 the axis-2 plans have odd part 63 and `k_radix[63, 63, V=4]` held 126 int32x4 accumulators
+per thread; the LDE was 8x per row against h2 = 2688 (odd part 21) while encode and quotient scaled with
+the rows. `DftPlan` now splits an odd part past 9 as n1 = na nb (63 = 7 x 9, 21 = 3 x 7) with
+k1 = ka + na kb and j1 = jb + nb ja: stage b over kb runs in place on the scratch buffer (a thread reads
+the nb slots of its prefix and writes jb into the same slots; k_radix loads every input before its first
+store), then stage a over ka writes the output; its prefix (jj, jb) has two strides, so `Radix` carries
+a second prefix digit (od_lo, so_pre_lo, to_pre_lo; 1, 0, 0 for every other stage). The in-place stage
+keeps the src -> dst -> scratch -> dst walk, so callers that alias scratch to a dead src are unchanged.
+The table of a split plan is n2 n3 (nb^2 + nb na^2) entries against n2 n3 n1^2: 46 KB against 2 MB at
+16128. Odd parts up to 9 keep three stages (3 x 3 would save 3 multiply-adds for a pass over memory).
+
+Also: the small grid's coset guard compared against the SIMD splat `F2(1)` = (1, 1) and never fired.
+At 2 h2 = 16128 G2 is all of F2*, so gamma2 G2 is G2 and Q3 = R2 / (X2^h2 - 1) has no coset to be
+divided on; the coset tables are skipped there and `Prover` refuses a statement with accumulators on
+that grid. SHA-256 and Keccak have none; a workload with permutation or wiring accumulators is capped
+at h2 = 4032 (or takes its coset from F4, a later change).
+
+Measured (M1 Pro, `bench_sha256_blocks`, nothing else running):
+
+| bytes | blocks | grid | setup | prove (median) | ms / block | verify |
+|---|---|---|---|---|---|---|
+| 1024 | 17 | 32 x 1152 | 0.7 s | 74 ms | 4.34 | 23 ms |
+| 2048 | 33 | 32 x 2688 | 0.15 s | 141 ms | 4.27 | 40 ms |
+| 4096 | 65 | 32 x 8064 | 0.35 s | 400 ms | 6.15 | 73 ms |
+| 7936 | 125 | 32 x 8064 | 0.26 s | 399 ms | 3.19 | 76 ms |
+
+h2 = 8064: warm prove 781 -> 399 ms (lde 265 -> 30, quotient 80 -> 25, encode W 135 -> 82, encode Q
+146 -> 90); 2688 is unchanged at 141 ms (its stage 1 went 21 -> 3 + 7 multiply-adds for one more pass).
+The per-row cost at 8064 is now 1.4x the 2688 one, and the two encodes are 43% of the proof; they are
+the next item (the odd digit of the level-1 encoder, encode.mojo). Verified: the SHA-256 round trip on
+252 = 4 x 63 and 336 = 16 x 21 chains (`test_prover_round_trip_on_split_odd_axes`), plus the residual,
+encode, small-grid, prover, mulmod, keccak and ECDSA suites.

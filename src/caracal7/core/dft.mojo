@@ -9,6 +9,12 @@ Index split: input k = k1 + n1 k2 + n1 n2 k3, output j = jj + n2 n3 j1 with jj =
 The twists of Cooley-Tukey are folded into the per-prefix tables T2 and T1. A stage is one thread
 per (line, prefix, inner) reading its kin inputs along the digit and writing r outputs; radices are
 at most 32, so the tiled GEMM skeleton has nothing to amortize here.
+An odd part past 9 splits once more, n1 = na nb with k1 = ka + na kb and j1 = jb + nb ja (63 = 7 x 9:
+16 instead of 63 multiply-adds per output, and no 126-accumulator thread): stage 1 becomes
+    stage b   Yb[jj][jb][ka]     = sum_kb Tb[jj][jb, kb] Y2[jj][ka + na kb]     Tb = root^(na (jj + n2 n3 jb) kb)
+    stage a   X[j]               = sum_ka Ta[jb + nb jj][ja, ka] Yb[jj][jb][ka]  Ta = root^(j ka)
+with stage b in place on the scratch (a thread reads and writes the same kb = jb slots), so the
+src -> dst -> scratch -> dst buffer walk of three stages still holds.
 Axis 2 transforms the rows of a column (W F2 per row); axis 1 transforms each row (W = 1, the
 lines are the rows of every column). Every n-row buffer has stride n W 2 per line."""
 from std.math import ceildiv
@@ -24,13 +30,16 @@ from caracal7.core.arena import Arena
 
 @fieldwise_init
 struct DftPlan(TrivialRegisterPassable):
-    """n = n1 n2 n3 and the nonzero inputs k3 of stage 3 (k_in = n1 n2 k3)."""
+    """n = n1 n2 n3 and the nonzero inputs k3 of stage 3 (k_in = n1 n2 k3); n1 = na nb, na = 1 when
+    the odd part is at most 9."""
     var n: Int
     var k_in: Int
     var n1: Int
     var n2: Int
     var n3: Int
     var k3: Int
+    var na: Int
+    var nb: Int
 
     def __init__(out self, n: Int, k_in: Int):
         var odd = n
@@ -47,6 +56,15 @@ struct DftPlan(TrivialRegisterPassable):
         self.n2 = 1 << (a // 2)
         self.n3 = 1 << (a - a // 2)
         self.k3 = k_in // (self.n1 * self.n2)
+        var na = 1
+        if odd > 9:
+            var d = 2
+            while d * d <= odd:
+                if odd % d == 0:
+                    na = d
+                d += 1
+        self.na = na
+        self.nb = odd // na
 
     def t3(self) -> Int:
         return 0
@@ -55,28 +73,37 @@ struct DftPlan(TrivialRegisterPassable):
         return self.n3 * self.k3 * 2
 
     def t1(self) -> Int:
+        """Stage 1, or stage b when split: n2 n3 tables of nb x nb."""
         return self.t2() + self.n3 * self.n2 * self.n2 * 2
 
+    def ta(self) -> Int:
+        """Stage a when split: n2 n3 nb tables of na x na."""
+        return self.t1() + self.n2 * self.n3 * self.nb * self.nb * 2
+
     def bytes(self) -> Int:
-        return self.t1() + self.n2 * self.n3 * self.n1 * self.n1 * 2
+        return self.ta() + (self.n2 * self.n3 * self.nb * self.na * self.na * 2 if self.na > 1 else 0)
 
 
 @fieldwise_init
 struct Radix(TrivialRegisterPassable, DevicePassable):
-    """One stage: thread (line, prefix, inner) with prefix = rest % od. Byte offsets and strides;
-    the table of a prefix is tab + (prefix % tabmod) r kin 2."""
+    """One stage: thread (line, prefix, inner) with prefix = rest % od, split as hi = prefix // od_lo
+    and lo = prefix % od_lo when the two prefix digits have different strides (od_lo = 1 otherwise).
+    Byte offsets and strides; the table of a prefix is tab + (prefix % tabmod) r kin 2."""
     var src: Int
     var so_line: Int
     var so_pre: Int
+    var so_pre_lo: Int
     var sk: Int
     var si: Int
     var dst: Int
     var to_line: Int
     var to_pre: Int
+    var to_pre_lo: Int
     var tj: Int
     var ti: Int
     var tab: Int
     var od: Int
+    var od_lo: Int
     var tabmod: Int
     var inner: Int
     var total: Int
@@ -105,8 +132,10 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
     var rest = t // Int(o.inner)
     var pre = rest % Int(o.od)
     var line = (rest // Int(o.od)) * LB
-    var src = Int(o.src) + line * Int(o.so_line) + pre * Int(o.so_pre) + inner * Int(o.si)
-    var dst = Int(o.dst) + line * Int(o.to_line) + pre * Int(o.to_pre) + inner * Int(o.ti)
+    var hi = pre // Int(o.od_lo)
+    var lo = pre % Int(o.od_lo)
+    var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
+    var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
     var x0 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
     var x1 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
@@ -165,6 +194,8 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     comptime n2 = plan.n2
     comptime n3 = plan.n3
     comptime k3 = plan.k3
+    comptime na = plan.na
+    comptime nb = plan.nb
     comptime h = n1 * n2 * k3
     comptime assert h == plan.k_in, "the input length must split as n1 n2 k3"
     comptime V3 = 1 if bytes_in else V          # byte input is one byte per position
@@ -177,15 +208,26 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     var dl = dst_line if dst_line > 0 else n * R
     var dj = dst_j if dst_j > 0 else R
     _stage[n3, k3, bytes_in, V3, LB3](ctx, arena, Radix(
-        src=src, so_line=h * Ri, so_pre=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
-        dst=dst, to_line=n * R, to_pre=0, tj=n1 * n2 * R, ti=2,
-        tab=tab + plan.t3(), od=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines // LB3 * n1 * n2 * W // V3))
+        src=src, so_line=h * Ri, so_pre=0, so_pre_lo=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
+        dst=dst, to_line=n * R, to_pre=0, to_pre_lo=0, tj=n1 * n2 * R, ti=2,
+        tab=tab + plan.t3(), od=1, od_lo=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines // LB3 * n1 * n2 * W // V3))
     _stage[n2, n2, False, V, LB](ctx, arena, Radix(
-        src=dst, so_line=n * R, so_pre=n1 * n2 * R, sk=n1 * R, si=2,
-        dst=scratch, to_line=n * R, to_pre=n1 * R, tj=n3 * n1 * R, ti=2,
-        tab=tab + plan.t2(), od=n3, tabmod=n3, inner=n1 * W // V, total=lines // LB * n3 * n1 * W // V))
-    # ponytail: at n1 = 1 this stage is a copy; skip it when a grid with a power-of-two axis matters
-    _stage[n1, n1, False, V, LB](ctx, arena, Radix(
-        src=scratch, so_line=n * R, so_pre=n1 * R, sk=R, si=2,
-        dst=dst, to_line=dl, to_pre=dj, tj=n2 * n3 * dj, ti=2,
-        tab=tab + plan.t1(), od=n2 * n3, tabmod=n2 * n3, inner=W // V, total=lines // LB * n2 * n3 * W // V))
+        src=dst, so_line=n * R, so_pre=n1 * n2 * R, so_pre_lo=0, sk=n1 * R, si=2,
+        dst=scratch, to_line=n * R, to_pre=n1 * R, to_pre_lo=0, tj=n3 * n1 * R, ti=2,
+        tab=tab + plan.t2(), od=n3, od_lo=1, tabmod=n3, inner=n1 * W // V, total=lines // LB * n3 * n1 * W // V))
+    comptime if na == 1:
+        # ponytail: at n1 = 1 this stage is a copy; skip it when a grid with a power-of-two axis matters
+        _stage[n1, n1, False, V, LB](ctx, arena, Radix(
+            src=scratch, so_line=n * R, so_pre=n1 * R, so_pre_lo=0, sk=R, si=2,
+            dst=dst, to_line=dl, to_pre=dj, to_pre_lo=0, tj=n2 * n3 * dj, ti=2,
+            tab=tab + plan.t1(), od=n2 * n3, od_lo=1, tabmod=n2 * n3, inner=W // V, total=lines // LB * n2 * n3 * W // V))
+    else:
+        # stage b in place: prefix jj, digit kb -> jb in the same slots; then stage a with prefix (jj, jb)
+        _stage[nb, nb, False, V, LB](ctx, arena, Radix(
+            src=scratch, so_line=n * R, so_pre=n1 * R, so_pre_lo=0, sk=na * R, si=2,
+            dst=scratch, to_line=n * R, to_pre=n1 * R, to_pre_lo=0, tj=na * R, ti=2,
+            tab=tab + plan.t1(), od=n2 * n3, od_lo=1, tabmod=n2 * n3, inner=na * W // V, total=lines // LB * n2 * n3 * na * W // V))
+        _stage[na, na, False, V, LB](ctx, arena, Radix(
+            src=scratch, so_line=n * R, so_pre=n1 * R, so_pre_lo=na * R, sk=R, si=2,
+            dst=dst, to_line=dl, to_pre=dj, to_pre_lo=n2 * n3 * dj, tj=n2 * n3 * nb * dj, ti=2,
+            tab=tab + plan.ta(), od=n2 * n3 * nb, od_lo=nb, tabmod=n2 * n3 * nb, inner=W // V, total=lines // LB * n2 * n3 * nb * W // V))

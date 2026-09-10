@@ -11,7 +11,8 @@ the coset c_t = gamma2 g2^t of G2 (plans inv2 to coefficients, then cfwd2p to th
 the terms are pointwise products there, and Q3 = R2 / (X2^h2 - 1) is a pointwise division (c^h2 - 1 is
 never zero off G2; exact for an honest R2, which vanishes on H2), then cinv2p to coefficients and gfwd2p
 to values on G2. The DFTs are dft_axis plans over one line of 8 F2 lanes, the coset twists folded into
-the stage tables (tables.mojo); before 2026-09-11 they were dense h2^2 tables. The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(omega2^h2) = 1
+the stage tables (tables.mojo); before 2026-09-11 they were dense h2^2 tables.
+The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(omega2^h2) = 1
 after the last chain. Before 2026-09-09 the products were coefficient convolutions, O(h2^2) serial per
 output; ECDSA's six wiring products took 260 ms.
 
