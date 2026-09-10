@@ -95,15 +95,21 @@ comptime POW_LO = 256              # pt^i = pt^(i & 255) pt^(256 (i >> 8)): the 
 
 
 @always_inline
+def table_len(exponents: Int) -> Int:
+    """Entries per query of a power table for pt^i, i < exponents: the low factors, then the high ones."""
+    return POW_LO + ceildiv(exponents, POW_LO)
+
+
+@always_inline
 def power_table_len[p: Params]() -> Int:
-    """Entries per query of the level-1 power table: the low factors, then the high ones."""
-    return POW_LO + ceildiv(p.N() // 4, POW_LO)
+    """Entries per query of the level-1 power table, the largest one (i < N / 4); the tail levels reuse it."""
+    return table_len(p.N() // 4)
 
 
-def k_power_table[p: Params](base: Base, pts: Buf[4], count: Int32, ptab: Buf[4]):
-    """ptab[q, k] = pt_q^k for k < POW_LO, then pt_q^(POW_LO (k - POW_LO))."""
-    comptime TAB = power_table_len[p]()
+def k_power_table(base: Base, pts: Buf[4], count: Int32, tab: Int32, ptab: Buf[4]):
+    """ptab[q, k] = pt_q^k for k < POW_LO, then pt_q^(POW_LO (k - POW_LO)), `tab` entries per query."""
     var gid = global_idx.x
+    var TAB = Int(tab)
     if gid >= Int(count) * TAB:
         return
     var k = gid % TAB
@@ -137,24 +143,28 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16]
     w_tilde.store(base, slot, fp_canonical(w))
 
 
-def k_materialize_tail(base: Base, running: Buf[16], batch: Buf[16], pts: Buf[4],
+def k_materialize_tail(base: Base, running: Buf[16], batch: Buf[16], ptab: Buf[4], tab: Int32,
                        count: Int32, rows: Int32, w_tilde: Buf[16]):
-    """w~[row] = batch_0 running[row] + sum_q batch_{1 + q} pt_q^row."""
+    """w~[row] = batch_0 running[row] + sum_q batch_{1 + q} pt_q^row, the power from the table."""
     var row = global_idx.x
     if row >= Int(rows):
         return
+    var TAB = Int(tab)
+    var lo = row % POW_LO
+    var hi = POW_LO + row // POW_LO
     var w = ext_mul[4](batch.load(base, 0), running.load(base, row))
     for q in range(Int(count)):
-        w = f_add(w, e_mul_f4(batch.load(base, 1 + q), ext_pow[2](pts.load(base, q), row)))
+        var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
+        w = f_add(w, e_mul_f4(batch.load(base, 1 + q), pw))
     w_tilde.store(base, row, w)
 
 
-def k_round_partial(base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: Int32, r: Buf[16], partial: Buf[16]):
+def k_round_partial[threads: Int](base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: Int32, r: Buf[16], partial: Buf[16]):
     """Round d of the partial sumcheck over the three low digits: digits below d are bound to r_0 ..
-    r_{d-1}, digit d is the variable b, everything above is summed. Thread t sums its share of the
-    groups (row, digits above d) into partial[t] = (s(0), s(1), s(2))."""
+    r_{d-1}, digit d is the variable b, everything above is summed. Thread t of `threads` sums its
+    share of the groups (row, digits above d) into partial[t] = (s(0), s(1), s(2))."""
     var t = global_idx.x
-    if t >= ROUND_THREADS:
+    if t >= threads:
         return
     var dd = Int(d)
     var m = 1 << dd
@@ -168,7 +178,7 @@ def k_round_partial(base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: 
     var acc1 = EF(0)
     var acc2 = EF(0)
     var groups = Int(length) // (2 * m)
-    for grp in range(t, groups, ROUND_THREADS):
+    for grp in range(t, groups, threads):
         var n0 = grp * 2 * m
         var y0 = EF(0)
         var y1 = EF(0)
@@ -191,13 +201,13 @@ def k_round_partial(base: Base, w_tilde: Buf[16], y: Buf[16], length: Int32, d: 
     partial.store(base, 3 * t + 2, fp_canonical(acc2))
 
 
-def k_round_sum(base: Base, partial: Buf[16], dst: Buf[16]):
+def k_round_sum[threads: Int](base: Base, partial: Buf[16], dst: Buf[16]):
     """48 threads, one per (evaluation b, byte l): the round message s = (s(0), s(1), s(2)) from the partial sums."""
     var i = Int(thread_idx.x)                        # one block
     if i >= 3 * E_WIDTH:
         return
     var acc = SIMD[DType.uint8, 1](0)
-    for t in range(ROUND_THREADS):
+    for t in range(threads):
         acc = f_add(acc, base.unsafe_load[width=1](partial.at(3 * t) + i))
     base.unsafe_store(dst.at(0) + i, acc)
 
@@ -239,23 +249,32 @@ def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, 
 
 def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
                                 running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int) raises:
-    """Level 1 needs `ptab`, (count, power_table_len) F4 of scratch."""
+    """`ptab` is (count, power_table_len) F4 of scratch, the level-1 size; every level fills its own table."""
+    var tab = power_table_len[p]() if level1 else table_len(length)
+    if tab > power_table_len[p]():
+        raise Error("tail_materialize: the power table holds N / 4 exponents")
+    ctx.enqueue_function[k_power_table](arena.buf, Buf[4](pts), Int32(count), Int32(tab), Buf[4](ptab),
+                                        grid_dim=_grid(count * tab), block_dim=BACKEND.block)
     if level1:
-        ctx.enqueue_function[k_power_table[p]](arena.buf, Buf[4](pts), Int32(count), Buf[4](ptab),
-                                               grid_dim=_grid(count * power_table_len[p]()), block_dim=BACKEND.block)
         ctx.enqueue_function[k_materialize_level1[p]](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](ptab), Int32(count), Buf[16](w_tilde),
                                                       grid_dim=_grid(p.N()), block_dim=BACKEND.block)
     else:
-        ctx.enqueue_function[k_materialize_tail](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Int32(length), Buf[16](w_tilde),
+        ctx.enqueue_function[k_materialize_tail](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](ptab), Int32(tab),
+                                                 Int32(count), Int32(length), Buf[16](w_tilde),
                                                  grid_dim=_grid(length), block_dim=BACKEND.block)
 
 
 def tail_round(ctx: DeviceContext, arena: Arena,
                w_tilde: Int, y: Int, length: Int, digit: Int, r: Int, partial: Int, dst: Int) raises:
-    """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`."""
-    ctx.enqueue_function[k_round_partial](arena.buf, Buf[16](w_tilde), Buf[16](y), Int32(length), Int32(digit), Buf[16](r), Buf[16](partial),
-                                          grid_dim=_grid(ROUND_THREADS), block_dim=BACKEND.block)
-    ctx.enqueue_function[k_round_sum](arena.buf, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=64)
+    """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`; the partial
+    sums are one per group up to ROUND_THREADS, so a small level does not reduce idle partials."""
+    var groups = length // (2 << digit)
+    comptime for t in [ROUND_THREADS, ROUND_THREADS // 4, ROUND_THREADS // 16]:
+        if groups >= t or t == ROUND_THREADS // 16:
+            ctx.enqueue_function[k_round_partial[t]](arena.buf, Buf[16](w_tilde), Buf[16](y), Int32(length), Int32(digit), Buf[16](r), Buf[16](partial),
+                                                     grid_dim=_grid(t), block_dim=BACKEND.block)
+            ctx.enqueue_function[k_round_sum[t]](arena.buf, Buf[16](partial), Buf[16](dst), grid_dim=1, block_dim=64)
+            return
 
 
 def tail_fold(ctx: DeviceContext, arena: Arena, src: Int, rows: Int, r: Int, dst: Int) raises:

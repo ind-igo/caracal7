@@ -1044,3 +1044,14 @@ through the skeleton's shared-memory staging, 19 ms for the three trees. `k_fold
 one slot and walks the columns with the E lanes in fp32 registers (the stored byte centered, two fma
 per column, beta a uniform load); 1,024 columns stay exact. Fold 19 -> 4 ms back to back. The
 skeleton keeps the GEMMs that have a real M: lde, quotient, open, the small grid.
+
+## Tail levels: the power table at every level, partial sums sized by the level (2026-09-10)
+
+`k_materialize_tail` exponentiated per (row, query) at every level after the first; now every level
+fills the level-1 power table (`k_power_table` takes the entry count at runtime, `table_len(rows)`,
+the scratch is the level-1 size) and reads two entries per (row, query). The sumcheck rounds
+launched ROUND_THREADS = 16,384 partial sums whatever the level, and `k_round_sum` reduced all of
+them; `tail_round` now picks 16,384, 4,096 or 1,024 partials by the group count, as a comptime
+parameter of both kernels (a runtime thread count as the loop stride made level 0's rounds 6 -> 13
+ms; the comptime one keeps them at 5). Back to back at ECDSA size: materialize 1 5 -> 1 ms,
+materialize 2 2 -> 0, rounds 6 / 4 / 4 -> 5 / 2 / 1, warm prove 590 -> 580.

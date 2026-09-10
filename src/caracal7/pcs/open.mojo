@@ -25,7 +25,7 @@ from caracal7.relations.ir import FIX_ONE, FIX_E
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, Domains
 from caracal7.pcs.encode import slot_target
-from caracal7.core.backend import BACKEND, LANE_TILE, Bytes, launch_gemm_f2, strided
+from caracal7.core.backend import BACKEND, Bytes, launch_gemm_f2, strided
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from std.gpu import global_idx
