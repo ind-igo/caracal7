@@ -127,7 +127,7 @@ def test_tail_kernels() raises:
     tail_fold(ctx, arena, o_w, ROWS, o_r, o_wnext)
     # tail-level functionals on y_next
     points(ctx, arena, o_pos2, Q, o_dom2, L0_TAIL, o_pts2)
-    tail_materialize[p](ctx, arena, False, o_wnext, o_batch2, o_pts2, Q, ROWS, o_w2)
+    tail_materialize[p](ctx, arena, False, o_wnext, o_batch2, o_pts2, Q, ROWS, o_w2, 0)
 
     var pts = _down(ctx, arena, o_pts, Q * 4)
     var w = _down(ctx, arena, o_w, N * 16)

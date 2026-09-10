@@ -225,7 +225,7 @@ def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, 
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
-                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int = 0) raises:
+                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int) raises:
     """Level 1 needs `ptab`, (count, power_table_len) F4 of scratch."""
     if level1:
         ctx.enqueue_function[k_power_table[p]](arena.buf, Buf[4](pts), Int32(count), Buf[4](ptab),
