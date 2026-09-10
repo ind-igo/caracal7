@@ -308,6 +308,8 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
         c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, G1)
+    # TODO(perf): steps 2 and 5 (about 10 ms together at the ECDSA grid) are dense GEMMs because of the
+    # output twist g^-k; a plan table with the twist folded into its last stage would put them on dft_axis.
     # 2. axis 1: coset values t -> coefficients k1
     launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
         a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,

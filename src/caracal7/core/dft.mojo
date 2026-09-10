@@ -148,6 +148,9 @@ def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: Devic
     ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
 
 
+# TODO(perf): the axis-1 stages (W = 1) run 5 to 10 ms per stage against a memory bound near 1 ms, and are
+# the largest part of the LDE (60 ms) and the encodes (96 ms) at the ECDSA grid. Next step: fuse the three
+# stages of a line in threadgroup memory, one read of the input and one write of the output.
 def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     ctx: DeviceContext, arena: Arena, src: Int, dst: Int, scratch: Int, W: Int, lines: Int, tab: Int,
     dst_line: Int = 0, dst_j: Int = 0
