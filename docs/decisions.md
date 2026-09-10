@@ -893,3 +893,11 @@ four integer vector multiplies. Now the gathered value and its products are floa
 <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced once to |v| <= 190),
 the kappa lanes are two fma pairs, reduced every 128 terms as before. The Horner transitions keep
 the byte path. Residual 126 -> 77 ms, warm prove 929 -> 886 ms.
+
+## The GEMM skeleton stays on int32 lanes (2026-09-10)
+
+`gemm_f2` with float32 accumulators (one fma per lane in `tile_mac`, `fp_reduce` every 128 terms,
+`fp_canonical` at the store) measured slower back to back against the integer skeleton at ECDSA
+size: quotient 59 -> 174 ms, lde 104 -> 112, open 41 -> 52. The skeleton is bound by staging and
+occupancy, not by the multiply, so the float lanes only add conversions. Reverted; fp32 lanes pay
+in the elementwise kernels where reductions were the cost (RS stages, residual).
