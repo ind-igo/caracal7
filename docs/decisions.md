@@ -1101,3 +1101,8 @@ each chain into a (columns, h1) buffer of 34 KB and copies its columns into the 
 and the public columns' `idft2`). End to end at ECDSA shape: trace 150 -> 71, public data 44 -> 8,
 loads 82 -> 28, verify 121 -> 81 (its public-data walk), warm prove 571 unchanged. `Fp.pow` had
 no caller and is gone.
+
+Not done: the product coefficients by popcount (the reversed piece against a sliding window of b,
+replacing the 32 K increments per chain) measured the product lane 22 -> 20 ms of the writer's 57;
+the writer is the trace stores themselves (adds 14, product lane 22, fold ripples 19, the column
+copies 2), not the coefficient count. Reverted.

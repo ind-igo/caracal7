@@ -771,7 +771,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
     comptime h1 = p.h1()
     comptime N = p.N()
     var at = _place(ops)
-    if h1 != ROWS or cheat >= p.h2() or chain_count(ops) > p.h2() or len(vals) != len(ops):
+    if h1 != ROWS or cheat >= p.h2() or chain_count(ops) > p.h2() or len(vals) != len(ops) or (cheat >= 0 and len(ops) == 0):
         raise Error("the instance needs " + String(ROWS) + " rows per chain, every chain on the grid, a value per op")
     var columns = layout.columns_w()
     var trace = List[UInt8](length=columns * N, fill=0)
