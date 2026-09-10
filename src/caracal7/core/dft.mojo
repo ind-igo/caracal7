@@ -167,7 +167,7 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     comptime V3 = 1 if bytes_in else V          # byte input is one byte per position
     comptime LB = 4 if V == 1 else 1            # single-lane rows: four lines per thread instead
     comptime LB3 = 4 if V3 == 1 else 1
-    if W % V != 0 or lines % LB != 0:
+    if W % V != 0 or lines % LB != 0 or lines % LB3 != 0:
         raise Error("dft_axis: W is not a multiple of V, or lines of LB")
     var R = W * 2
     var Ri = W if bytes_in else R
