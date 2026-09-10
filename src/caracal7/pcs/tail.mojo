@@ -88,10 +88,31 @@ def k_running0[p: Params](base: Base, w_z: Buf[16], gamma: Buf[16], P: Int32, ds
     dst.store(base, slot, acc)
 
 
-def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16], pts: Buf[4],
+comptime POW_LO = 256              # pt^i = pt^(i & 255) pt^(256 (i >> 8)): the level-1 power table holds both factors
+
+
+@always_inline
+def power_table_len[p: Params]() -> Int:
+    """Entries per query of the level-1 power table: the low factors, then the high ones."""
+    return POW_LO + ceildiv(p.N() // 4, POW_LO)
+
+
+def k_power_table[p: Params](base: Base, pts: Buf[4], count: Int32, ptab: Buf[4]):
+    """ptab[q, k] = pt_q^k for k < POW_LO, then pt_q^(POW_LO (k - POW_LO))."""
+    comptime TAB = power_table_len[p]()
+    var gid = global_idx.x
+    if gid >= Int(count) * TAB:
+        return
+    var k = gid % TAB
+    var n = k if k < POW_LO else POW_LO * (k - POW_LO)
+    ptab.store(base, gid, ext_pow[2](pts.load(base, gid // TAB), n))
+
+
+def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16], ptab: Buf[4],
                                     count: Int32, w_tilde: Buf[16]):
     """w~[slot] = batch_0 running[slot] + sum_{q, tau} batch_{1 + 4 q + tau} coord_tau(b_j pt_q^i), (i, j) = pack_index(slot)."""
     comptime N = p.N()
+    comptime TAB = power_table_len[p]()
     var slot = global_idx.x
     if slot >= N:
         return
@@ -101,9 +122,11 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[16], batch: Buf[16]
     i, j = pack_index[p](slot)
     var bj = F4(0)
     bj[j] = 1
-    # ponytail: pt_q^i by a pow per (slot, q); a (q, i) power table when the tail shows in the profile
+    var lo = i % POW_LO
+    var hi = POW_LO + i // POW_LO
     for q in range(Int(count)):
-        var m = ext_mul[2](bj, ext_pow[2](pts.load(base, q), i))
+        var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
+        var m = ext_mul[2](bj, pw)
         comptime for tau in range(4):
             w = f_add(w, f_mul(batch.load(base, 1 + 4 * q + tau), E(m[tau])))
     w_tilde.store(base, slot, w)
@@ -202,9 +225,12 @@ def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, 
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
-                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int) raises:
+                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int = 0) raises:
+    """Level 1 needs `ptab`, (count, power_table_len) F4 of scratch."""
     if level1:
-        ctx.enqueue_function[k_materialize_level1[p]](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Buf[16](w_tilde),
+        ctx.enqueue_function[k_power_table[p]](arena.buf, Buf[4](pts), Int32(count), Buf[4](ptab),
+                                               grid_dim=_grid(count * power_table_len[p]()), block_dim=BACKEND.block)
+        ctx.enqueue_function[k_materialize_level1[p]](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](ptab), Int32(count), Buf[16](w_tilde),
                                                       grid_dim=_grid(p.N()), block_dim=BACKEND.block)
     else:
         ctx.enqueue_function[k_materialize_tail](arena.buf, Buf[16](running), Buf[16](batch), Buf[4](pts), Int32(count), Int32(length), Buf[16](w_tilde),

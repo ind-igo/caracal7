@@ -173,6 +173,6 @@ Deviations from sections 4 and 5:
   set bits of both operands: 165 ms for the 1,512 ops (was 2.5 s through string-keyed lookups).
 
 Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 576)`, `e = 16`: proof 631,856 bytes; warm prove
-1,097 ms, trace 150 ms, public data 45 ms, verify 282 ms (host work 47 of it; the tail levels about 170). Before
+1,085 ms, trace 150 ms, public data 45 ms, verify 282 ms (host work 47 of it; the tail levels about 170). Before
 Straus-Shamir on the `144 x 896` grid: 683,392 bytes, 4,503 ms, 1,358 ms;
 the prover round trip test (two live walks, prove, verify) 10.2 s.

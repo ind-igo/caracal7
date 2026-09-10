@@ -19,7 +19,7 @@ from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q,
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
-from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold
+from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
 from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, value_bytes, tile_values, accumulate, horner, wiring, derive_chals, counting_sort, lde, residual, quotient, quotient_elems, k_values_to_trace, small_grid_product, small_grid_end, small_grid_values, SG_TOTAL
 from caracal7.core.bytes import Buf, get_u16
 from caracal7.core.backend import BACKEND
@@ -96,6 +96,7 @@ struct ProverLayout:
     var running0: Int               # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
     var dom1: Int                   # DOM_BYTES             the level-1 domain
     var pts: Int                    # (max queries, 4)      leaf points of the opened positions
+    var ptab: Int                   # (queries, table, 4)   level-1 powers of the leaf points
     var partial: Int                # (ROUND_THREADS, 3, e) sumcheck partial sums
     var proof_stage: Int            # gathered rows and siblings of one multiproof, staged to the host in stream order
     var prefix: Int                 # transcript prefix bytes (PREFIX_MAX)
@@ -177,6 +178,7 @@ struct ProverLayout:
         self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
         self.positions = bump.alloc(max_queries * 4)
         self.pts = bump.alloc(max_queries * 4)
+        self.ptab = bump.alloc(p.queries() * power_table_len[p]() * 4)
         self.partial = bump.alloc(ROUND_THREADS * 3 * p.e)
         self.batch = bump.alloc((max_v + 1) * p.e)
         self.r = bump.alloc(3 * p.e)
@@ -437,7 +439,7 @@ struct Prover[p: Params, H: Hash]:
             # the expected symbols v are the verifier's to compute from the opened rows (spec 9.3); nothing is sent
             squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.batch, self._v_count(i) + 1)   # batching scalars
             self._mark(ctx, profile, "transcript batch " + String(i), t0)
-            tail_materialize[Self.p](ctx, self.arena, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde)
+            tail_materialize[Self.p](ctx, self.arena, i == 0, running, L.batch, L.pts, count, y_len, tl.w_tilde, L.ptab)
             self._mark(ctx, profile, "materialize " + String(i), t0)
             for d in range(3):
                 tail_round(ctx, self.arena, tl.w_tilde, y, y_len, d, L.r, L.partial, tl.rounds + d * 3 * e)

@@ -10,7 +10,7 @@ from caracal7.verifier import encode_at
 from caracal7.core.params import CLIENT
 from caracal7.core.tables import RsDomain, RsTables, build_rs_tables
 from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold
+from caracal7.pcs.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold, power_table_len
 from caracal7.core.bytes import list_e
 from caracal7.pcs.tail import host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
@@ -99,6 +99,7 @@ def test_tail_kernels() raises:
     var o_wnext = bump.alloc(ROWS * 16)
     var o_batch2 = bump.alloc((1 + Q) * 16)
     var o_w2 = bump.alloc(ROWS * 16)
+    var o_ptab = bump.alloc(Q * power_table_len[p]() * 4)
     var rs = RsTables(bump.alloc(0), L0_TAIL, M_TAIL, ROWS)
     _ = bump.alloc(rs.bytes)
     var o_etmp = bump.alloc(L0_TAIL * 32 * 4)
@@ -119,7 +120,7 @@ def test_tail_kernels() raises:
     # level-1 functionals on y
     points(ctx, arena, o_pos, Q, o_dom1, p.L0, o_pts)
     tail_encode(ctx, arena, o_y, ROWS, L0_TAIL, M_TAIL, o_etmp, o_code, rs)   # y as a tail level: Mat(y) (ROWS, 8, e)
-    tail_materialize[p](ctx, arena, True, o_run, o_batch, o_pts, Q, N, o_w)
+    tail_materialize[p](ctx, arena, True, o_run, o_batch, o_pts, Q, N, o_w, o_ptab)
     for d in range(3):
         tail_round(ctx, arena, o_w, o_y, N, d, o_r, o_partial, o_rounds + d * 3 * 16)
     tail_fold(ctx, arena, o_y, ROWS, o_r, o_ynext)
