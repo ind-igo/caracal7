@@ -44,26 +44,29 @@ orchestrator (`BENCH_INPUT_PROFILE=full`, hyperfine 10 runs) against `caracal7/`
 whole cold process through the shell wrapper (the warm in-process prover is 2 to 4 times faster; see
 `bench/`), and peak memory is RSS, which excludes the Metal arena. Cells are committed witness cells.
 
-**2026-09-11, Apple M1 Pro 16 GB, commit 127e53c**
+**2026-09-11, Apple M1 Pro 16 GB.** Harness columns at commit 127e53c; the warm prove column is the
+in-process `Prover.prove` on a constructed prover (the `warm prove` line of `bench/bench_<target>.mojo`)
+at commit 8e552aa. The gap between the two is the cold floor: process start, the shell wrapper, Metal
+setup and first-launch kernel compile, and the arena fill (about 0.3 ms per MB; 1.57 GB for ECDSA).
 
-| target | input | prove ms | verify ms | proof bytes | peak RSS MB | cells |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sha256 | 128 B | 280 | 52 | 214,556 | 47 | 308,224 |
-| sha256 | 256 B | 183 | 75 | 224,900 | 49 | 462,336 |
-| sha256 | 512 B | 223 | 56 | 246,224 | 50 | 924,672 |
-| sha256 | 1024 B | 292 | 90 | 280,468 | 52 | 1,585,152 |
-| sha256 | 2048 B | 425 | 76 | 297,592 | 57 | 3,698,688 |
-| keccak | 128 B | 187 | 59 | 283,404 | 48 | 218,112 |
-| keccak | 256 B | 226 | 60 | 302,884 | 49 | 436,224 |
-| keccak | 512 B | 194 | 106 | 323,548 | 50 | 872,448 |
-| keccak | 1024 B | 250 | 100 | 351,000 | 53 | 1,744,896 |
-| keccak | 2048 B | 307 | 68 | 378,704 | 57 | 3,489,792 |
-| poseidon | 2 | 319 | 90 | 418,957 | 53 | 1,916,928 |
-| poseidon | 4 | 318 | 74 | 422,029 | 53 | 1,916,928 |
-| poseidon | 8 | 315 | 96 | 417,597 | 53 | 1,916,928 |
-| poseidon | 12 | 479 | 87 | 458,765 | 59 | 4,472,832 |
-| poseidon | 16 | 435 | 76 | 460,461 | 59 | 4,472,832 |
-| ecdsa | 1 sig | 979 | 130 | 654,464 | 91 | 19,574,784 |
+| target | input | prove ms | warm prove ms | verify ms | proof bytes | peak RSS MB | cells |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| sha256 | 128 B | 280 | 37 | 52 | 214,556 | 47 | 308,224 |
+| sha256 | 256 B | 183 | 42 | 75 | 224,900 | 49 | 462,336 |
+| sha256 | 512 B | 223 | 53 | 56 | 246,224 | 50 | 924,672 |
+| sha256 | 1024 B | 292 | 75 | 90 | 280,468 | 52 | 1,585,152 |
+| sha256 | 2048 B | 425 | 141 | 76 | 297,592 | 57 | 3,698,688 |
+| keccak | 128 B | 187 | 33 | 59 | 283,404 | 48 | 218,112 |
+| keccak | 256 B | 226 | 37 | 60 | 302,884 | 49 | 436,224 |
+| keccak | 512 B | 194 | 43 | 106 | 323,548 | 50 | 872,448 |
+| keccak | 1024 B | 250 | 61 | 100 | 351,000 | 53 | 1,744,896 |
+| keccak | 2048 B | 307 | 86 | 68 | 378,704 | 57 | 3,489,792 |
+| poseidon | 2 | 319 | 99 | 90 | 418,957 | 53 | 1,916,928 |
+| poseidon | 4 | 318 | 97 | 74 | 422,029 | 53 | 1,916,928 |
+| poseidon | 8 | 315 | 98 | 96 | 417,597 | 53 | 1,916,928 |
+| poseidon | 12 | 479 | 163 | 87 | 458,765 | 59 | 4,472,832 |
+| poseidon | 16 | 435 | 163 | 76 | 460,461 | 59 | 4,472,832 |
+| ecdsa | 1 sig | 979 | 370 | 130 | 654,464 | 91 | 19,574,784 |
 
 The verify column and the 128-byte SHA-256 row carry run-to-run noise of tens of ms (process start,
 the first size of a sweep paying cold caches); the in-process verifier is 15 to 90 ms across these.
