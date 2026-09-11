@@ -1,3 +1,9 @@
 .venv/
 *.mojopkg
 __pycache__/
+target/
+csp/target/
+csp/circuit_sizes.json
+csp/*_sizes.json
+csp/hyperfine_*.json
+csp/*_mem_report.json

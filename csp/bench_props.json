@@ -1,0 +1,13 @@
+{
+  "proving_system": "caracal7",
+  "field_curve": "F_127 (bit-layout, 16-coordinate extension)",
+  "iop": "caracal7 (tensor-code IOP, GPU GEMM prover)",
+  "pcs": "Reed-Solomon tensor code with Merkle commitments",
+  "arithm": "column families over a chain grid",
+  "is_zk": false,
+  "is_zkvm": false,
+  "security_bits": 103,
+  "is_pq": true,
+  "is_maintained": true,
+  "is_audited": "not_audited"
+}
