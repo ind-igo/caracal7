@@ -18,7 +18,39 @@ Local run, from a csp-benchmarks checkout with `cargo build --release -p utils` 
 
     BENCH_INPUT_PROFILE=reduced bash ./benchmark.sh --system-dir <this repo>/caracal7 --logging --quick
 
-## What the numbers mean
+## Rust track (`csp-rust/`)
+
+csp-benchmarks times its Rust crates differently: Criterion runs `prepare` per iteration outside the
+timer and times `prove(&prepared)` in-process, the way plonky2's `prove(circuit_data, pw)` is measured.
+`csp-rust/` enters caracal7 on that track through the C API in `cli/ffi.mojo`, built as a shared
+library by the crate's `build.rs` with the repo's Mojo toolchain.
+
+- **Prepared context** (`Session` in `workload.mojo`): the compiled statement, the constructed prover,
+  its tables uploaded, the arena filled, synchronized. Sessions share one `DeviceContext`
+  (`c7_runtime`): kernels compile once per context, so a fresh context per session would make every
+  prove cold.
+- **Timed prove**: everything that depends on the inputs. Trace, advice, public data, the loads, then
+  `Prover.prove`. Verify is `verify_workload` with `W.public_data` inside, as on the shell track.
+- **Preprocessing size** is the per-grid tables the constructor builds (`Session.preprocessing_bytes`),
+  the analogue of a prover key. Circuit size is committed witness cells as before.
+- **Peak memory** comes from `src/bin/<target>_mem_caracal7`, prepare and prove once, sampled by
+  `measure_mem_avg.sh`; RSS still excludes the Metal arena.
+- Inputs come from the `utils` generators in Rust, including the k256 signature and the Mersenne-31
+  Poseidon elements the CLI does not expose, so the shell track's generator gaps do not apply here.
+
+To run it, from a csp-benchmarks checkout: copy `csp-rust/` to `<checkout>/caracal7-rs/` (a symlink
+does not work: cargo resolves it outside the workspace), add `"caracal7-rs"` to the workspace members,
+add `Caracal7` to `ProvingSystem` in `utils/src/harness.rs` with `as_str` `"caracal7"`, then
+
+    cd caracal7-rs && CARACAL7_REPO=<this repo> BENCH_INPUT_PROFILE=full cargo bench --bench sha256
+
+`build.rs` runs `uv run mojo build --emit shared-lib` in `CARACAL7_REPO` (default: the crate's parent)
+and links the library with rpaths into the repo's venv, so `cargo bench` needs no further setup.
+Results land in `caracal7-rs/*_metrics.json`; `collect_benchmarks` fills the durations from Criterion's
+`target/criterion/*/new/estimates.json` (mean point estimate). Only one entry per system goes on the
+site; the Rust track is the one to submit.
+
+## What the numbers mean (shell track)
 
 - **Prove and verify time** are whole-process wall clock, cold: hyperfine starts the binary per run.
   That includes the Metal device setup and the first-launch kernel compile, so a 128-byte SHA-256 proof

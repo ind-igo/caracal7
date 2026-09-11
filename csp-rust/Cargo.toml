@@ -1,0 +1,27 @@
+[package]
+name = "caracal7-bench"
+version = "0.1.0"
+edition = "2024"
+description = "csp-benchmarks Rust-track harness for the caracal7 prover (Mojo, via its C API)"
+
+[dependencies]
+utils = { path = "../utils" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "sha256"
+harness = false
+
+[[bench]]
+name = "keccak"
+harness = false
+
+[[bench]]
+name = "poseidon"
+harness = false
+
+[[bench]]
+name = "ecdsa"
+harness = false

@@ -70,3 +70,34 @@ setup and first-launch kernel compile, and the arena fill (about 0.3 ms per MB; 
 
 The verify column and the 128-byte SHA-256 row carry run-to-run noise of tens of ms (process start,
 the first size of a sweep paying cold caches); the in-process verifier is 15 to 90 ms across these.
+
+### Rust track
+
+The same harness's Rust track (`csp-rust/`, see `docs/csp.md`): Criterion times `prove` in-process on a
+prepared session (prover built, tables uploaded, arena filled), so the number is trace, public data,
+loads and the prove, without process start or kernel compile. Preprocessing is the per-grid tables.
+
+**2026-09-11, Apple M1 Pro 16 GB, commit 8e552aa (Criterion mean of 10 samples)**
+
+| target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| sha256 | 128 B | 39 | 15 | 214,556 | 86,352 | 43 | 308,224 |
+| sha256 | 256 B | 44 | 19 | 224,900 | 95,324 | 45 | 462,336 |
+| sha256 | 512 B | 56 | 23 | 246,224 | 173,308 | 46 | 924,672 |
+| sha256 | 1024 B | 154 | 22 | 280,468 | 367,572 | 48 | 1,585,152 |
+| sha256 | 2048 B | 147 | 32 | 297,592 | 675,244 | 54 | 3,698,688 |
+| keccak | 128 B | 42 | 24 | 283,404 | 60,588 | 44 | 218,112 |
+| keccak | 256 B | 45 | 25 | 302,884 | 59,500 | 45 | 436,224 |
+| keccak | 512 B | 52 | 27 | 323,548 | 69,996 | 46 | 872,448 |
+| keccak | 1024 B | 73 | 31 | 351,000 | 92,452 | 49 | 1,744,896 |
+| keccak | 2048 B | 101 | 34 | 378,704 | 166,716 | 53 | 3,489,792 |
+| poseidon | 2 | 134 | 31 | 419,149 | 166,716 | 49 | 1,916,928 |
+| poseidon | 4 | 122 | 31 | 419,477 | 166,716 | 49 | 1,916,928 |
+| poseidon | 8 | 121 | 31 | 420,909 | 166,716 | 49 | 1,916,928 |
+| poseidon | 12 | 205 | 37 | 462,733 | 356,056 | 56 | 4,472,832 |
+| poseidon | 16 | 204 | 36 | 460,109 | 356,056 | 56 | 4,472,832 |
+| ecdsa | 1 sig | 435 | 83 | 655,488 | 576,268 | 89 | 19,574,784 |
+
+Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
+session's arena being released); the 1024-byte SHA-256 row is one such run, its warm prove is 75 ms.
+
