@@ -236,6 +236,7 @@ struct TableLayout(TrivialRegisterPassable):
     var rho1: Int       # (m1)          F: rho1^y
     var rho2: Int       # (m2)
     var rho1t: Int      # (m1, m1, 2)   F2: rho1^(r y), the radix table of the to_stored digit pass (encode.mojo)
+    var rho2t: Int      # DftPlan(m2, m2) stage tables of rho2^(r y), the chain digit's pass (split past 9)
     var rs: RsTables    # level-1 RS domain, absolute offsets
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
     var g1p: Int        # (2 h1, 2)     g1^j
@@ -266,6 +267,7 @@ struct TableLayout(TrivialRegisterPassable):
         self.rho1 = off; off += p.m1
         self.rho2 = off; off += p.m2
         self.rho1t = off; off += p.m1 * p.m1 * 2
+        self.rho2t = off; off += DftPlan(p.m2, p.m2).bytes()
         off = (off + 3) & ~3                       # the F4 and u16 tables want 4-byte alignment
         self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
@@ -318,6 +320,7 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     for r in range(p.m1):
         for y in range(p.m1):
             _put(h, t.rho1t + (r * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), (r * y) % p.m1)[0], 0))
+    _dft_tables(h, t.rho2t, DftPlan(p.m2, p.m2), F2(d.rho2, 0), 1)
 
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
 

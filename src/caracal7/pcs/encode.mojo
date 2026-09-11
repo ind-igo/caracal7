@@ -114,11 +114,11 @@ def slot_target[p: Params](slot: Int) -> Tuple[Int, Int, Int, Int]:
     return (H1, x2 - H2, r, t)
 
 
-def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1], columns: Int32):
+def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], columns: Int32):
     """stored[c, slot] = coord of c_x(r) = sum_y coeff[c, x2 + 2^a2 y2, x1 + 2^a1 y1] rho1^(y1 r1) rho2^(y2 r2),
-    the y1 sum already taken by the radix pass of `to_packed` into tmp[c, k2, x1 + 2^a1 r1]. One thread
-    per slot pair (t = 0, 1): the pair holds the two coordinates of one value, or in the fixed classes
-    coordinate 0 of two values (x1 = 0 and x1 = H1)."""
+    both sums already taken by the radix passes of `to_packed` into tmp[c, x2 + 2^a2 r2, x1 + 2^a1 r1]:
+    a gather. One thread per slot pair (t = 0, 1): the pair holds the two coordinates of one value, or
+    in the fixed classes coordinate 0 of two values (x1 = 0 and x1 = H1)."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
@@ -136,17 +136,10 @@ def k_to_stored[p: Params](base: Base, tmp: Buf[2], stored: Buf[1], rho2: Buf[1]
     var r1 = r % p.m1
     var r2 = r // p.m1
     var k1 = x1 + (1 << p.a1) * r1
-    var acc = F2(0)
-    var acc1 = F2(0)                                 # the second value of a fixed class, x1 = H1
-    var fixed = x1 == 0 and coord == 0 and slot_target[p](slot + 1)[0] == H1
-    for y2 in range(p.m2):
-        var s2 = F2(rho2.load(base, (y2 * r2) % p.m2))
-        var row = (c * h2 + x2 + (1 << p.a2) * y2) * h1
-        acc = f_add(acc, f_mul(tmp.load(base, row + k1), s2))
-        if fixed:
-            acc1 = f_add(acc1, f_mul(tmp.load(base, row + k1 + H1), s2))
-    if fixed:
-        acc[1] = acc1[0]
+    var row = (c * h2 + x2 + (1 << p.a2) * r2) * h1
+    var acc = tmp.load(base, row + k1)
+    if x1 == 0 and coord == 0 and slot_target[p](slot + 1)[0] == H1:     # a fixed class: the second value, x1 = H1
+        acc[1] = tmp.load(base, row + k1 + H1)[0]
     base.unsafe_store[width=2](stored.at(c * N + slot), acc)
 
 
@@ -593,8 +586,41 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
         src = e.ctmp
     else:
         src = e.coeff
+    # the y2 digit: an m2-point DFT with rho2 twiddles per (column, x2, k1), rows x2 + B2 y2 -> x2 + B2 r2,
+    # a row of h1 F2 as the inner axis with x2; split as na x nb past 9 like dft_axis (y2 = ka + na kb,
+    # r2 = jb + nb ja). coeff must survive for the LDE, so the passes go src -> code -> ctmp (code is
+    # free until rs_encode). Before 2026-09-11 k_to_stored summed the m2 terms per slot: 72 of the
+    # 85 ms encode at h2 = 8064
+    comptime B2 = 1 << p.a2
+    comptime m2 = p.m2
+    comptime plan2 = DftPlan(m2, m2)
+    comptime na = plan2.na
+    comptime nb = plan2.nb
+    comptime W = p.h1()
+    comptime R = W * 2
+    comptime LR = p.h2() * R
+    var src2: Int
+    comptime if m2 > 1:
+        comptime if na == 1:
+            radix_stage[m2, m2, False, 4](ctx, arena, Radix(
+                src=src, so_line=LR, so_pre=0, so_pre_lo=0, sk=B2 * R, si=2,
+                dst=e.code, to_line=LR, to_pre=0, to_pre_lo=0, tj=B2 * R, ti=2,
+                tab=tab.base + tab.rho2t + plan2.t1(), od=1, od_lo=1, tabmod=1, inner=B2 * W // 4, total=e.columns * B2 * W // 4))
+            src2 = e.code
+        else:
+            radix_stage[nb, nb, False, 4](ctx, arena, Radix(
+                src=src, so_line=LR, so_pre=B2 * R, so_pre_lo=0, sk=B2 * na * R, si=2,
+                dst=e.code, to_line=LR, to_pre=B2 * R, to_pre_lo=0, tj=B2 * na * R, ti=2,
+                tab=tab.base + tab.rho2t + plan2.t1(), od=na, od_lo=1, tabmod=1, inner=B2 * W // 4, total=e.columns * na * B2 * W // 4))
+            radix_stage[na, na, False, 4](ctx, arena, Radix(
+                src=e.code, so_line=LR, so_pre=B2 * na * R, so_pre_lo=0, sk=B2 * R, si=2,
+                dst=e.ctmp, to_line=LR, to_pre=B2 * R, to_pre_lo=0, tj=B2 * nb * R, ti=2,
+                tab=tab.base + tab.rho2t + plan2.ta(), od=nb, od_lo=1, tabmod=nb, inner=B2 * W // 4, total=e.columns * nb * B2 * W // 4))
+            src2 = e.ctmp
+    else:
+        src2 = src
     comptime k3 = k_to_stored[p]
-    ctx.enqueue_function[k3](arena.buf, Buf[2](src), Buf[1](e.stored), Buf[1](tab.base + tab.rho2), cols,
+    ctx.enqueue_function[k3](arena.buf, Buf[2](src2), Buf[1](e.stored), cols,
                              grid_dim=grid(n_grid // 2), block_dim=BACKEND.block)
     pack[p](ctx, arena, e)
 

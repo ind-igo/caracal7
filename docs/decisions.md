@@ -1282,3 +1282,20 @@ The per-row cost at 8064 is now 1.4x the 2688 one, and the two encodes are 43% o
 the next item (the odd digit of the level-1 encoder, encode.mojo). Verified: the SHA-256 round trip on
 252 = 4 x 63 and 336 = 16 x 21 chains (`test_prover_round_trip_on_split_odd_axes`), plus the residual,
 encode, small-grid, prover, mulmod, keccak and ECDSA suites.
+
+## The chain digit of `to_stored` on radix stages (2026-09-11)
+
+`bench_encode` at h2 = 8064: the RS encoder was 11 ms of the 85 ms encode; 72 ms was `k_to_stored`, a
+dense m2-term sum per slot over the odd chain digit (rho2^(y2 r2)), 9x the 2688 cost for 3x the rows and
+strided by 2^a2 rows per term. The row digit already had its radix stage (`rho1t`); the chain digit now
+has the same: an m2-point pass per (column, x2, k1) with (x2, lane) as the inner axis, split as na x nb
+past 9 like `dft_axis` (tables `rho2t` from `_dft_tables` with DftPlan(m2, m2)), and `k_to_stored` is a
+gather. The passes go src -> code -> ctmp: the first version ran stage b in place on `coeff`, which the
+LDE reads afterwards (the split round trip failed, both reviews caught it); `code` is free until
+`rs_encode` writes it and holds L columns 4 bytes against N columns 2.
+
+Measured (M1 Pro, nothing else running): to_packed at 8064 85 -> 19 ms (idft2 10, pack 3, the digit
+pass and gather 6); encode W 82 -> 26 ms, encode Q 90 -> 28; warm prove 399 -> 280 ms (7936 B: 2.24 ms
+per block; 4096 B: 280 ms). At 2688: encode 14 -> 10 ms, prove 141 -> 131. The 8064 profile is now
+flat: lde 31, quotient 24, encode W 26, encode Q 28, open 39, tail 40. The marginal cost per block from
+the 2688 and 8064 points is 1.6 ms on the M1 Pro (fixed part about 78 ms).
