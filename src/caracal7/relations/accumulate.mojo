@@ -74,8 +74,8 @@ struct AccLayout(TrivialRegisterPassable):
     var zval: Int           # (accumulator, row, e)     Z values, the Z tree's trace before the coordinate split
     var chain_prod: Int     # (x2, e)
     var z2: Int             # (product, x2, e) + e      Z2 in the clear; one trailing 1 (k_z2)
-    var n_end: Int          # (product, x2, e)          N(e1, x2), D(e1, x2)
-    var d_end: Int
+    var n_end: Int          # (accumulator, x2, e)      N(e1, x2), D(e1, x2), indexed by pi: only accumulators write them,
+    var d_end: Int          #                           and their pi is below `accumulators`; wiring products have none
     var wlines: Int         # (wiring product, 4, x2, e)  the factor lines n0, n1, d0, d1 (k_wire_factors)
     var rows: Int           # N e bytes, one accumulator's Z
     var line: Int           # h2 e bytes, one line

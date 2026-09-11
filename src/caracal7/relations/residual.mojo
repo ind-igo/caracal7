@@ -247,9 +247,10 @@ def _put_u16(mut l: List[UInt8], at: Int, v: Int):
 
 def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises -> Tuple[List[UInt8], List[UInt8], Int]:
     """The residual's entry table and its merge index from the family table: one `families_g` row per
-    distinct (reads, gate) descriptor (bytes 16 to 28 of an entry) among the entries outside every Horner
-    accumulator's ingest range, and `merge` as (entry, 2) u16 (start, count) then u16 indices of the entries
-    each row sums. Entries that share the reads share X(point), so sum kappa_i X = (sum kappa_i) X.
+    distinct (reads, gate) descriptor (bytes 16 to 28 of an entry), and `merge` as (entry, 2) u16 (start,
+    count) then u16 indices of the entries each row sums. Every entry takes part except the 2 e linear
+    transition entries a Horner descriptor emits just before its ingest range (ir.Families.horner): those
+    belong to the Horner scan, not to the residual. The ingest entries themselves are kept. Entries that share the reads share X(point), so sum kappa_i X = (sum kappa_i) X.
     Returns (families_g, merge, rows of families_g); families_g is padded to `entries` rows."""
     if entries > 65535:
         raise Error("the merge table indexes entries as u16")
@@ -257,7 +258,7 @@ def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises 
     for k in range(len(accs) // ACC):
         if Int(accs[k * ACC + 38]) == KIND_HORNER:
             var first = get_u16(accs, k * ACC + 2)
-            for i in range(first - 32, first):
+            for i in range(first - 2 * 16, first):      # the 2 e transition entries, e = 16
                 keep[i] = False
     var fg = List[UInt8](length=entries * ENTRY, fill=0)
     var mg = List[UInt8](length=entries * 6, fill=0)

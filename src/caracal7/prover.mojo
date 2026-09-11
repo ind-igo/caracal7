@@ -1,8 +1,9 @@
 """Host orchestration (docs/design.md section 6): plan the arena once, then enqueue every stage of
 spec section 10 in order on one stream. One synchronize at the end reads the proof bytes.
 
-`prove` is the protocol: every commitment absorbed and every challenge sampled is visible there, in
-order. Each stage between them is a helper that takes its own layout group (accumulators, small
+`prove` reads as the protocol: the transcript steps are visible there in order, except the three that
+belong to a repeated unit and live in it (`_commit` absorbs a root, `_tail_level` absorbs a level's root
+and rounds and squeezes its scalars, `_open_previous` squeezes the positions). Each stage between them is a helper that takes its own layout group (accumulators, small
 grid, residual grid, openings, one tail level) and computes its own offsets. The layout groups are
 plain structs of arena offsets built from one Bump; the stage modules own the groups whose internal
 packing they read (AccLayout in accumulate.mojo, SmallGridLayout in smallgrid.mojo).

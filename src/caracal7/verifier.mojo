@@ -81,8 +81,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     _vmark(profile, "transcript and openings", tv)
 
     # steps 3 to 6 on the opened values
-    _boundaries[p](shape, openings, z2v, stage1)
-    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d)
+    var pi = _boundaries[p](shape, openings, z2v, stage1)
+    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d, pi)
     _vmark(profile, "boundaries", tv)
     _small_grid[p](shape, openings, z2v, q3, alpha, stage1, wchal, z2, d)
     _vmark(profile, "small grid", tv)
@@ -124,12 +124,13 @@ def _one() -> E:
     return ext_embed[4](SIMD[DType.uint8, 1](1))
 
 
-def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], stage1: List[UInt8]) raises:
+def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], stage1: List[UInt8]) raises -> Int:
     """Steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2); a lookup closes
     on its table constant. The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
     Then the zero rows (polynomial-mulmod 4): a column that is zero on row 0 or the last row of every chain
-    opens to zero at (coordinate, z2), a polynomial in X2 of degree < h2 vanishing at random z2."""
+    opens to zero at (coordinate, z2), a polynomial in X2 of degree < h2 vanishing at random z2.
+    Returns the product index after the accumulators: the wiring products' Z2 lines follow."""
     var one = _one()
     var at_start = point_index(shape.point_list, FIX_ONE, 0)     # (1, z2)
     var at_end = point_index(shape.point_list, FIX_E, FIX_E)     # (e1, e2)
@@ -158,10 +159,11 @@ def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
     for i in range(len(shape.zeros) // ZERO):
         if _opening[p](openings, shape, point_index(shape.point_list, get_u16(shape.zeros, i * ZERO + 2), 0), get_u16(shape.zeros, i * ZERO)) != E(0):
             raise Error("chain row is not zero")
+    return pi
 
 
 def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], z2v: List[UInt8], wchal: List[UInt8],
-                       stage1: List[UInt8], public: List[UInt8], d: Domains) raises:
+                       stage1: List[UInt8], public: List[UInt8], d: Domains, pi0: Int) raises:
     """The wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
     factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)."""
     if shape.wiring_products() == 0:
@@ -174,7 +176,7 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
     var gw = list_e(wchal, 1)
     var lhs = one
     var rhs = one
-    var pi = shape.products() - shape.wiring_products()          # the wiring products' Z2 lines follow the accumulators'
+    var pi = pi0                                                 # the wiring products' Z2 lines follow the accumulators'
     for g in range(shape.wiring_products()):
         if list_e(z2v, pi * p.h2()) != one:
             raise Error("wiring product does not start at 1")
