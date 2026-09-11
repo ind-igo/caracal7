@@ -15,12 +15,13 @@ from std.time import perf_counter_ns
 from caracal7.core.params import Params
 from caracal7.core.hash import Hash
 from caracal7.proof import Shape, ProofReader, VERSION, prefix_bytes
+from caracal7.relations.statement import Compiled
 from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e
 
 
@@ -81,8 +82,8 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     _vmark(profile, "transcript and openings", tv)
 
     # steps 3 to 6 on the opened values
-    var pi = _boundaries[p](shape, openings, z2v, stage1)
-    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d, pi)
+    _boundaries[p](shape, openings, z2v, stage1)
+    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d)
     _vmark(profile, "boundaries", tv)
     _small_grid[p](shape, openings, z2v, q3, alpha, stage1, wchal, z2, d)
     _vmark(profile, "small grid", tv)
@@ -100,6 +101,12 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     tail.clear[H](r, t, shape, root_w, root_z, root_q, beta_gamma, d)
     _vmark(profile, "clear vector", tv)
     return True
+
+
+def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], mut c: Compiled, public_inputs: Span[UInt8, _],
+                               public: List[UInt8] = List[UInt8](), profile: Bool = False) raises -> Bool:
+    """Against a compiled statement: its shape and family table travel together."""
+    return verify[p, H](proof_bytes^, c.shape, public_inputs, c.families, public, profile)
 
 
 def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inputs: Span[UInt8, _], public: List[UInt8]) raises:
@@ -124,21 +131,20 @@ def _one() -> E:
     return ext_embed[4](SIMD[DType.uint8, 1](1))
 
 
-def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], stage1: List[UInt8]) raises -> Int:
+def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], stage1: List[UInt8]) raises:
     """Steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
     (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2); a lookup closes
     on its table constant. The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
     Then the zero rows (polynomial-mulmod 4): a column that is zero on row 0 or the last row of every chain
-    opens to zero at (coordinate, z2), a polynomial in X2 of degree < h2 vanishing at random z2.
-    Returns the product index after the accumulators: the wiring products' Z2 lines follow."""
+    opens to zero at (coordinate, z2), a polynomial in X2 of degree < h2 vanishing at random z2."""
     var one = _one()
     var at_start = point_index(shape.point_list, FIX_ONE, 0)     # (1, z2)
     var at_end = point_index(shape.point_list, FIX_E, FIX_E)     # (e1, e2)
-    var pi = 0                                                   # product index into Z2
     for k in range(shape.accumulators()):
-        var z_col = get_u16(shape.accs, k * ACC)
-        if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:   # 7.1 with the record's start; its chain ends are chain-end terms
-            if _coords_at[p](openings, shape, at_start, z_col) != ext_embed[4](SIMD[DType.uint8, 1](shape.accs[k * ACC + 6])):
+        var z_col = acc_z_col(shape.accs, k)
+        var pi = shape.product_of(k)                             # its Z2 line
+        if pi < 0:                                               # Horner: 7.1 with the record's start; its chain ends are chain-end terms
+            if _coords_at[p](openings, shape, at_start, z_col) != ext_embed[4](SIMD[DType.uint8, 1](acc_start(shape.accs, k))):
                 raise Error("accumulator chain start is not its start value")
             continue
         if _coords_at[p](openings, shape, at_start, z_col) != one:
@@ -147,11 +153,10 @@ def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
             raise Error("Z2(1) is not 1")
         var lhs = ext_mul[4](ext_mul[4](list_e(z2v, pi * p.h2() + p.h2() - 1), _coords_at[p](openings, shape, at_end, z_col)),
                              _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, False))
-        pi += 1
-        if Int(shape.accs[k * ACC + 38]) == KIND_LOOKUP:
+        if acc_kind(shape.accs, k) == KIND_LOOKUP:
             # 6.3: the last row has no pair factor, so the product closes on the table constant
             var w = get_u16(shape.accs, k * ACC + 2)
-            if lhs != lookup_constant(shape.tables[Int(shape.accs[k * ACC + 39])], w, stage1):
+            if lhs != lookup_constant(shape.tables[acc_table(shape.accs, k)], w, stage1):
                 raise Error("lookup product is not the table constant")
         elif lhs != _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
@@ -159,11 +164,10 @@ def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
     for i in range(len(shape.zeros) // ZERO):
         if _opening[p](openings, shape, point_index(shape.point_list, get_u16(shape.zeros, i * ZERO + 2), 0), get_u16(shape.zeros, i * ZERO)) != E(0):
             raise Error("chain row is not zero")
-    return pi
 
 
 def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], z2v: List[UInt8], wchal: List[UInt8],
-                       stage1: List[UInt8], public: List[UInt8], d: Domains, pi0: Int) raises:
+                       stage1: List[UInt8], public: List[UInt8], d: Domains) raises:
     """The wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
     factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)."""
     if shape.wiring_products() == 0:
@@ -176,8 +180,8 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
     var gw = list_e(wchal, 1)
     var lhs = one
     var rhs = one
-    var pi = pi0                                                 # the wiring products' Z2 lines follow the accumulators'
     for g in range(shape.wiring_products()):
+        var pi = shape.wiring_product(g)                         # its Z2 line
         if list_e(z2v, pi * p.h2()) != one:
             raise Error("wiring product does not start at 1")
         lhs = ext_mul[4](lhs, list_e(z2v, pi * p.h2() + p.h2() - 1))
@@ -189,7 +193,6 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
             var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
             lhs = ext_mul[4](lhs, f_add(wg, ext_mul[4](bw, ext_embed[4](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
             rhs = ext_mul[4](rhs, f_add(wg, ext_mul[4](bw, ext_embed[4](sg))))
-        pi += 1
     var off = shape.public_bytes[p]()
     for i in range(len(shape.pubf) // PUBF):
         off -= shape.factor_bytes[p](i)
@@ -223,19 +226,19 @@ def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
     var e2 = ext_embed[4](ext_pow[1](d.omega2, p.h2() - 1))
     var w2 = ext_embed[4](d.omega2)
     var r2 = E(0)
-    var pi = 0
     for k in range(shape.accumulators()):
-        if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:
+        var pi = shape.product_of(k)
+        if pi < 0:
             continue
         var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
         var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
-        var c = _coords_at[p](openings, shape, at_e1, get_u16(shape.accs, k * ACC))
+        var c = _coords_at[p](openings, shape, at_e1, acc_z_col(shape.accs, k))
         var n_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, False)
         var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
         var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
         r2 = f_add(r2, ext_mul[4](ext_pow[4](alpha, shape.family_of(k)), term))
-        pi += 1
     for g in range(shape.wiring_products()):       # (z2 - e2) (Z(omega2 z2) prod den - Z(z2) prod num) over the two slots
+        var pi = shape.wiring_product(g)
         var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
         var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
         var nn = one
@@ -250,7 +253,6 @@ def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
             dd = ext_mul[4](dd, f_add(wg, ext_mul[4](list_e(wchal, 0), sig)))
         var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, dd), ext_mul[4](za, nn)))
         r2 = f_add(r2, ext_mul[4](ext_pow[4](alpha, get_u16(shape.wires, g * WIRE + 4)), term))
-        pi += 1
     for i in range(len(shape.ends) // END):           # chain-end terms (smallgrid.mojo): coef chal alpha^family A [B] [(z2 - e2)]
         var v = ext_mul[4](ext_pow[4](alpha, get_u16(shape.ends, i * END + 4)), _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END)))
         v = f_mul(v, E(shape.ends[i * END + 6]))
@@ -593,7 +595,7 @@ def _factor_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, ne
     on, which a lookup's D reads: (1, omega2 z2) for (e1, z2).
     TODO(memory): the KIND_MEMORY factor pair of spec 6.4 goes here."""
     var fp = _fp_at[p](openings, shape, point, accs, k, den)
-    if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
+    if acc_kind(accs, k) == KIND_LOOKUP:
         if den:
             return f_add(f_add(list_e(chals, 4), fp), ext_mul[4](list_e(chals, 0), _fp_at[p](openings, shape, next, accs, k, True)))
         return ext_mul[4](list_e(chals, 3), f_add(list_e(chals, 1), fp))

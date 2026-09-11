@@ -28,7 +28,7 @@ from caracal7.core.field import F2, E, V2, f_add, f_mul, f_sub, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
-from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER
+from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER, HORNER_TRANSITIONS, acc_kind
 from caracal7.core.bytes import Base, Buf, u16, get_u16
 from caracal7.core.arena import Arena
 from caracal7.core.dft import dft_axis, DftPlan
@@ -215,8 +215,8 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
             continue
         var col = u16(base, d.at(0))
         var first = u16(base, d.at(2))
-        var ka = Buf[16](families.at((first - 32) * ENTRY)).load(base, 0).cast[DType.float32]()
-        var kb = Buf[16](families.at((first - 31) * ENTRY)).load(base, 0).cast[DType.float32]()
+        var ka = Buf[16](families.at((first - HORNER_TRANSITIONS) * ENTRY)).load(base, 0).cast[DType.float32]()
+        var kb = Buf[16](families.at((first - HORNER_TRANSITIONS + 1) * ENTRY)).load(base, 0).cast[DType.float32]()
         var v = fp_reduce(fp_ext_mul[4](ka, _z_read[p](base, lde, col, jn, j2).cast[DType.float32]())
                           + fp_ext_mul[4](kb, _z_read[p](base, lde, col, j1, j2).cast[DType.float32]()))
         var h = v.deinterleave()                        # times the gate, an F2 scalar, lane by lane
@@ -248,17 +248,17 @@ def _put_u16(mut l: List[UInt8], at: Int, v: Int):
 def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises -> Tuple[List[UInt8], List[UInt8], Int]:
     """The residual's entry table and its merge index from the family table: one `families_g` row per
     distinct (reads, gate) descriptor (bytes 16 to 28 of an entry), and `merge` as (entry, 2) u16 (start,
-    count) then u16 indices of the entries each row sums. Every entry takes part except the 2 e linear
-    transition entries a Horner descriptor emits just before its ingest range (ir.Families.horner): those
-    belong to the Horner scan, not to the residual. The ingest entries themselves are kept. Entries that share the reads share X(point), so sum kappa_i X = (sum kappa_i) X.
+    count) then u16 indices of the entries each row sums. Every entry takes part except the HORNER_TRANSITIONS
+    linear entries a Horner descriptor emits just before its ingest range (ir.Families.horner; Shape checks
+    they are there): those belong to the Horner scan, not to the residual. The ingest entries are kept. Entries that share the reads share X(point), so sum kappa_i X = (sum kappa_i) X.
     Returns (families_g, merge, rows of families_g); families_g is padded to `entries` rows."""
     if entries > 65535:
         raise Error("the merge table indexes entries as u16")
     var keep = List[Bool](length=entries, fill=True)
     for k in range(len(accs) // ACC):
-        if Int(accs[k * ACC + 38]) == KIND_HORNER:
+        if acc_kind(accs, k) == KIND_HORNER:
             var first = get_u16(accs, k * ACC + 2)
-            for i in range(first - 2 * 16, first):      # the 2 e transition entries, e = 16
+            for i in range(first - HORNER_TRANSITIONS, first):
                 keep[i] = False
     var fg = List[UInt8](length=entries * ENTRY, fill=0)
     var mg = List[UInt8](length=entries * 6, fill=0)

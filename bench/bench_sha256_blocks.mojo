@@ -38,9 +38,8 @@ def run[p: Params](bytes: Int) raises:
     for i in range(pub_bytes):
         pub.append(data[i])
     var idx = advice[p](c.layout, trace)
-    var families = c.families.copy()
     var t0 = perf_counter_ns()
-    var prover = Prover[p, Blake3](ctx, c^.take_shape(), families^)
+    var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
     load_public[p, Blake3](ctx, prover, pub)

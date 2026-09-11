@@ -23,7 +23,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.tables import F2_ORDER, Domains, f2_primitive
 from caracal7.core.field import ext_mul, ext_pow
@@ -185,14 +185,20 @@ struct Shape(Writable):
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
-            if Int(accs[k * ACC + 38]) == KIND_HORNER:   # the ingest range is what the kernel reads: linear W reads inside the chain
+            if acc_kind(accs, k) == KIND_HORNER:   # the ingest range is what the kernel reads: linear W reads inside the chain
                 var first = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
                 var count = Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
-                if count == 0 or first + count > self.entries or Int(accs[k * ACC + 6]) > 1 or Int(accs[k * ACC + 7]) > chal_count(chals):
+                if count == 0 or first + count > self.entries or acc_start(accs, k) > 1 or Int(accs[k * ACC + 7]) > chal_count(chals):
                     raise Error("horner descriptor: ingest range inside the family table, start in {0, 1}, scale a stage-1 element")
+                if first < HORNER_TRANSITIONS:
+                    raise Error("horner descriptor: the transition entries precede the ingest range")
+                for t in range(HORNER_TRANSITIONS):        # what merge_tables drops and the residual must not read twice
+                    var en = entry(families, first - HORNER_TRANSITIONS + t)
+                    if en.col_a != acc_z_col(accs, k) + t // 2 or en.col_b != NONE or en.mult != 1 or en.basis != t // 2 or en.family != acc_family(accs, k):
+                        raise Error("horner descriptor: the entries before the ingest range are not its transition entries")
                 for i in range(first, first + count):
                     var en = entry(families, i)
-                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.dj1_a % 2 != 0 or en.basis != NO_BASIS or en.basis2 != NO_BASIS or en.family != get_u16(accs, k * ACC + 40):
+                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.dj1_a % 2 != 0 or en.basis != NO_BASIS or en.basis2 != NO_BASIS or en.family != acc_family(accs, k):
                         raise Error("horner ingest entries are gated linear reads of witness columns in the accumulator's family")
                 continue
             var w_num = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
@@ -203,8 +209,8 @@ struct Shape(Writable):
                 var at = k * ACC + 6 + 2 * j
                 if (j % 8) < (w_num if j < 8 else w_den) and (Int(accs[at]) | Int(accs[at + 1]) << 8) >= columns_w:
                     raise Error("accumulator record columns must be witness columns")
-            if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
-                var t = Int(accs[k * ACC + 39])
+            if acc_kind(accs, k) == KIND_LOOKUP:
+                var t = acc_table(accs, k)
                 if w_num != w_den or t >= len(tables) or len(tables[t]) == 0 or len(tables[t]) % w_num != 0:
                     raise Error("lookup descriptor needs a table of its record width")
                 for b in tables[t]:                    # the verifier compares raw bytes for the break rule; [0,127] must not pass as [0,0]
@@ -222,15 +228,15 @@ struct Shape(Writable):
             if not ok_a or not ok_b or Int(ends[i * END + 6]) >= 127 or Int(ends[i * END + 7]) > chal_count(chals) or Int(ends[i * END + 8]) > 1:
                 raise Error("chain-end term reads Z blocks by their first column, with a canonical coefficient, a stage-1 element, and a gate flag")
             for k in range(len(accs) // ACC):              # R2 sums every term with alpha^family: a (W) pair and a chain-end family never share one
-                if Int(accs[k * ACC + 38]) != KIND_HORNER and get_u16(accs, k * ACC + 40) == get_u16(ends, i * END + 4):
+                if acc_kind(accs, k) != KIND_HORNER and acc_family(accs, k) == get_u16(ends, i * END + 4):
                     raise Error("chain-end family index collides with a grand-product accumulator's")
         var products = 0
         for k in range(len(accs) // ACC):
-            if Int(accs[k * ACC + 38]) == KIND_HORNER:
+            if acc_kind(accs, k) == KIND_HORNER:
                 continue
             products += 1
             for j in range(k):                             # one alpha power per (W) pair
-                if Int(accs[j * ACC + 38]) != KIND_HORNER and get_u16(accs, j * ACC + 40) == get_u16(accs, k * ACC + 40):
+                if acc_kind(accs, j) != KIND_HORNER and acc_family(accs, j) == acc_family(accs, k):
                     raise Error("grand-product accumulators must carry distinct family indices")
         var slots = 0
         for g in range(len(wires) // WIRE):
@@ -243,7 +249,7 @@ struct Shape(Writable):
                     raise Error("wiring slots are Z blocks by their first column")
                 slots += 0 if c == NONE else 1
             for k in range(len(accs) // ACC):
-                if Int(accs[k * ACC + 38]) != KIND_HORNER and get_u16(accs, k * ACC + 40) == fam:
+                if acc_kind(accs, k) != KIND_HORNER and acc_family(accs, k) == fam:
                     raise Error("wiring family index collides with a grand-product accumulator's")
             for i in range(len(ends) // END):
                 if get_u16(ends, i * END + 4) == fam:
@@ -260,7 +266,7 @@ struct Shape(Writable):
                 raise Error("sigma bytes must be canonical field elements (< 127)")
         for i in range(len(pubf) // PUBF):
             var k = get_u16(pubf, i * PUBF)
-            if len(wires) == 0 or k >= len(accs) // ACC or Int(accs[k * ACC + 38]) != KIND_HORNER:
+            if len(wires) == 0 or k >= len(accs) // ACC or acc_kind(accs, k) != KIND_HORNER:
                 raise Error("public factor names a horner accumulator of a wired statement")
             for t in range(2, PUBF):
                 if Int(pubf[i * PUBF + t]) >= 127:
@@ -298,11 +304,24 @@ struct Shape(Writable):
         """Z2 lines in the clear: the grand-product accumulators (KIND_PERM, KIND_LOOKUP), then the wiring products."""
         var n = self.wiring_products()
         for k in range(self.accumulators()):
-            n += 0 if Int(self.accs[k * ACC + 38]) == KIND_HORNER else 1
+            n += 0 if acc_kind(self.accs, k) == KIND_HORNER else 1
         return n
 
     def wiring_products(self) -> Int:
         return len(self.wires) // WIRE
+
+    def product_of(self, k: Int) -> Int:
+        """The product index of accumulator k, its Z2, n_end and d_end line; -1 for a Horner accumulator."""
+        if acc_kind(self.accs, k) == KIND_HORNER:
+            return -1
+        var pi = 0
+        for j in range(k):
+            pi += 0 if acc_kind(self.accs, j) == KIND_HORNER else 1
+        return pi
+
+    def wiring_product(self, g: Int) -> Int:
+        """The product index of wiring product g: the wiring products' lines follow the accumulators'."""
+        return self.products() - self.wiring_products() + g
 
     def factor_bytes[p: Params](self, i: Int) -> Int:
         """Public data of public factor i: h1 bytes per ingest entry of its accumulator (ir.horner_chain_end)."""
@@ -310,7 +329,7 @@ struct Shape(Writable):
 
     def family_of(self, k: Int) -> Int:
         """The family index of accumulator k: its alpha power on the small grid."""
-        return get_u16(self.accs, k * ACC + 40)
+        return acc_family(self.accs, k)
 
     def chal_count(self) -> Int:
         """Stage-1 elements: the sampled ones and one per derivation row."""
@@ -319,17 +338,17 @@ struct Shape(Writable):
     def lookups(self) -> Int:
         var n = 0
         for k in range(self.accumulators()):
-            n += 1 if Int(self.accs[k * ACC + 38]) == KIND_LOOKUP else 0
+            n += 1 if acc_kind(self.accs, k) == KIND_LOOKUP else 0
         return n
 
     def table_rows(self, k: Int) -> Int:
         """K of the table lookup descriptor k reads."""
-        return len(self.tables[Int(self.accs[k * ACC + 39])]) // (Int(self.accs[k * ACC + 2]) | Int(self.accs[k * ACC + 3]) << 8)
+        return len(self.tables[acc_table(self.accs, k)]) // (Int(self.accs[k * ACC + 2]) | Int(self.accs[k * ACC + 3]) << 8)
 
     def max_table_rows(self) -> Int:
         var m = 0
         for k in range(self.accumulators()):
-            if Int(self.accs[k * ACC + 38]) == KIND_LOOKUP:
+            if acc_kind(self.accs, k) == KIND_LOOKUP:
                 m = max(m, self.table_rows(k))
         return m
 
@@ -531,9 +550,12 @@ struct ProofReader:
         self.pos = 0
 
     def u32(mut self) raises -> Int:
+        if self.pos + 4 > len(self.bytes):
+            raise Error("proof truncated")
         var v = 0
         for i in range(4):
-            v |= Int(self.take(1)[0]) << (8 * i)
+            v |= Int(self.bytes[self.pos + i]) << (8 * i)
+        self.pos += 4
         return v
 
     def take(mut self, n: Int) raises -> List[UInt8]:

@@ -48,8 +48,7 @@ def prove_workload[p: Params, H: Hash, W: Workload](ctx: DeviceContext, w: W) ra
     var blocks = List[UInt8](capacity=n_blocks)
     for i in range(n_blocks):
         blocks.append(data[i])
-    var families = c.families.copy()
-    var prover = Prover[p, H](ctx, c^.take_shape(), families^)
+    var prover = Prover[p, H](ctx, c^)
     load_trace[p, H](ctx, prover, trace)
     load_advice[p, H](ctx, prover, idx)
     load_public[p, H](ctx, prover, blocks)
@@ -59,8 +58,7 @@ def prove_workload[p: Params, H: Hash, W: Workload](ctx: DeviceContext, w: W) ra
 def verify_workload[p: Params, H: Hash, W: Workload](var proof: List[UInt8], w: W, public_inputs: List[UInt8], profile: Bool = False) raises -> Bool:
     var c = w.statement[p]().compile[p]()
     var data = W.public_data[p](c.layout, public_inputs)
-    var families = c.families.copy()
-    return verify[p, H](proof^, c.shape, public_inputs, families, data, profile)
+    return verify[p, H](proof^, c, public_inputs, data, profile)
 
 
 def check_families[p: Params](c: Compiled, trace: List[UInt8], pubs: List[List[UInt8]]) raises:

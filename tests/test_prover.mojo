@@ -1,7 +1,7 @@
 """The skeleton: the arena plan builds for the reference profile and the prover stops at the first
 stage that does not exist, in spec order."""
 
-from std.testing import assert_equal, assert_true, assert_false, TestSuite
+from std.testing import assert_raises, assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
@@ -10,7 +10,7 @@ from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from caracal7.verifier import verify
-from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE
+from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS
 from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
@@ -345,6 +345,18 @@ def test_prove_and_verify_with_tail() raises:
         stopped = String(e)
     assert_equal(stopped, "sumcheck fails at a tail level")
 
+
+
+def test_horner_descriptor_needs_its_transition_entries() raises:
+    """Shape pins the HORNER_TRANSITIONS entries before a Horner ingest range, the ones merge_tables drops:
+    a table whose entry there reads another column is rejected at construction."""
+    var c = horner_statement().compile[p]()
+    var fam = c.families.copy()
+    var first = Int(c.shape.accs[2]) | Int(c.shape.accs[3]) << 8
+    fam[(first - HORNER_TRANSITIONS) * ENTRY + 16] ^= 1              # col_a of the first transition entry
+    with assert_raises(contains="transition entries"):
+        _ = Shape.__init__[p](c.layout.columns_w(), fam, c.shape.accs, chals=c.shape.chals, ends=c.shape.ends,
+                              pubf=c.shape.pubf, wires=c.shape.wires, sigma=c.shape.sigma)
 
 
 def test_prove_and_verify_with_horner_accumulators() raises:

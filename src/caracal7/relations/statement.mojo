@@ -17,7 +17,7 @@ from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
 from caracal7.core.field import F2, ext_mul, ext_pow
 from caracal7.core.tables import Domains, f2_primitive, F2_ORDER
 from caracal7.proof import Shape
@@ -112,13 +112,13 @@ struct Layout(Copyable, Movable):
         self.restrictions = restrictions.copy()
         self.slots = List[Tuple[Int, Int, Int]](length=len(names), fill=(-1, 0, 0))
         for k in range(len(accs) // ACC):
-            if Int(accs[k * ACC + 38]) != KIND_LOOKUP:
+            if acc_kind(accs, k) != KIND_LOOKUP:
                 continue
             var width = get_u16(accs, k * ACC + 2)
             for j in range(width):
                 var c = get_u16(accs, k * ACC + 6 + 2 * j)
                 if self.slots[c][0] == -1:
-                    self.slots[c] = (Int(accs[k * ACC + 39]), j, width)
+                    self.slots[c] = (acc_table(accs, k), j, width)
                 else:
                     self.slots[c] = (-3, 0, 0)
                 self.slots[get_u16(accs, k * ACC + 22 + 2 * j)] = (-2, 0, 0)
@@ -619,10 +619,10 @@ def advice[p: Params](layout: Layout, trace: List[UInt8]) raises -> List[UInt8]:
     var out = List[UInt8]()
     var rec = List[UInt8](length=ACC_W_MAX, fill=0)
     for k in range(len(layout.accs) // ACC):
-        if Int(layout.accs[k * ACC + 38]) != KIND_LOOKUP:
+        if acc_kind(layout.accs, k) != KIND_LOOKUP:
             continue
         var width = get_u16(layout.accs, k * ACC + 2)
-        var t = layout.tables[Int(layout.accs[k * ACC + 39])].copy()
+        var t = layout.tables[acc_table(layout.accs, k)].copy()
         var rows = len(t) // width
         var at = Dict[Int, Int]()
         for r in range(rows):

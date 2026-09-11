@@ -44,6 +44,7 @@ comptime ACC_W_MAX = 8
 comptime KIND_PERM = 0
 comptime KIND_LOOKUP = 1
 comptime KIND_HORNER = 2    # the spec's {start, ingest, scale, end} record: R(next) = scale R + sum weight read (polynomial-mulmod 5)
+comptime HORNER_TRANSITIONS = 32   # linear entries Families.horner emits just before a descriptor's ingest range: 16 coordinates, two each
 # TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
@@ -286,6 +287,33 @@ struct Entry(TrivialRegisterPassable):
     var basis2: Int
 
 
+# ---- accumulator descriptor fields (ACC bytes; accumulate.mojo documents the record) ----
+
+def acc_z_col(accs: Span[UInt8, _], k: Int) -> Int:
+    """The first Z column of accumulator k (columns_w + k e)."""
+    return get_u16(accs, k * ACC)
+
+
+def acc_start(accs: Span[UInt8, _], k: Int) -> Int:
+    """A Horner accumulator's start value (0 or 1)."""
+    return Int(accs[k * ACC + 6])
+
+
+def acc_kind(accs: Span[UInt8, _], k: Int) -> Int:
+    """KIND_PERM, KIND_LOOKUP or KIND_HORNER."""
+    return Int(accs[k * ACC + 38])
+
+
+def acc_table(accs: Span[UInt8, _], k: Int) -> Int:
+    """A lookup accumulator's table index."""
+    return Int(accs[k * ACC + 39])
+
+
+def acc_family(accs: Span[UInt8, _], k: Int) -> Int:
+    """The family index of accumulator k: its alpha power on the small grid."""
+    return get_u16(accs, k * ACC + 40)
+
+
 def entry(fam: Span[UInt8, _], k: Int) -> Entry:
     var o = k * ENTRY
     return Entry(col_a=get_u16(fam, o + 16), dj1_a=get_u16(fam, o + 18), dj2_a=get_u16(fam, o + 20),
@@ -332,7 +360,7 @@ def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], 
     var count = get_u16(accs, k * ACC + 4)
     var scale = ext_one[4]() if accs[k * ACC + 7] == 0 else list_e(chals, Int(accs[k * ACC + 7]) - 1)
     var r = E(0)
-    r[0] = accs[k * ACC + 6]
+    r[0] = UInt8(acc_start(accs, k))
     for x1 in range(h1 - 1):
         var s = E(0)
         for i in range(count):

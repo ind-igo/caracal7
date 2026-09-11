@@ -25,7 +25,8 @@ from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
-from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, value_bytes, tile_values
+from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, value_bytes, tile_values
+from caracal7.relations.statement import Compiled
 from caracal7.relations import AccLayout, accumulate, horner, wiring, derive_chals, counting_sort, merge_tables
 from caracal7.relations import lde, residual, quotient, quotient_elems, k_values_to_trace
 from caracal7.relations import SmallGridLayout, small_grid_accumulator, small_grid_wiring, small_grid_end, small_grid_values
@@ -251,6 +252,11 @@ struct Prover[p: Params, H: Hash]:
     var proof: ProofWriter          # host staging pool, sized once from the shape
     var trace_host: HostBuffer[DType.uint8]   # trace staging for load_trace, allocated once
 
+    def __init__(out self, ctx: DeviceContext, var c: Compiled) raises:
+        """From a compiled statement: its shape and family table travel together."""
+        var families = c.families.copy()
+        self = Self(ctx, c^.take_shape(), families^)
+
     def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
         if len(families) != shape.entries * ENTRY:
             raise Error("family table does not match shape.entries")
@@ -413,7 +419,7 @@ struct Prover[p: Params, H: Hash]:
         ref S = self.shape
         var li = 0
         for k in range(S.accumulators()):
-            if Int(S.accs[k * ACC + 38]) == KIND_LOOKUP:
+            if acc_kind(S.accs, k) == KIND_LOOKUP:
                 counting_sort[Self.p](ctx, self.arena, L.w.enc.trace, L.accs + k * ACC, L.sort.idx + li * Self.p.N() * 4,
                                       L.sort.bins, L.sort.cursor, S.table_rows(k))
                 li += 1
@@ -431,23 +437,20 @@ struct Prover[p: Params, H: Hash]:
 
     def _accumulators(mut self, ctx: DeviceContext) raises:
         """Z per accumulator (Horner scans and grand products with their chain-end lines), the wiring
-        products, then the Z values as the Z tree's trace. Product index pi counts accumulators then
-        wiring products: the Z2, n_end, d_end lines are per product."""
+        products, then the Z values as the Z tree's trace. The Z2, n_end, d_end lines are per product
+        (Shape.product_of, Shape.wiring_product)."""
         ref L = self.layout
         ref S = self.shape
         var A = L.acc
-        var pi = 0
         for k in range(S.accumulators()):
             var acc = L.accs + k * ACC
-            if Int(S.accs[k * ACC + 38]) == KIND_HORNER:
+            if acc_kind(S.accs, k) == KIND_HORNER:
                 horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, acc, L.chal.stage1, A, k)
-                continue
-            accumulate[Self.p](ctx, self.arena, L.w.enc.trace, acc, L.chal.stage1, A, k, pi)
-            pi += 1
+            else:
+                accumulate[Self.p](ctx, self.arena, L.w.enc.trace, acc, L.chal.stage1, A, k, S.product_of(k))
         for g in range(S.wiring_products()):
-            wiring[Self.p](ctx, self.arena, A, g, pi, L.wires + g * WIRE, L.sigma, S.columns_w, L.chal.wchal,
+            wiring[Self.p](ctx, self.arena, A, g, S.wiring_product(g), L.wires + g * WIRE, L.sigma, S.columns_w, L.chal.wchal,
                            ext_pow[1](self.kappa, 2 * g), ext_pow[1](self.kappa, 2 * g + 1), self.domains.omega2)
-            pi += 1
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](A.zval), Buf[1](L.z.enc.trace), Int32(S.accumulators()),
                                                             grid_dim=ceildiv(S.columns_z * Self.p.N(), BACKEND.block), block_dim=BACKEND.block)
@@ -458,17 +461,15 @@ struct Prover[p: Params, H: Hash]:
         ref S = self.shape
         var A = L.acc
         var e2 = ext_pow[1](self.domains.omega2, Self.p.h2() - 1)
-        var pi = 0
-        for k in range(S.accumulators()):
-            if Int(S.accs[k * ACC + 38]) == KIND_HORNER:
-                continue
-            small_grid_accumulator[Self.p](ctx, self.arena, L.tables, A, k, pi, L.sg, L.chal.alpha, S.family_of(k), e2, pi == 0)
-            pi += 1
+        for k in range(S.accumulators()):                  # the first term written starts R2; the rest add to it
+            var pi = S.product_of(k)
+            if pi >= 0:
+                small_grid_accumulator[Self.p](ctx, self.arena, L.tables, A, k, pi, L.sg, L.chal.alpha, S.family_of(k), e2, pi == 0)
         for g in range(S.wiring_products()):
+            var pi = S.wiring_product(g)
             small_grid_wiring[Self.p](ctx, self.arena, L.tables, A, g, pi, L.sg, L.chal.alpha, get_u16(S.wires, g * WIRE + 4), e2, pi == 0)
-            pi += 1
         for i in range(len(S.ends) // END):
-            small_grid_end[Self.p](ctx, self.arena, L.tables, A.zval, S.columns_w, S.ends, i, L.sg, L.chal.alpha, L.chal.stage1, e2, pi == 0 and i == 0)
+            small_grid_end[Self.p](ctx, self.arena, L.tables, A.zval, S.columns_w, S.ends, i, L.sg, L.chal.alpha, L.chal.stage1, e2, S.products() == 0 and i == 0)
         if S.accumulators() > 0:
             small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg)
 

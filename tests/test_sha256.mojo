@@ -101,8 +101,7 @@ def test_wrong_digest_is_rejected() raises:
     var blocks = List[UInt8](capacity=n_blocks)
     for i in range(n_blocks):
         blocks.append(data[i])
-    var families = c.families.copy()
-    var prover = Prover[p, Blake3](ctx, c^.take_shape(), families^)
+    var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
     load_public[p, Blake3](ctx, prover, blocks)

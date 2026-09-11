@@ -9,7 +9,7 @@ from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_on
 from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
 from caracal7.relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
-from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
+from caracal7.relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
 from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
@@ -51,7 +51,7 @@ def host_fp(accs: List[UInt8], k: Int, trace: List[UInt8], N: Int, row: Int, den
 def host_factor(accs: List[UInt8], k: Int, trace: List[UInt8], N: Int, row: Int, chals: List[UInt8], den: Bool) -> E:
     """N(row) or D(row) of accumulator k from a host trace (column, row), by the descriptor's kind."""
     var fp = host_fp(accs, k, trace, N, row, den)
-    if Int(accs[k * ACC + 38]) == KIND_LOOKUP:
+    if acc_kind(accs, k) == KIND_LOOKUP:
         if den:
             return f_add(f_add(list_e(chals, 4), fp), ext_mul[4](list_e(chals, 0), host_fp(accs, k, trace, N, (row + 1) % N, True)))
         return ext_mul[4](list_e(chals, 3), f_add(list_e(chals, 1), fp))
@@ -286,7 +286,7 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     arena.upload(ctx, o_chals, _host(ctx, chals))
     var ends = List[E]()
     for k in range(3):
-        assert_equal(Int(c.shape.accs[k * ACC + 38]), KIND_HORNER)
+        assert_equal(acc_kind(c.shape.accs, k), KIND_HORNER)
         horner[p](ctx, arena, o_trace, o_fam, o_acc + k * ACC, o_chals, A, k)
         var got = _down(ctx, arena, A.zval_at(k), N * 16)
         assert_true(got == host_horner[p](c.families, c.shape.accs, k, trace, chals), "R differs from the host for accumulator " + String(k))
