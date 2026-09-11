@@ -1,28 +1,37 @@
 # csp-benchmarks harness
 
-`csp/` is the system folder for [privacy-ethereum/csp-benchmarks](https://github.com/privacy-ethereum/csp-benchmarks)
+`caracal7/` is the system folder (its basename is the system name in the metrics) for [privacy-ethereum/csp-benchmarks](https://github.com/privacy-ethereum/csp-benchmarks)
 (the non-Rust path: `benchmark.sh --system-dir`). `cli/main.mojo` is the binary behind it, one grid per
-target and input size, built by `csp/osx_local_setup.sh` into `csp/target/caracal7`:
+target and input size, built by `caracal7/osx_local_setup.sh` into `caracal7/target/caracal7`:
 
     caracal7 prove|verify <target> <size> <proof-path> <input...>
 
-Targets and grids: sha256 (32 rows, 193 to 2113 chains), keccak (64 rows, 24 chains per 136-byte
-block), poseidon (64 x 368 up to 8 elements, 64 x 720 up to 16), ecdsa (144 x 576, one secp256k1
-signature). The prepare scripts turn the utils generator's lines into a state JSON; prove and verify
-pass its fields to the binary with jq; measure runs one proof and reads the sizes.
+Targets and grids (the smallest legal grid that holds the input; `Profile.grid` rounds each axis up to
+2^a m): sha256 32 rows x 224 / 336 / 672 / 1152 / 2688 chains for 128 to 2048 bytes, keccak 64 x
+24 / 48 / 96 / 192 / 384, poseidon 64 x 384 up to 8 elements and 64 x 896 up to 16, ecdsa 144 x 576
+(one secp256k1 signature; the harness's one input size, 32). The sizes are a compile-time whitelist:
+any other `INPUT_SIZE` aborts. The scripts need jq >= 1.6 and bash (3.2 is enough). The prepare scripts turn the utils generator's lines into a state JSON; prove and verify
+pass its fields to the binary with jq; measure runs one proof and reads the sizes. The verifier is given
+the message and the generator's digest, so the timed verify never hashes on the host.
 
 Local run, from a csp-benchmarks checkout with `cargo build --release -p utils` done:
 
-    BENCH_INPUT_PROFILE=reduced bash ./benchmark.sh --system-dir <this repo>/csp --logging --quick
+    BENCH_INPUT_PROFILE=reduced bash ./benchmark.sh --system-dir <this repo>/caracal7 --logging --quick
 
 ## What the numbers mean
 
 - **Prove and verify time** are whole-process wall clock, cold: hyperfine starts the binary per run.
   That includes the Metal device setup and the first-launch kernel compile, so a 128-byte SHA-256 proof
   reports about 180 ms where the warm prover takes 57 ms. `bench/` has the warm and per-stage numbers.
+- **Verify time** includes `W.public_data`: the verifier rebuilds the public columns over the grid
+  (O(N) host work for the hashes) and, for ecdsa, runs a native secp256k1 check with the hint
+  generation before the proof check. It is the cost of verifying the statement as given, not the proof
+  check alone; the profile marks in `verify` separate the two.
 - **Peak memory** is maximum RSS under `/usr/bin/time`. The prover's arena lives in Metal buffers, which
-  macOS does not count in RSS; the SHA-256 sweep reports 70 MB. The arena size is the honest figure and
-  `Prover` prints it under `profile`.
+  macOS does not count in RSS; the SHA-256 sweep reports 70 MB. The arena size, `ProverLayout.bytes`, is
+  the honest figure.
+- **Process overhead.** The bare binary starts in 20 ms; the shell wrapper and jq add about 50 ms. Both
+  are inside every timed number, which is why a 16 ms in-process verify reports near 100 ms.
 - **Preprocessing size** is 0: the compiled statement (a few KB of family entries) is derived at run
   time in under a millisecond, nothing is persisted between runs.
 - **Circuit size** (`circuit_sizes.json`) is committed witness cells, `columns_w x N`, the quantity the
