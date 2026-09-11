@@ -133,7 +133,7 @@ src/caracal7/
     smallgrid.mojo    R2 and Q3 in coefficient form; the verifier's cyclic interpolation
     synthetic.mojo    the synthetic instance the tests and benches run
   proof.mojo        Shape, tail schedule, byte layout, writer / reader
-  prover.mojo       arena plan (ProverLayout) and the stage order (Prover.prove)
+  prover.mojo       arena plan (ProverLayout: layout groups per stage) and the protocol order (Prover.prove) over stage helpers
   verifier.mojo     host program
 tests/              one file per module, flat, TestSuite runner, scalar references inline
 ```

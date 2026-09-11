@@ -1316,3 +1316,31 @@ with its piles masked, as in mulmod.
 Measured (M1 Pro, `bench_poseidon`): 8 inputs on 64 x 384 warm prove 89 ms, proof 421 KB, verify 34 ms;
 16 inputs on 64 x 896 152 ms, 457 KB, 40 ms. Verified: `test_poseidon` (vectors, host families, two round
 trips, a wrong digest rejected).
+
+## Prover flow by stage (2026-09-11)
+
+The arena plan and the two protocol drivers were reorganized without changing a byte of proof (checked by
+dumping one SHA-256 and one Poseidon proof before and after) or a launch. What moved and why:
+
+- **Layout groups per stage, not one flat struct.** `ProverLayout` holds `CommitLayout` for each of W, Z, Q
+  (encoder buffers and tree together), `AccLayout` (the Z stage: N, D, scratch, Z per accumulator, the
+  Z2, n_end, d_end lines per product, the wiring factor lines, with `zval_at`, `z2_at`, `wline_at`),
+  `SortLayout`, `SmallGridLayout`, `LdeLayout` (`lde_at(column)`), `OpenLayout`, `ChalLayout`, `QueryLayout`
+  (positions, points, power tables, partials, the level-1 domain, the multiproof stage). The two groups
+  whose packing a kernel module reads live in that module: `AccLayout` in accumulate.mojo, `SmallGridLayout`
+  in smallgrid.mojo (the `SG_*` unit offsets are gone; the stage names its regions). `accumulate`, `horner`,
+  `wiring`, `small_grid_*` take the group plus the accumulator and product indices, so no caller does the
+  per-accumulator offset arithmetic. `small_grid_accumulator` and `small_grid_wiring` build the line lists.
+- **`prove` is the protocol; stages are helpers.** Every absorb and squeeze stays in `prove`, in order; the
+  work between them is `_prefix`, `_sort`, `_commit` (encode, Merkle, absorb root, stage root; used for W,
+  Z, Q), `_accumulators`, `_small_grid`, `_quotient`, `_openings`, `_fold`, `_tail_level`. The tail level
+  is the one helper that carries transcript steps, because its rounds interleave with kernels. Profile
+  marks are fields (`profile`, `t0`) so helpers mark without threading arguments.
+- **`merge_tables` in residual.mojo.** The families_g and merge index build left the prover constructor
+  for the module whose kernel reads them.
+- **`verify` by step.** `_check_statement`, `_boundaries`, `_wiring`, `_small_grid`, `_residual`,
+  `_restrictions`, and `_Tail` (the running claim and the fold state: units, claim, digits folded, the
+  previous r, roots, domains) with `level(i)` and `clear()`. Helpers take the opened values they need and
+  find their own point indices from the shape's list; there is no shared verification context.
+- **Left alone.** `Shape` is the serialized artifact and stays one struct; the CLI needs only `compile` and
+  `take_shape`. Loaders, `prove_workload`, `verify_workload` and every kernel are unchanged.
