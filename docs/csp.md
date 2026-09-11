@@ -30,8 +30,9 @@ Local run, from a csp-benchmarks checkout with `cargo build --release -p utils` 
 - **Peak memory** is maximum RSS under `/usr/bin/time`. The prover's arena lives in Metal buffers, which
   macOS does not count in RSS; the SHA-256 sweep reports 70 MB. The arena size, `ProverLayout.bytes`, is
   the honest figure.
-- **Process overhead.** The bare binary starts in 20 ms; the shell wrapper and jq add about 50 ms. Both
-  are inside every timed number, which is why a 16 ms in-process verify reports near 100 ms.
+- **Process overhead.** A 128-byte SHA-256 verify is 15 ms in-process, 20 ms as a bare binary run and
+  40 ms through `verify.sh` (bash and one jq call). Both are inside every timed number; a loaded
+  machine (the RAM pass runs ten proofs back to back) stretches them further.
 - **Preprocessing size** is 0: the compiled statement (a few KB of family entries) is derived at run
   time in under a millisecond, nothing is persisted between runs.
 - **Circuit size** (`circuit_sizes.json`) is committed witness cells, `columns_w x N`, the quantity the
