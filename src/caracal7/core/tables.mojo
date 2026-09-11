@@ -388,14 +388,18 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
         _put(h, t.gate2 + j * 2, f_sub(ext_pow[1](d.g2, j), e2))
     for i in range(h1 * 2 * h1 * 2):
         h[t.q1m + i] = 0
+    # Q1(g1^(2t+1)) = (R - S1) / (-2), S1 the axis-1 interpolant of R on H1: one row over all of G1.
+    # The interpolant weight sum_k g1^((2 (t - s) + 1) k) depends only on (t - s) mod h1: one row of h1 sums.
+    var q1row = List[F2](capacity=h1)
+    for diff in range(h1):
+        var acc = F2(0)
+        for k in range(h1):
+            acc = f_add(acc, ext_pow[1](d.g1, ((2 * diff + 1) * k) % (2 * h1)))
+        q1row.append(f_mul(f_mul(acc, inv_h1), F2(64)))
     for tt in range(h1):
-        # Q1(g1^(2t+1)) = (R - S1) / (-2), S1 the axis-1 interpolant of R on H1: one row over all of G1
         _put(h, t.q1m + (tt * 2 * h1 + 2 * tt + 1) * 2, F2(63, 0))
         for s in range(h1):
-            var acc = F2(0)
-            for k in range(h1):
-                acc = f_add(acc, ext_pow[1](d.g1, ((2 * (tt - s) + 1) * k) % (2 * h1)))
-            _put(h, t.q1m + (tt * 2 * h1 + 2 * s) * 2, f_mul(f_mul(acc, inv_h1), F2(64)))
+            _put(h, t.q1m + (tt * 2 * h1 + 2 * s) * 2, q1row[(tt - s) % h1])
         for k in range(h1):
             var wi = _get(h, t.winv1 + (k * h1 + tt) * 2)
             _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))

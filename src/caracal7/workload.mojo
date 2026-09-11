@@ -40,15 +40,18 @@ trait Workload:
 
 def prove_workload[p: Params, H: Hash, W: Workload](ctx: DeviceContext, w: W) raises -> List[UInt8]:
     var c = w.statement[p]().compile[p]()
-    var trace = w.trace[p](c.layout)
-    var idx = advice[p](c.layout, trace)
+    var layout = c.layout.copy()
+    # The prover first: Metal materializes the arena at its first command (about 0.3 ms per MB) and the
+    # uploads are asynchronous, so the host work below runs while the device fills.
+    var prover = Prover[p, H](ctx, c^)
+    var trace = w.trace[p](layout)
+    var idx = advice[p](layout, trace)
     var inputs = w.public_inputs[p]()
-    var data = W.public_data[p](c.layout, inputs)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
+    var data = W.public_data[p](layout, inputs)
+    var n_blocks = value_bytes(layout.publics, p.h1(), p.h2())
     var blocks = List[UInt8](capacity=n_blocks)
     for i in range(n_blocks):
         blocks.append(data[i])
-    var prover = Prover[p, H](ctx, c^)
     load_trace[p, H](ctx, prover, trace)
     load_advice[p, H](ctx, prover, idx)
     load_public[p, H](ctx, prover, blocks)
