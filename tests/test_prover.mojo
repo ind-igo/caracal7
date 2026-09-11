@@ -351,12 +351,16 @@ def test_horner_descriptor_needs_its_transition_entries() raises:
     """Shape pins the HORNER_TRANSITIONS entries before a Horner ingest range, the ones merge_tables drops:
     a table whose entry there reads another column is rejected at construction."""
     var c = horner_statement().compile[p]()
-    var fam = c.families.copy()
     var first = Int(c.shape.accs[2]) | Int(c.shape.accs[3]) << 8
-    fam[(first - HORNER_TRANSITIONS) * ENTRY + 16] ^= 1              # col_a of the first transition entry
-    with assert_raises(contains="transition entries"):
-        _ = Shape.__init__[p](c.layout.columns_w(), fam, c.shape.accs, chals=c.shape.chals, ends=c.shape.ends,
-                              pubf=c.shape.pubf, wires=c.shape.wires, sigma=c.shape.sigma)
+    var base = (first - HORNER_TRANSITIONS) * ENTRY
+    # (entry offset, byte, new value): col_a of entry 0; coef of entry 2 (the kernel reads only entry 0's weight
+    # for every coordinate); chal of entry 3; shift of entry 4; basis2 of entry 5
+    for m in [(0, 16, 1), (2, 29, 2), (3, 32, 0), (4, 18, 4), (5, 34, 0)]:
+        var fam = c.families.copy()
+        fam[base + m[0] * ENTRY + m[1]] = UInt8(m[2])
+        with assert_raises(contains="transition entries"):
+            _ = Shape.__init__[p](c.layout.columns_w(), fam, c.shape.accs, chals=c.shape.chals, ends=c.shape.ends,
+                                  pubf=c.shape.pubf, wires=c.shape.wires, sigma=c.shape.sigma)
 
 
 def test_prove_and_verify_with_horner_accumulators() raises:

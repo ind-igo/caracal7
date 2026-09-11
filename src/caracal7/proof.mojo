@@ -192,9 +192,12 @@ struct Shape(Writable):
                     raise Error("horner descriptor: ingest range inside the family table, start in {0, 1}, scale a stage-1 element")
                 if first < HORNER_TRANSITIONS:
                     raise Error("horner descriptor: the transition entries precede the ingest range")
-                for t in range(HORNER_TRANSITIONS):        # what merge_tables drops and the residual must not read twice
+                for t in range(HORNER_TRANSITIONS):        # what merge_tables drops; the residual kernel reads only the first pair's weights and applies them to every coordinate, so all 32 must match Families.horner exactly
                     var en = entry(families, first - HORNER_TRANSITIONS + t)
-                    if en.col_a != acc_z_col(accs, k) + t // 2 or en.col_b != NONE or en.mult != 1 or en.basis != t // 2 or en.family != acc_family(accs, k):
+                    var nxt = t % 2 == 0                   # even: R(omega1 x1) coef 1; odd: -scale R with the scale element
+                    if (en.col_a != acc_z_col(accs, k) + t // 2 or en.col_b != NONE or en.mult != 1 or en.basis != t // 2 or en.basis2 != NO_BASIS
+                            or en.family != acc_family(accs, k) or en.dj1_a != (2 if nxt else 0) or en.dj2_a != 0
+                            or en.coef != (1 if nxt else 126) or en.chal != (0 if nxt else Int(accs[k * ACC + 7]))):
                         raise Error("horner descriptor: the entries before the ingest range are not its transition entries")
                 for i in range(first, first + count):
                     var en = entry(families, i)
