@@ -26,28 +26,17 @@ from caracal7.core.bytes import get_u16, list_e
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
                                public: List[UInt8] = List[UInt8](), profile: Bool = False) raises -> Bool:
-    """`public` is the data both sides derive from the public inputs (docs/public-columns.md): one period of
-    values of every public column, then the polynomial of every restriction; the verifier never hashes it.
+    """The transcript in order: every proof value read and every challenge sampled is here; the checks
+    between them are one helper per step of statement-layer section 6. `public` is the data both sides
+    derive from the public inputs (docs/public-columns.md): one period of values of every public column,
+    then the polynomial of every restriction; the verifier never hashes it.
     ponytail: soundness rests on the caller deriving `public` from `public_inputs` (which the prefix hashes);
     nothing here checks that. The statement builder is where the derivation becomes code on both sides."""
-    if len(families) != shape.entries * ENTRY:
-        raise Error("family table does not match the shape")
-    if len(public_inputs) < len(shape.pinned) or public_inputs[0:len(shape.pinned)] != Span(shape.pinned):
-        raise Error("public inputs do not start with the statement's pinned bytes")
-    # Shape validated its own family table; bind this one to the list and the challenge count before any index is used
-    var need = required_points(families, shape.restrictions, shape.accumulators() > 0, shape.zeros)
-    for i in range(len(need) // POINT):
-        if point_index(shape.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
-            raise Error("family table reads a point outside the shape's opening list")
-    for k in range(shape.entries):
-        if entry(families, k).chal > shape.chal_count():
-            raise Error("family table names a challenge element past the shape's derivation table")
-    if len(public) != shape.public_bytes[p]():
-        raise Error("public data has the wrong size")
+    _check_statement[p](shape, families, public_inputs, public)
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
-
     var tv = perf_counter_ns()
+
     # step 1: header, prefix, W root, stage-1 challenges
     if r.u32() != Int(VERSION):
         raise Error("bad version")
@@ -64,7 +53,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if shape.wiring_products() > 0:
         wchal = t.elements(2)                       # beta_w, gamma_w of the copy constraint
 
-    # step 2: Z root and Z2 -> alpha; Q root -> z
+    # step 2: Z root and Z2 -> alpha; Q root and Q3 -> z
     var root_z = List[UInt8]()
     var z2v = List[UInt8]()
     if shape.accumulators() > 0:                       # no Z tree without accumulators
@@ -73,7 +62,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         if shape.products() > 0:
             z2v = r.take(shape.products() * p.h2() * p.e)
             t.absorb(DS_TREE_Z, z2v)
-    var alpha = t.elements(1)
+    var alpha = list_e(t.elements(1), 0)
     var root_q = r.take(H.DIGEST)
     t.absorb(DS_TREE_Q, root_q)
     var q3 = List[UInt8]()
@@ -81,24 +70,70 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         q3 = r.take(2 * p.h2() * p.e)
         t.absorb(DS_TREE_Q, q3)
     var z = t.elements(2)
+    var z1 = list_e(z, 0)
+    var z2 = list_e(z, 1)
 
-    # openings -> beta, gamma
+    # openings -> beta per column, gamma per point
     var openings = r.take(shape.points * shape.columns() * p.e)
     t.absorb(DS_OPENINGS, openings)
     var beta_gamma = t.elements(shape.columns() + shape.points)
-
-    var one = ext_embed[4](SIMD[DType.uint8, 1](1))
-    var pts = shape.point_list.copy()
-    var at_start = point_index(pts, FIX_ONE, 0)          # (1, z2)
-    var at_e1 = point_index(pts, FIX_E, 0)               # (e1, z2)
-    var at_next = point_index(pts, FIX_ONE, 2)           # (1, omega2 z2)
-    var at_end = point_index(pts, FIX_E, FIX_E)          # (e1, e2)
     var d = Domains.__init__[p]()
     _vmark(profile, "transcript and openings", tv)
-    # steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
-    # (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2).
-    # The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
-    var pi = 0                                           # product index into Z2
+
+    # steps 3 to 6 on the opened values
+    _boundaries[p](shape, openings, z2v, stage1)
+    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d)
+    _vmark(profile, "boundaries", tv)
+    _small_grid[p](shape, openings, z2v, q3, alpha, stage1, wchal, z2, d)
+    _vmark(profile, "small grid", tv)
+    _residual[p](shape, families, openings, public, alpha, stage1, z1, z2, d)
+    _vmark(profile, "residual at z", tv)
+    _restrictions[p](shape, openings, public, z1)
+    _vmark(profile, "restrictions", tv)
+
+    # step 7: the tail in tensor form, one committed level at a time, then the clear vector
+    var tail = _Tail[p](shape, openings, beta_gamma, z1, z2, d)
+    _vmark(profile, "running claim", tv)
+    for i in range(len(shape.tail)):
+        tail.level[H](r, t, shape, i, root_w, root_z, root_q, beta_gamma, d)
+    _vmark(profile, "tail levels", tv)
+    tail.clear[H](r, t, shape, root_w, root_z, root_q, beta_gamma, d)
+    _vmark(profile, "clear vector", tv)
+    return True
+
+
+def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inputs: Span[UInt8, _], public: List[UInt8]) raises:
+    """Shape validated its own family table; bind this one to the opening list and the challenge count
+    before any index is used, and the public inputs to the statement's pinned bytes."""
+    if len(families) != shape.entries * ENTRY:
+        raise Error("family table does not match the shape")
+    if len(public_inputs) < len(shape.pinned) or public_inputs[0:len(shape.pinned)] != Span(shape.pinned):
+        raise Error("public inputs do not start with the statement's pinned bytes")
+    var need = required_points(families, shape.restrictions, shape.accumulators() > 0, shape.zeros)
+    for i in range(len(need) // POINT):
+        if point_index(shape.point_list, get_u16(need, i * POINT), get_u16(need, i * POINT + 2)) < 0:
+            raise Error("family table reads a point outside the shape's opening list")
+    for k in range(shape.entries):
+        if entry(families, k).chal > shape.chal_count():
+            raise Error("family table names a challenge element past the shape's derivation table")
+    if len(public) != shape.public_bytes[p]():
+        raise Error("public data has the wrong size")
+
+
+def _one() -> E:
+    return ext_embed[4](SIMD[DType.uint8, 1](1))
+
+
+def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], stage1: List[UInt8]) raises:
+    """Steps 3 and 6, the accumulator boundaries (spec 7.1, 7.3 for (P)): Z(1, z2) = 1 from the opening at
+    (1, z2); Z2(1) = 1; Z2(e2) Z(e1, e2) N(e1, e2) = D(e1, e2) from the openings at (e1, e2); a lookup closes
+    on its table constant. The chain-end pairs (W) themselves are the small grid's R2 = Q3 (X2^h2 - 1).
+    Then the zero rows (polynomial-mulmod 4): a column that is zero on row 0 or the last row of every chain
+    opens to zero at (coordinate, z2), a polynomial in X2 of degree < h2 vanishing at random z2."""
+    var one = _one()
+    var at_start = point_index(shape.point_list, FIX_ONE, 0)     # (1, z2)
+    var at_end = point_index(shape.point_list, FIX_E, FIX_E)     # (e1, e2)
+    var pi = 0                                                   # product index into Z2
     for k in range(shape.accumulators()):
         var z_col = get_u16(shape.accs, k * ACC)
         if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:   # 7.1 with the record's start; its chain ends are chain-end terms
@@ -120,112 +155,126 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         elif lhs != _factor_at[p](openings, shape, at_end, at_end, shape.accs, k, stage1, True):
             raise Error("accumulator grand product is not 1")
         # TODO(memory): boundary rule 6 of spec 6.4 (the memory accumulator's closing factor) goes here.
-    # zero rows (polynomial-mulmod 4): the column is zero on row 0 or the last row of every chain, so its
-    # opening at (coordinate, z2), a polynomial in X2 of degree < h2, vanishes at random z2
     for i in range(len(shape.zeros) // ZERO):
-        if _opening[p](openings, shape, point_index(pts, get_u16(shape.zeros, i * ZERO + 2), 0), get_u16(shape.zeros, i * ZERO)) != E(0):
+        if _opening[p](openings, shape, point_index(shape.point_list, get_u16(shape.zeros, i * ZERO + 2), 0), get_u16(shape.zeros, i * ZERO)) != E(0):
             raise Error("chain row is not zero")
-    # the wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
-    # factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)
-    var kappa = f2_primitive()
-    if shape.wiring_products() > 0:
-        var e2f = ext_pow[1](d.omega2, p.h2() - 1)
-        var bw = list_e(wchal, 0)
-        var gw = list_e(wchal, 1)
-        var lhs = one
-        var rhs = one
-        for g in range(shape.wiring_products()):
-            if list_e(z2v, pi * p.h2()) != one:
-                raise Error("wiring product does not start at 1")
-            lhs = ext_mul[4](lhs, list_e(z2v, pi * p.h2() + p.h2() - 1))
-            for sl in range(2):
-                var col = get_u16(shape.wires, g * WIRE + 2 * sl)
-                if col == NONE:
-                    continue
-                var wg = f_add(_coords_at[p](openings, shape, at_end, col), gw)
-                var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
-                lhs = ext_mul[4](lhs, f_add(wg, ext_mul[4](bw, ext_embed[4](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
-                rhs = ext_mul[4](rhs, f_add(wg, ext_mul[4](bw, ext_embed[4](sg))))
-            pi += 1
-        var off = shape.public_bytes[p]()
-        for i in range(len(shape.pubf) // PUBF):
-            off -= shape.factor_bytes[p](i)
-        for i in range(len(shape.pubf) // PUBF):
-            var n = shape.factor_bytes[p](i)
-            var cols = List[UInt8](capacity=n)
-            for t in range(n):
-                cols.append(public[off + t])
-            off += n
-            var vg = f_add(horner_chain_end[p](families, shape.accs, get_u16(shape.pubf, i * PUBF), cols, stage1), gw)
-            var f_id = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 2], shape.pubf[i * PUBF + 3]))))
-            var f_sg = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 4], shape.pubf[i * PUBF + 5]))))
-            if f_id.reduce_or() == 0 or f_sg.reduce_or() == 0:
-                raise Error("zero public factor")
-            lhs = ext_mul[4](lhs, f_id)
-            rhs = ext_mul[4](rhs, f_sg)
-        if lhs != rhs:
-            raise Error("wiring grand product is not the public factor")
 
-    _vmark(profile, "boundaries", tv)
-    # step 5: residual identity at z from the openings: R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)
-    var z1 = list_e(z, 0)
-    var z2 = list_e(z, 1)
-    var preads = _PublicReads[p](shape, public, pts, z1, z2, d)
+
+def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], z2v: List[UInt8], wchal: List[UInt8],
+                       stage1: List[UInt8], public: List[UInt8], d: Domains) raises:
+    """The wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
+    factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)."""
+    if shape.wiring_products() == 0:
+        return
+    var one = _one()
+    var at_end = point_index(shape.point_list, FIX_E, FIX_E)
+    var kappa = f2_primitive()
+    var e2f = ext_pow[1](d.omega2, p.h2() - 1)
+    var bw = list_e(wchal, 0)
+    var gw = list_e(wchal, 1)
+    var lhs = one
+    var rhs = one
+    var pi = shape.products() - shape.wiring_products()          # the wiring products' Z2 lines follow the accumulators'
+    for g in range(shape.wiring_products()):
+        if list_e(z2v, pi * p.h2()) != one:
+            raise Error("wiring product does not start at 1")
+        lhs = ext_mul[4](lhs, list_e(z2v, pi * p.h2() + p.h2() - 1))
+        for sl in range(2):
+            var col = get_u16(shape.wires, g * WIRE + 2 * sl)
+            if col == NONE:
+                continue
+            var wg = f_add(_coords_at[p](openings, shape, at_end, col), gw)
+            var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
+            lhs = ext_mul[4](lhs, f_add(wg, ext_mul[4](bw, ext_embed[4](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
+            rhs = ext_mul[4](rhs, f_add(wg, ext_mul[4](bw, ext_embed[4](sg))))
+        pi += 1
+    var off = shape.public_bytes[p]()
+    for i in range(len(shape.pubf) // PUBF):
+        off -= shape.factor_bytes[p](i)
+    for i in range(len(shape.pubf) // PUBF):
+        var n = shape.factor_bytes[p](i)
+        var cols = List[UInt8](capacity=n)
+        for t in range(n):
+            cols.append(public[off + t])
+        off += n
+        var vg = f_add(horner_chain_end[p](families, shape.accs, get_u16(shape.pubf, i * PUBF), cols, stage1), gw)
+        var f_id = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 2], shape.pubf[i * PUBF + 3]))))
+        var f_sg = f_add(vg, ext_mul[4](bw, ext_embed[4](F2(shape.pubf[i * PUBF + 4], shape.pubf[i * PUBF + 5]))))
+        if f_id.reduce_or() == 0 or f_sg.reduce_or() == 0:
+            raise Error("zero public factor")
+        lhs = ext_mul[4](lhs, f_id)
+        rhs = ext_mul[4](rhs, f_sg)
+    if lhs != rhs:
+        raise Error("wiring grand product is not the public factor")
+
+
+def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8], q3: List[UInt8], alpha: E, stage1: List[UInt8],
+                           wchal: List[UInt8], z2: E, d: Domains) raises:
+    """Step 3, the small grid (spec 7.4): R2(z2) = Q3(z2) (z2^h2 - 1), R2 from Z2 interpolated at z2 and
+    omega2 z2, Q3 interpolated on G2, and the openings at (e1, z2)."""
+    if shape.accumulators() == 0:
+        return
+    var one = _one()
+    var at_e1 = point_index(shape.point_list, FIX_E, 0)          # (e1, z2)
+    var at_next = point_index(shape.point_list, FIX_ONE, 2)      # (1, omega2 z2)
+    var kappa = f2_primitive()
+    var e2 = ext_embed[4](ext_pow[1](d.omega2, p.h2() - 1))
+    var w2 = ext_embed[4](d.omega2)
+    var r2 = E(0)
+    var pi = 0
+    for k in range(shape.accumulators()):
+        if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:
+            continue
+        var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
+        var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
+        var c = _coords_at[p](openings, shape, at_e1, get_u16(shape.accs, k * ACC))
+        var n_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, False)
+        var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
+        var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
+        r2 = f_add(r2, ext_mul[4](ext_pow[4](alpha, shape.family_of(k)), term))
+        pi += 1
+    for g in range(shape.wiring_products()):       # (z2 - e2) (Z(omega2 z2) prod den - Z(z2) prod num) over the two slots
+        var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
+        var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
+        var nn = one
+        var dd = one
+        for sl in range(2):
+            var col = get_u16(shape.wires, g * WIRE + 2 * sl)
+            if col == NONE:
+                continue
+            var wg = f_add(_coords_at[p](openings, shape, at_e1, col), list_e(wchal, 1))
+            var sig = interp_cyclic(shape.sigma, (2 * g + sl) * p.h2(), p.h2(), d.omega2, z2, 2)
+            nn = ext_mul[4](nn, f_add(wg, ext_mul[4](ext_mul[4](list_e(wchal, 0), ext_embed[4](ext_pow[1](kappa, 2 * g + sl))), z2)))
+            dd = ext_mul[4](dd, f_add(wg, ext_mul[4](list_e(wchal, 0), sig)))
+        var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, dd), ext_mul[4](za, nn)))
+        r2 = f_add(r2, ext_mul[4](ext_pow[4](alpha, get_u16(shape.wires, g * WIRE + 4)), term))
+        pi += 1
+    for i in range(len(shape.ends) // END):           # chain-end terms (smallgrid.mojo): coef chal alpha^family A [B] [(z2 - e2)]
+        var v = ext_mul[4](ext_pow[4](alpha, get_u16(shape.ends, i * END + 4)), _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END)))
+        v = f_mul(v, E(shape.ends[i * END + 6]))
+        if shape.ends[i * END + 7] != 0:
+            v = ext_mul[4](v, list_e(stage1, Int(shape.ends[i * END + 7]) - 1))
+        if get_u16(shape.ends, i * END + 2) != NONE:
+            v = ext_mul[4](v, _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END + 2)))
+        if shape.ends[i * END + 8] != 0:
+            v = ext_mul[4](v, f_sub(z2, e2))
+        r2 = f_add(r2, v)
+    var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)
+    if r2 != ext_mul[4](q3z, f_sub(ext_pow[4](z2, p.h2()), one)):
+        raise Error("small grid identity fails at z2")
+
+
+def _residual[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], public: List[UInt8], alpha: E,
+                         stage1: List[UInt8], z1: E, z2: E, d: Domains) raises:
+    """Step 5: the residual identity at z from the openings, R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)."""
+    var one = _one()
+    var preads = _PublicReads[p](shape, public, shape.point_list, z1, z2, d)
     var reads = List[E]()
     for k in range(shape.entries):
         var en = entry(families, k)
-        reads.append(preads.read(openings, point_index(pts, en.dj1_a, en.dj2_a), en.col_a))
-        reads.append(E(0) if en.col_b == NONE else preads.read(openings, point_index(pts, en.dj1_b, en.dj2_b), en.col_b))
-
-    _vmark(profile, "residual at z", tv)
-    # step 3, the small grid (spec 7.4): R2(z2) = Q3(z2) (z2^h2 - 1), R2 from Z2 interpolated at z2 and
-    # omega2 z2, Q3 interpolated on G2, and the openings at (e1, z2) (point 3)
-    if shape.accumulators() > 0:
-        var e2 = ext_embed[4](ext_pow[1](d.omega2, p.h2() - 1))
-        var w2 = ext_embed[4](d.omega2)
-        var r2 = E(0)
-        pi = 0
-        for k in range(shape.accumulators()):
-            if Int(shape.accs[k * ACC + 38]) == KIND_HORNER:
-                continue
-            var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
-            var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
-            var c = _coords_at[p](openings, shape, at_e1, get_u16(shape.accs, k * ACC))
-            var n_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, False)
-            var d_z = _factor_at[p](openings, shape, at_e1, at_next, shape.accs, k, stage1, True)
-            var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, d_z), ext_mul[4](ext_mul[4](za, c), n_z)))
-            r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), shape.family_of(k)), term))
-            pi += 1
-        for g in range(shape.wiring_products()):       # (z2 - e2) (Z(omega2 z2) prod den - Z(z2) prod num) over the two slots
-            var za = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, z2)
-            var zb = interp_cyclic(z2v, pi * p.h2(), p.h2(), d.omega2, ext_mul[4](z2, w2))
-            var nn = one
-            var dd = one
-            for sl in range(2):
-                var col = get_u16(shape.wires, g * WIRE + 2 * sl)
-                if col == NONE:
-                    continue
-                var wg = f_add(_coords_at[p](openings, shape, at_e1, col), list_e(wchal, 1))
-                var sig = interp_cyclic(shape.sigma, (2 * g + sl) * p.h2(), p.h2(), d.omega2, z2, 2)
-                nn = ext_mul[4](nn, f_add(wg, ext_mul[4](ext_mul[4](list_e(wchal, 0), ext_embed[4](ext_pow[1](kappa, 2 * g + sl))), z2)))
-                dd = ext_mul[4](dd, f_add(wg, ext_mul[4](list_e(wchal, 0), sig)))
-            var term = ext_mul[4](f_sub(z2, e2), f_sub(ext_mul[4](zb, dd), ext_mul[4](za, nn)))
-            r2 = f_add(r2, ext_mul[4](ext_pow[4](list_e(alpha, 0), get_u16(shape.wires, g * WIRE + 4)), term))
-            pi += 1
-        for i in range(len(shape.ends) // END):           # chain-end terms (smallgrid.mojo): coef chal alpha^family A [B] [(z2 - e2)]
-            var v = ext_mul[4](ext_pow[4](list_e(alpha, 0), get_u16(shape.ends, i * END + 4)), _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END)))
-            v = f_mul(v, E(shape.ends[i * END + 6]))
-            if shape.ends[i * END + 7] != 0:
-                v = ext_mul[4](v, list_e(stage1, Int(shape.ends[i * END + 7]) - 1))
-            if get_u16(shape.ends, i * END + 2) != NONE:
-                v = ext_mul[4](v, _coords_at[p](openings, shape, at_e1, get_u16(shape.ends, i * END + 2)))
-            if shape.ends[i * END + 8] != 0:
-                v = ext_mul[4](v, f_sub(z2, e2))
-            r2 = f_add(r2, v)
-        var q3z = interp_cyclic(q3, 0, 2 * p.h2(), d.g2, z2)
-        if r2 != ext_mul[4](q3z, f_sub(ext_pow[4](z2, p.h2()), one)):
-            raise Error("small grid identity fails at z2")
-    var rz = residual_at(families, list_e(alpha, 0), stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
+        reads.append(preads.read(openings, point_index(shape.point_list, en.dj1_a, en.dj2_a), en.col_a))
+        reads.append(E(0) if en.col_b == NONE else preads.read(openings, point_index(shape.point_list, en.dj1_b, en.dj2_b), en.col_b))
+    var rz = residual_at(families, alpha, stage1, z1, z2, ext_pow[1](d.omega1, p.h1() - 1), ext_pow[1](d.omega2, p.h2() - 1), reads)
     var z2h = ext_pow[4](z2, p.h2())
     var qa = _quotient_at[p](openings, shape, 0)
     var qb = _quotient_at[p](openings, shape, 1)
@@ -235,121 +284,138 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     if rz != rhs:
         raise Error("residual identity fails at z")
 
-    _vmark(profile, "small grid", tv)
-    # restrictions (docs/public-columns.md): the opening of the column on its line equals the public polynomial at z1
+
+def _restrictions[p: Params](shape: Shape, openings: List[UInt8], public: List[UInt8], z1: E) raises:
+    """Restrictions (docs/public-columns.md): the opening of the column on its line equals the public polynomial at z1."""
     var res_off = value_bytes(shape.publics, p.h1(), p.h2())
     for i in range(len(shape.restrictions) // RES):
         var col = get_u16(shape.restrictions, i * RES)
         var coord = get_u16(shape.restrictions, i * RES + 2)
         var count = get_u16(shape.restrictions, i * RES + 4)
-        if _opening[p](openings, shape, point_index(pts, 0, coord), col) != eval_line(public, res_off, count, z1):
+        if _opening[p](openings, shape, point_index(shape.point_list, 0, coord), col) != eval_line(public, res_off, count, z1):
             raise Error("restriction fails")
         res_off += count * 2
 
-    _vmark(profile, "restrictions", tv)
-    # step 7: the tail in tensor form (pcs/tensor.mojo). The running claim starts as
-    # <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}; the query is a list of digit products,
-    # folded per level at the sumcheck challenges, and no vector of length N is ever held.
-    comptime assert p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
-    comptime D = p.a1 + p.a2
-    comptime M = p.m1 * p.m2
-    var units = List[Unit]()
-    var running_val = E(0)
-    for pt in range(shape.points):
-        var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
-        var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
-        var z1p = point_coord(z1, dj1, d.g1, p.h1())
-        var z2p = point_coord(z2, dj2, d.g2, p.h2())
-        var gamma = list_e(beta_gamma, shape.columns() + pt)
-        query_units[p](z1p, z2p, gamma, d.rho1, d.rho2, units)
-        var claim = E(0)
-        for c in range(shape.columns()):
-            claim = f_add(claim, ext_mul[4](list_e(beta_gamma, c), _opening[p](openings, shape, pt, c)))
-        running_val = f_add(running_val, ext_mul[4](gamma, claim))
-    _vmark(profile, "running claim", tv)
 
-    var dual = f4_dual()
-    var folded = 0                             # binary digits folded so far
-    var y_len = p.N()
-    var r_prev = List[UInt8]()                 # r of the last committed level, empty while that is level 1
-    var roots = List[List[UInt8]]()
-    var doms = List[RsDomain]()
-    for i in range(len(shape.tail)):
+struct _Tail[p: Params]:
+    """Step 7, the tail in tensor form (pcs/tensor.mojo): the running claim and the state its levels fold.
+    The claim starts as <y_2, sum_p gamma_p w_{z_p}> = sum beta_c gamma_p alpha_{c,p}; the query is a list
+    of digit products, folded per level at the sumcheck challenges, and no vector of length N is ever held."""
+    var units: List[Unit]           # the query as digit products
+    var running: E                  # the running claim
+    var folded: Int                 # binary digits folded so far
+    var y_len: Int                  # rows of the current message
+    var r_prev: List[UInt8]         # r of the last committed level, empty while that is level 1
+    var roots: List[List[UInt8]]    # committed tail roots
+    var doms: List[RsDomain]        # their domains
+    var dual: InlineArray[F4, 4]
+
+    def __init__(out self, shape: Shape, openings: List[UInt8], beta_gamma: List[UInt8], z1: E, z2: E, d: Domains) raises:
+        comptime assert Self.p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
+        self.units = List[Unit]()
+        self.running = E(0)
+        self.folded = 0
+        self.y_len = Self.p.N()
+        self.r_prev = List[UInt8]()
+        self.roots = List[List[UInt8]]()
+        self.doms = List[RsDomain]()
+        self.dual = f4_dual()
+        ref pts = shape.point_list
+        for pt in range(shape.points):
+            var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
+            var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
+            var z1p = point_coord(z1, dj1, d.g1, Self.p.h1())
+            var z2p = point_coord(z2, dj2, d.g2, Self.p.h2())
+            var gamma = list_e(beta_gamma, shape.columns() + pt)
+            query_units[Self.p](z1p, z2p, gamma, d.rho1, d.rho2, self.units)
+            var claim = E(0)
+            for c in range(shape.columns()):
+                claim = f_add(claim, ext_mul[4](list_e(beta_gamma, c), _opening[Self.p](openings, shape, pt, c)))
+            self.running = f_add(self.running, ext_mul[4](gamma, claim))
+
+    def level[H: Hash](mut self, mut r: ProofReader, mut t: HostTranscript[Self.p, H], shape: Shape, i: Int,
+                       root_w: List[UInt8], root_z: List[UInt8], root_q: List[UInt8], beta_gamma: List[UInt8], d: Domains) raises:
+        """Committed level i: its root, the previous level's multiproofs, the expected symbols from the
+        opened rows, the batching scalars, three sumcheck rounds, and the fold of the query."""
+        comptime D = Self.p.a1 + Self.p.a2
+        comptime M = Self.p.m1 * Self.p.m2
+        comptime e = Self.p.e
         var lvl = shape.tail[i]
         var root = r.take(H.DIGEST)
         t.absorb(DS_TAIL_ROOT, root)
-        var prev = _open_previous[p, H](r, t, shape, i, root_w, root_z, root_q, roots)
-        var count = p.queries() if i == 0 else shape.tail[i - 1].queries
+        var prev = _open_previous[Self.p, H](r, t, shape, i, root_w, root_z, root_q, self.roots)
+        var count = Self.p.queries() if i == 0 else shape.tail[i - 1].queries
         var v_count = 4 * count if i == 0 else count
         # the expected symbols v (9.3) from the opened rows; a function of the transcript, so not sent nor absorbed
-        var v = List[UInt8](capacity=v_count * p.e)
+        var v = List[UInt8](capacity=v_count * e)
         for q in range(count):
             var idx = _index_of(prev.opened, prev.positions[q])
             if i == 0:
                 for tau in range(4):
-                    _push_e(v, _level1_symbol[p](prev, shape, beta_gamma, idx, tau))
+                    _push_e(v, _level1_symbol[Self.p](prev, shape, beta_gamma, idx, tau))
             else:
-                _push_e(v, _tail_symbol(prev, idx, r_prev))
+                _push_e(v, _tail_symbol(prev, idx, self.r_prev))
         var batch = t.elements(v_count + 1)
-        var claim = ext_mul[4](list_e(batch, 0), running_val)
+        var claim = ext_mul[4](list_e(batch, 0), self.running)
         for k in range(v_count):
             claim = f_add(claim, ext_mul[4](list_e(batch, 1 + k), list_e(v, k)))
         # w~ = batch_0 running + sum_q batch_q g_q, as units
         var b0 = list_e(batch, 0)
-        for k in range(len(units)):
-            units[k].scalar = ext_mul[4](units[k].scalar, b0)
+        for k in range(len(self.units)):
+            self.units[k].scalar = ext_mul[4](self.units[k].scalar, b0)
         if i == 0:
             for q in range(count):
                 var weights = InlineArray[E, 4](fill=E(0))
                 for tau in range(4):
                     weights[tau] = list_e(batch, 1 + 4 * q + tau)
-                consistency_units[p](d.level1.point(prev.positions[q]), weights, dual, units)
+                consistency_units[Self.p](d.level1.point(prev.positions[q]), weights, self.dual, self.units)
         else:
             for q in range(count):
-                row_units(doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q), folded, D, M, units)
-        var rounds = r.take(9 * p.e)
+                row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q), self.folded, D, M, self.units)
+        var rounds = r.take(9 * e)
         var r_l = List[UInt8]()
         for dgt in range(3):
             if f_add(list_e(rounds, 3 * dgt), list_e(rounds, 3 * dgt + 1)) != claim:
                 raise Error("sumcheck fails at a tail level")
-            var msg = List[UInt8](capacity=3 * p.e)
-            for b in range(3 * p.e):
-                msg.append(rounds[3 * dgt * p.e + b])
+            var msg = List[UInt8](capacity=3 * e)
+            for b in range(3 * e):
+                msg.append(rounds[3 * dgt * e + b])
             t.absorb(DS_TAIL_ROUND, msg)
             var rd = t.elements(1)
             claim = quadratic_at(rounds, 3 * dgt, list_e(rd, 0))
-            for k in range(len(units)):
-                units[k].fold(folded + dgt, list_e(rd, 0))
+            for k in range(len(self.units)):
+                self.units[k].fold(self.folded + dgt, list_e(rd, 0))
             r_l.extend(rd^)
-        folded += 3
-        running_val = claim
-        r_prev = r_l^
-        y_len = lvl.rows
-        roots.append(root^)
-        doms.append(RsDomain(lvl.L // lvl.cosets, lvl.cosets))
-    _vmark(profile, "tail levels", tv)
+        self.folded += 3
+        self.running = claim
+        self.r_prev = r_l^
+        self.y_len = lvl.rows
+        self.roots.append(root^)
+        self.doms.append(RsDomain(lvl.L // lvl.cosets, lvl.cosets))
 
-    # the clear vector: consistency against the last committed level, then the evaluation claim directly
-    if shape.clear_length != y_len:
-        raise Error("shape.clear_length does not match the tail schedule")
-    var y = r.take(shape.clear_length * p.e)
-    t.absorb(DS_CLEAR, y)
-    var last = _open_previous[p, H](r, t, shape, len(shape.tail), root_w, root_z, root_q, roots)
-    r.done()
-    for idx in range(len(last.opened)):
-        if len(shape.tail) == 0:
-            var enc = encode_at[p](y, d.level1.point(last.opened[idx]))
-            for tau in range(4):
-                if enc[tau] != _level1_symbol[p](last, shape, beta_gamma, idx, tau):
+    def clear[H: Hash](mut self, mut r: ProofReader, mut t: HostTranscript[Self.p, H], shape: Shape,
+                       root_w: List[UInt8], root_z: List[UInt8], root_q: List[UInt8], beta_gamma: List[UInt8], d: Domains) raises:
+        """The clear vector: consistency against the last committed level at its opened positions, then
+        the evaluation claim directly."""
+        comptime D = Self.p.a1 + Self.p.a2
+        if shape.clear_length != self.y_len:
+            raise Error("shape.clear_length does not match the tail schedule")
+        var y = r.take(shape.clear_length * Self.p.e)
+        t.absorb(DS_CLEAR, y)
+        var last = _open_previous[Self.p, H](r, t, shape, len(shape.tail), root_w, root_z, root_q, self.roots)
+        r.done()
+        for idx in range(len(last.opened)):
+            if len(shape.tail) == 0:
+                var enc = encode_at[Self.p](y, d.level1.point(last.opened[idx]))
+                for tau in range(4):
+                    if enc[tau] != _level1_symbol[Self.p](last, shape, beta_gamma, idx, tau):
+                        raise Error("consistency fails at an opened position")
+            else:
+                var dom = self.doms[len(self.doms) - 1]
+                if tail_encode_at(y, self.y_len, dom.point(last.opened[idx])) != _tail_symbol(last, idx, self.r_prev):
                     raise Error("consistency fails at an opened position")
-        else:
-            var dom = doms[len(doms) - 1]
-            if tail_encode_at(y, y_len, dom.point(last.opened[idx])) != _tail_symbol(last, idx, r_prev):
-                raise Error("consistency fails at an opened position")
-    if clear_value(units, y, folded, D) != running_val:
-        raise Error("evaluation claim fails")
-    _vmark(profile, "clear vector", tv)
-    return True
+        if clear_value(self.units, y, self.folded, D) != self.running:
+            raise Error("evaluation claim fails")
 
 
 def _vmark(profile: Bool, name: String, mut t0: Int):
