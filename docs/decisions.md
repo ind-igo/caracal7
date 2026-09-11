@@ -1299,3 +1299,20 @@ pass and gather 6); encode W 82 -> 26 ms, encode Q 90 -> 28; warm prove 399 -> 2
 per block; 4096 B: 280 ms). At 2688: encode 14 -> 10 ms, prove 141 -> 131. The 8064 profile is now
 flat: lde 31, quotient 24, encode W 26, encode Q 28, open 39, tail 40. The marginal cost per block from
 the 2688 and 8064 points is 1.6 ms on the M1 Pro (fixed part about 78 ms).
+
+## Poseidon-M31 workload (2026-09-11)
+
+The csp-benchmarks Poseidon entries hash their own field (BN254 for circom and provekit, Goldilocks for
+plonky2, M31 for expander); we take Mersenne-31 with the expander's instance, so the digest matches an
+existing entry and the fold shape of mulmod (`2^31 = 1`) does the reduction. `docs/poseidon.md` has the
+layout: a chain per lane and round, 16 segments of R rounds along the chain axis, the state in alternating
+lane order so the anti-circulant MDS reads uniformly (period-2 public coefficient bits), six shifted
+copies of the operand so the matrix costs 15 opening points, three fingerprinted products for the S-box
+sharing one coefficient accumulator, and the absorb and digest on existing piles. Two things found while
+building it: the expander round is constants, matrix, S-box (not S-box then matrix), caught by its test
+vector; and the Horner scan never ingests the last row, so weights live on rows 0..62 and row 63 is idle
+with its piles masked, as in mulmod.
+
+Measured (M1 Pro, `bench_poseidon`): 8 inputs on 64 x 384 warm prove 89 ms, proof 421 KB, verify 34 ms;
+16 inputs on 64 x 896 152 ms, 457 KB, 40 ms. Verified: `test_poseidon` (vectors, host families, two round
+trips, a wrong digest rejected).
