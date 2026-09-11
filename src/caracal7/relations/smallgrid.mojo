@@ -16,7 +16,7 @@ The shifted line b is the Z2 buffer one element on: accumulate.k_z2 stores Z2(om
 after the last chain. Before 2026-09-09 the products were coefficient convolutions, O(h2^2) serial per
 output; ECDSA's six wiring products took 260 ms.
 
-Scratch (SG_* offsets in units of h2 e): lines (6, 2 h2, e) the coset values of a, b and up to four lines;
+Scratch (SmallGridLayout): lines (6, 2 h2, e) the coset values of a, b and up to four lines;
 coef (h2, e); r2 (2 h2, e) R2 on the coset summed over the terms; q3c (2 h2, e) the Q3 coefficients;
 q3 (2 h2, e) its values on G2 in generator order, the proof's clear vector; scr (2 h2, e) the gathered input
 line and the plans' scratch.
@@ -40,16 +40,31 @@ from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND
 from caracal7.core.dft import DftPlan, dft_axis
 
-comptime SG_LINES = 0       # scratch offsets in units of h2 e: six lines on the coset, 2 h2 values each
-comptime SG_COEF = 12       # a line's h2 coefficients on the way to the coset
-comptime SG_R2 = 13         # R2 on the coset, summed over the terms (2 h2)
-comptime SG_Q3C = 15        # the Q3 coefficients (2 h2)
-comptime SG_SCR = 17        # a gathered line (h2) or a plan's scratch (2 h2)
-comptime SG_TOTAL = 19
 from caracal7.core.bytes import Base, Buf, get_u16
 from caracal7.relations.ir import END, NONE
-from caracal7.core.arena import Arena
+from caracal7.relations.accumulate import AccLayout
+from caracal7.core.arena import Arena, Bump
 from std.gpu import global_idx
+
+
+struct SmallGridLayout(TrivialRegisterPassable):
+    """Arena offsets of the small-grid stage, all E-valued and sized by h2. The stage's callers name
+    only `q3`, the output; the rest is its scratch."""
+    var lines: Int      # (6, 2 h2, e)  lines on the coset: Z2 and its shift, then up to two numerator and two denominator lines
+    var coef: Int       # (h2, e)       a line's coefficients on the way to the coset
+    var r2: Int         # (2 h2, e)     R2 on the coset, summed over the terms
+    var q3c: Int        # (2 h2, e)     the Q3 coefficients
+    var scr: Int        # (2 h2, e)     a gathered line (h2) or a plan's scratch
+    var q3: Int         # (2 h2, e)     Q3 on G2 in the clear, sent with the Q root
+
+    def __init__[p: Params](out self, mut bump: Bump):
+        comptime u = p.h2() * p.e
+        self.lines = bump.alloc(12 * u)
+        self.coef = bump.alloc(u)
+        self.r2 = bump.alloc(2 * u)
+        self.q3c = bump.alloc(2 * u)
+        self.scr = bump.alloc(2 * u)
+        self.q3 = bump.alloc(2 * u)
 
 
 def k_gather_line[p: Params](base: Base, src: Buf[1], stride: Int32, dst: Buf[16]):
@@ -60,16 +75,14 @@ def k_gather_line[p: Params](base: Base, src: Buf[1], stride: Int32, dst: Buf[16
     dst.store(base, t, base.unsafe_load[width=16](src.at(t * Int(stride))))
 
 
-def _line_on_coset[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, src: Int, stride: Int, sg: Int, dst: Int) raises:
+def _line_on_coset[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, src: Int, stride: Int, sg: SmallGridLayout, dst: Int) raises:
     """h2 values on H2 at src (stride bytes apart) -> the line's 2 h2 values on the coset c: inv2 to
     coefficients, then cfwd2p (the twist gamma2^k inside the plan)."""
     comptime h2 = p.h2()
     comptime B = BACKEND.block
-    var coef = sg + SG_COEF * h2 * p.e
-    var scr = sg + SG_SCR * h2 * p.e
-    ctx.enqueue_function[k_gather_line[p]](arena.buf, Buf[1](src), Int32(stride), Buf[16](scr), grid_dim=ceildiv(h2, B), block_dim=B)
-    dft_axis[DftPlan(h2, h2), 4](ctx, arena, scr, coef, scr, 8, 1, tab.base + tab.inv2)
-    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, coef, dst, scr, 8, 1, tab.base + tab.cfwd2p)
+    ctx.enqueue_function[k_gather_line[p]](arena.buf, Buf[1](src), Int32(stride), Buf[16](sg.scr), grid_dim=ceildiv(h2, B), block_dim=B)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, sg.scr, sg.coef, sg.scr, 8, 1, tab.base + tab.inv2)
+    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, sg.coef, dst, sg.scr, 8, 1, tab.base + tab.cfwd2p)
 
 
 def k_product_term[p: Params](base: Base, lines: Buf[16], nn: Int32, nd: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8,
@@ -95,7 +108,7 @@ def k_product_term[p: Params](base: Base, lines: Buf[16], nn: Int32, nd: Int32, 
 
 def small_grid_product[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, z2: Int,
                                   num: List[Tuple[Int, Int]], den: List[Tuple[Int, Int]],
-                                  sg: Int, alpha: Int, power: Int, e2: F2, first: Bool) raises:
+                                  sg: SmallGridLayout, alpha: Int, power: Int, e2: F2, first: Bool) raises:
     """Add the grand-product term alpha^power (X2 - e2) (b prod den - a prod num) into q3c (coefficients);
     a, b are the Z2 line at z2 and its shift; num, den are one or two (offset, stride) lines of h2 values each."""
     comptime h2 = p.h2()
@@ -103,15 +116,29 @@ def small_grid_product[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLa
     comptime e = p.e
     if len(num) == 0 or len(num) > 2 or len(den) == 0 or len(den) > 2:
         raise Error("a grand-product term has one or two lines per side (degree < 3 h2)")
-    var lines = sg + SG_LINES * h2 * e
     var specs: List[Tuple[Int, Int]] = [(z2, 16), (z2 + 16, 16)]
     specs.extend(num.copy())
     specs.extend(den.copy())
     for i in range(len(specs)):
-        _line_on_coset[p](ctx, arena, tab, specs[i][0], specs[i][1], sg, lines + i * 2 * h2 * e)
-    ctx.enqueue_function[k_product_term[p]](arena.buf, Buf[16](lines), Int32(len(num)), Int32(len(den)), Buf[2](tab.base + tab.c2p),
-                                            e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](sg + SG_R2 * h2 * e), Int32(0 if first else 1),
+        _line_on_coset[p](ctx, arena, tab, specs[i][0], specs[i][1], sg, sg.lines + i * 2 * h2 * e)
+    ctx.enqueue_function[k_product_term[p]](arena.buf, Buf[16](sg.lines), Int32(len(num)), Int32(len(den)), Buf[2](tab.base + tab.c2p),
+                                            e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](sg.r2), Int32(0 if first else 1),
                                             grid_dim=ceildiv(2 * h2, B), block_dim=B)
+
+
+def small_grid_accumulator[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, A: AccLayout, k: Int, pi: Int,
+                                      sg: SmallGridLayout, alpha: Int, power: Int, e2: F2, first: Bool) raises:
+    """The grand-product term of accumulator k (product index pi): Z on the last row of every chain and
+    N(e1, x2) against D(e1, x2)."""
+    small_grid_product[p](ctx, arena, tab, A.z2_at(pi), [(A.zval_at(k) + (p.h1() - 1) * p.e, p.h1() * p.e), (A.n_end_at(pi), 16)],
+                          [(A.d_end_at(pi), 16)], sg, alpha, power, e2, first)
+
+
+def small_grid_wiring[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, A: AccLayout, g: Int, pi: Int,
+                                 sg: SmallGridLayout, alpha: Int, power: Int, e2: F2, first: Bool) raises:
+    """The grand-product term of wiring product g (product index pi): its factor lines n0 n1 against d0 d1."""
+    small_grid_product[p](ctx, arena, tab, A.z2_at(pi), [(A.wline_at(g, 0), 16), (A.wline_at(g, 1), 16)],
+                          [(A.wline_at(g, 2), 16), (A.wline_at(g, 3), 16)], sg, alpha, power, e2, first)
 
 
 def k_end_term[p: Params](base: Base, lines: Buf[16], two: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8, gate: Int32,
@@ -136,12 +163,12 @@ def k_end_term[p: Params](base: Base, lines: Buf[16], two: Int32, c2p: Buf[2], e
 
 
 def small_grid_end[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, zval: Int, columns_w: Int,
-                              ends: Span[UInt8, _], i: Int, sg: Int, alpha: Int, chals: Int, e2: F2, first: Bool) raises:
+                              ends: Span[UInt8, _], i: Int, sg: SmallGridLayout, alpha: Int, chals: Int, e2: F2, first: Bool) raises:
     """Add chain-end term i of `ends` into R2 on the coset."""
     comptime h2 = p.h2()
     comptime h1 = p.h1()
     comptime B = BACKEND.block
-    var lines = sg + SG_LINES * h2 * p.e
+    var lines = sg.lines
     var ca = get_u16(ends, i * END)
     var cb = get_u16(ends, i * END + 2)
     var line_of = zval + (h1 - 1) * p.e
@@ -151,7 +178,7 @@ def small_grid_end[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout
     ctx.enqueue_function[k_end_term[p]](arena.buf, Buf[16](lines), Int32(0 if cb == NONE else 1), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
                                         Int32(ends[i * END + 8]), Buf[16](alpha), Int32(get_u16(ends, i * END + 4)), Buf[16](chals),
                                         Int32(ends[i * END + 7]), Int32(ends[i * END + 6]),
-                                        Buf[16](sg + SG_R2 * h2 * p.e), Int32(0 if first else 1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+                                        Buf[16](sg.r2), Int32(0 if first else 1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
 def k_q3_coset[p: Params](base: Base, r2: Buf[16], c2p: Buf[2], dst: Buf[16]):
@@ -164,17 +191,16 @@ def k_q3_coset[p: Params](base: Base, r2: Buf[16], c2p: Buf[2], dst: Buf[16]):
     dst.store(base, t, fp_canonical(fp_ext_mul[4](r2.load(base, t).cast[DType.float32](), ext_inv0[4](d).cast[DType.float32]())))
 
 
-def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, sg: Int, q3: Int) raises:
-    """Q3 on G2 from R2 on the coset: the pointwise division, the coset's inverse DFT to coefficients,
+def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, sg: SmallGridLayout) raises:
+    """Q3 on G2 (sg.q3) from R2 on the coset: the pointwise division, the coset's inverse DFT to coefficients,
     the 2 h2-point DFT to values."""
     comptime h2 = p.h2()
     comptime B = BACKEND.block
-    var q3v = sg + SG_LINES * h2 * p.e
-    ctx.enqueue_function[k_q3_coset[p]](arena.buf, Buf[16](sg + SG_R2 * h2 * p.e), Buf[2](tab.base + tab.c2p), Buf[16](q3v),
+    var q3v = sg.lines
+    ctx.enqueue_function[k_q3_coset[p]](arena.buf, Buf[16](sg.r2), Buf[2](tab.base + tab.c2p), Buf[16](q3v),
                                         grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    var scr = sg + SG_SCR * h2 * p.e
-    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, q3v, sg + SG_Q3C * h2 * p.e, scr, 8, 1, tab.base + tab.cinv2p)
-    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, sg + SG_Q3C * h2 * p.e, q3, scr, 8, 1, tab.base + tab.gfwd2p)
+    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, q3v, sg.q3c, sg.scr, 8, 1, tab.base + tab.cinv2p)
+    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, sg.q3c, sg.q3, sg.scr, 8, 1, tab.base + tab.gfwd2p)
 
 
 # ---- host side ----

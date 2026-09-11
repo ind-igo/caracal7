@@ -10,7 +10,7 @@ from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
 from caracal7.core.bytes import list_e
-from caracal7.relations.smallgrid import small_grid_product, small_grid_values, interp_cyclic, SG_TOTAL
+from caracal7.relations.smallgrid import SmallGridLayout, small_grid_product, small_grid_values, interp_cyclic
 
 comptime p = CLIENT.grid(72, 32)
 comptime h2 = p.h2()
@@ -86,8 +86,7 @@ def test_q3_matches_host_division_and_interpolation() raises:
     var o_nend = bump.alloc(h2 * 16)
     var o_dend = bump.alloc(h2 * 16)
     var o_alpha = bump.alloc(16)
-    var o_sg = bump.alloc(SG_TOTAL * h2 * 16)
-    var o_q3 = bump.alloc(2 * h2 * 16)
+    var sg = SmallGridLayout.__init__[p](bump)
     var arena = Arena(ctx, bump.used)
     arena.upload(ctx, tab.base, build_tables[p](ctx, tab, d))
     arena.upload(ctx, o_z2, _host(ctx, z2))
@@ -97,11 +96,11 @@ def test_q3_matches_host_division_and_interpolation() raises:
     arena.upload(ctx, o_alpha, _host(ctx, alpha))
     var e2 = ext_pow[1](d.omega2, h2 - 1)
     # two accumulators sharing the lines: R2 = (1 + alpha) (X2 - e2)(b d - a c n)
-    small_grid_product[p](ctx, arena, tab, o_z2, [(o_zend, 16), (o_nend, 16)], [(o_dend, 16)], o_sg, o_alpha, 0, e2, True)
-    small_grid_product[p](ctx, arena, tab, o_z2, [(o_zend, 16), (o_nend, 16)], [(o_dend, 16)], o_sg, o_alpha, 1, e2, False)
-    small_grid_values[p](ctx, arena, tab, o_sg, o_q3)
+    small_grid_product[p](ctx, arena, tab, o_z2, [(o_zend, 16), (o_nend, 16)], [(o_dend, 16)], sg, o_alpha, 0, e2, True)
+    small_grid_product[p](ctx, arena, tab, o_z2, [(o_zend, 16), (o_nend, 16)], [(o_dend, 16)], sg, o_alpha, 1, e2, False)
+    small_grid_values[p](ctx, arena, tab, sg)
     var qh = ctx.enqueue_create_host_buffer[DType.uint8](2 * h2 * 16)
-    arena.download(ctx, o_q3, qh)
+    arena.download(ctx, sg.q3, qh)
     ctx.synchronize()
     var q3 = List[UInt8](capacity=2 * h2 * 16)
     for i in range(2 * h2 * 16):

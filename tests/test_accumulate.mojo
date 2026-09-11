@@ -8,7 +8,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_one
 from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
-from caracal7.relations.accumulate import ACC, accumulate, horner, derive_chals
+from caracal7.relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
 from caracal7.relations.ir import Families, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
@@ -159,14 +159,7 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
     var o_acc = bump.alloc(ACC)
     var o_chals = bump.alloc(len(chals))
     var o_table = bump.alloc(len(table))
-    var o_num = bump.alloc(N * 16)
-    var o_den = bump.alloc(N * 16)
-    var o_scratch = bump.alloc(N * 16)
-    var o_z = bump.alloc(N * 16)
-    var o_prod = bump.alloc(h2 * 16)
-    var o_z2 = bump.alloc((h2 + 1) * 16)   # k_z2 stores a trailing 1
-    var o_nend = bump.alloc(h2 * 16)
-    var o_dend = bump.alloc(h2 * 16)
+    var A = AccLayout.__init__[p](bump, 1, 1, 0)
     var o_idx = bump.alloc(4 * N)
     var o_bins = bump.alloc(4 * (table_k + 1))
     var o_cursor = bump.alloc(4 * table_k)
@@ -183,12 +176,12 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
         arena.upload(ctx, o_idx, _host(ctx, idx))
         counting_sort[p](ctx, arena, o_trace, o_acc, o_idx, o_bins, o_cursor, table_k)
         trace = _down(ctx, arena, o_trace, columns * N)
-    accumulate[p](ctx, arena, o_trace, o_acc, o_chals, o_num, o_den, o_scratch, o_z, o_prod, o_z2, o_nend, o_dend)
-    var z = _down(ctx, arena, o_z, N * 16)
-    var z2 = _down(ctx, arena, o_z2, (h2 + 1) * 16)
-    var prod = _down(ctx, arena, o_prod, h2 * 16)
-    var num = _down(ctx, arena, o_num, N * 16)
-    var den = _down(ctx, arena, o_den, N * 16)
+    accumulate[p](ctx, arena, o_trace, o_acc, o_chals, A, 0, 0)
+    var z = _down(ctx, arena, A.zval, N * 16)
+    var z2 = _down(ctx, arena, A.z2, (h2 + 1) * 16)
+    var prod = _down(ctx, arena, A.chain_prod, h2 * 16)
+    var num = _down(ctx, arena, A.num, N * 16)
+    var den = _down(ctx, arena, A.den, N * 16)
     assert_true(_down(ctx, arena, o_chals, len(chals)) == chals, "derived challenges differ from the host")
     for row in [0, 1, h1 - 1, h1, N - 2, N - 1]:
         assert_true(list_e(num, row) == host_factor(accs, k, trace, N, row, chals, False), "N differs from the host at row " + String(row))
@@ -210,8 +203,8 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
     for x2 in range(h2 - 1):
         assert_true(list_e(z2, x2 + 1) == ext_mul[4](list_e(z2, x2), list_e(prod, x2)), "Z2 recurrence fails")
     assert_true(list_e(z, N - 1) != one, "vacuous")
-    var nend = _down(ctx, arena, o_nend, h2 * 16)
-    var dend = _down(ctx, arena, o_dend, h2 * 16)
+    var nend = _down(ctx, arena, A.n_end, h2 * 16)
+    var dend = _down(ctx, arena, A.d_end, h2 * 16)
     for x2 in range(h2):
         assert_true(list_e(nend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, chals, False), "chain-end N")
         assert_true(list_e(dend, x2) == host_factor(accs, k, trace, N, x2 * h1 + h1 - 1, chals, True), "chain-end D")
@@ -285,8 +278,7 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     var o_fam = bump.alloc(len(c.families))
     var o_acc = bump.alloc(3 * ACC)
     var o_chals = bump.alloc(len(chals))
-    var o_num = bump.alloc(N * 16)
-    var o_z = bump.alloc(3 * N * 16)
+    var A = AccLayout.__init__[p](bump, 3, 0, 0)
     var arena = Arena(ctx, bump.used)
     arena.upload(ctx, o_trace, _host(ctx, trace))
     arena.upload(ctx, o_fam, _host(ctx, c.families))
@@ -295,8 +287,8 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     var ends = List[E]()
     for k in range(3):
         assert_equal(Int(c.shape.accs[k * ACC + 38]), KIND_HORNER)
-        horner[p](ctx, arena, o_trace, o_fam, o_acc + k * ACC, o_chals, o_num, o_z + k * N * 16)
-        var got = _down(ctx, arena, o_z + k * N * 16, N * 16)
+        horner[p](ctx, arena, o_trace, o_fam, o_acc + k * ACC, o_chals, A, k)
+        var got = _down(ctx, arena, A.zval_at(k), N * 16)
         assert_true(got == host_horner[p](c.families, c.shape.accs, k, trace, chals), "R differs from the host for accumulator " + String(k))
         for x2 in range(h2):
             ends.append(list_e(got, x2 * h1 + h1 - 1))

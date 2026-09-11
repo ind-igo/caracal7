@@ -80,9 +80,10 @@ def test_layout_plans_the_arena() raises:
     assert_true(L.bytes > 0)
     assert_equal(len(L.tail), 0)
     # every offset is inside the arena and 256-aligned
-    for off in [L.tree_w, L.tree_z, L.tree_q, L.families, L.accs, L.shifts, L.num, L.den, L.zscratch, L.zval, L.chain_prod, L.z2, L.n_end, L.d_end,
-                L.sg, L.q3, L.ltmp, L.lde, L.residual, L.quotient, L.w_tab, L.w_z, L.openings, L.open_partial, L.fold_y, L.running0, L.dom1, L.pts, L.partial,
-                L.positions, L.proof_stage, L.prefix, L.stage1, L.alpha, L.z, L.beta_gamma, L.batch, L.r]:
+    for off in [L.w.tree, L.z.tree, L.q.tree, L.families, L.accs, L.shifts, L.acc.num, L.acc.den, L.acc.scratch, L.acc.zval, L.acc.chain_prod,
+                L.acc.z2, L.acc.n_end, L.acc.d_end, L.sg.lines, L.sg.q3, L.lde.ltmp, L.lde.lde, L.lde.residual, L.lde.quotient, L.open.w_tab,
+                L.open.w_z, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
+                L.query.positions, L.query.stage, L.prefix, L.chal.stage1, L.chal.alpha, L.chal.z, L.chal.beta_gamma, L.chal.batch, L.chal.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
 

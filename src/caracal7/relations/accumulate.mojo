@@ -60,8 +60,53 @@ from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
-from caracal7.core.arena import Arena
+from caracal7.core.arena import Arena, Bump
 
+
+
+struct AccLayout(TrivialRegisterPassable):
+    """Arena offsets of the Z stage. N, D and the scan scratch serve every accumulator in turn; Z is
+    per accumulator; the grand-product lines are per product (accumulators first, then wiring products,
+    `pi` counts both); the factor lines are per wiring product."""
+    var num: Int            # (row, e)
+    var den: Int
+    var scratch: Int
+    var zval: Int           # (accumulator, row, e)     Z values, the Z tree's trace before the coordinate split
+    var chain_prod: Int     # (x2, e)
+    var z2: Int             # (product, x2, e) + e      Z2 in the clear; one trailing 1 (k_z2)
+    var n_end: Int          # (product, x2, e)          N(e1, x2), D(e1, x2)
+    var d_end: Int
+    var wlines: Int         # (wiring product, 4, x2, e)  the factor lines n0, n1, d0, d1 (k_wire_factors)
+    var rows: Int           # N e bytes, one accumulator's Z
+    var line: Int           # h2 e bytes, one line
+
+    def __init__[p: Params](out self, mut bump: Bump, accumulators: Int, products: Int, wiring: Int):
+        self.rows = p.N() * p.e
+        self.line = p.h2() * p.e
+        self.num = bump.alloc(self.rows)
+        self.den = bump.alloc(self.rows)
+        self.scratch = bump.alloc(self.rows)
+        self.zval = bump.alloc(accumulators * self.rows)
+        self.chain_prod = bump.alloc(self.line)
+        self.z2 = bump.alloc(products * self.line + p.e)
+        self.n_end = bump.alloc(accumulators * self.line)
+        self.d_end = bump.alloc(accumulators * self.line)
+        self.wlines = bump.alloc(wiring * 4 * self.line)
+
+    def zval_at(self, k: Int) -> Int:
+        return self.zval + k * self.rows
+
+    def z2_at(self, pi: Int) -> Int:
+        return self.z2 + pi * self.line
+
+    def n_end_at(self, pi: Int) -> Int:
+        return self.n_end + pi * self.line
+
+    def d_end_at(self, pi: Int) -> Int:
+        return self.d_end + pi * self.line
+
+    def wline_at(self, g: Int, j: Int) -> Int:
+        return self.wlines + (4 * g + j) * self.line
 
 
 def k_derive_chals(base: Base, chals: Buf[16], table: Buf[1], rows: Int32):
@@ -257,23 +302,24 @@ def k_horner_scan[p: Params](base: Base, acc: Buf[1], chals: Buf[16], num: Buf[1
         r = fp_reduce(fp_ext_mul[4](scale_f, r) - num.load(base, row).cast[DType.float32]())
 
 
-def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, acc: Int, chals: Int, num: Int, zval: Int) raises:
-    """One KIND_HORNER accumulator: R into zval (row, e)."""
+def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, acc: Int, chals: Int, A: AccLayout, k: Int) raises:
+    """KIND_HORNER accumulator k: R into its Z block (row, e)."""
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](acc), Buf[16](chals), Buf[16](num),
+    ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](acc), Buf[16](chals), Buf[16](A.num),
                                       grid_dim=ceildiv(p.N(), B), block_dim=B)
-    ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](acc), Buf[16](chals), Buf[16](num), Buf[16](zval),
+    ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](acc), Buf[16](chals), Buf[16](A.num), Buf[16](A.zval_at(k)),
                                            grid_dim=ceildiv(p.h2(), B), block_dim=B)
 
 
-def wiring[p: Params](ctx: DeviceContext, arena: Arena, zval: Int, wire: Int, sigma: Int, slot0: Int, columns_w: Int, wchal: Int,
-                      kappa_a: F2, kappa_b: F2, omega2: F2, chain_prod: Int, lines: Int, z2: Int) raises:
-    """One wiring product: its factor lines into `lines` (4, h2, e) and its Z2 line into z2 (h2 + 1, e)."""
+def wiring[p: Params](ctx: DeviceContext, arena: Arena, A: AccLayout, g: Int, pi: Int, wire: Int, sigma: Int, columns_w: Int, wchal: Int,
+                      kappa_a: F2, kappa_b: F2, omega2: F2) raises:
+    """Wiring product g (product index pi): its factor lines into A.wlines (4, h2, e) and its Z2 line (h2 + 1, e).
+    Its slots are 2 g and 2 g + 1; kappa_a, kappa_b are kappa to those powers."""
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[16](zval), Buf[1](wire), Buf[1](sigma), Int32(slot0), Int32(columns_w), Buf[16](wchal),
-                                            kappa_a[0], kappa_a[1], kappa_b[0], kappa_b[1], omega2[0], omega2[1], Buf[16](chain_prod), Buf[16](lines),
+    ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[16](A.zval), Buf[1](wire), Buf[1](sigma), Int32(2 * g), Int32(columns_w), Buf[16](wchal),
+                                            kappa_a[0], kappa_a[1], kappa_b[0], kappa_b[1], omega2[0], omega2[1], Buf[16](A.chain_prod), Buf[16](A.wline_at(g, 0)),
                                             grid_dim=ceildiv(p.h2(), B), block_dim=B)
-    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](A.chain_prod), Buf[16](A.z2_at(pi)), grid_dim=1, block_dim=1)
 
 
 def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows: Int) raises:
@@ -281,12 +327,19 @@ def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows:
     ctx.enqueue_function[k_derive_chals](arena.buf, Buf[16](chals), Buf[1](table), Int32(rows), grid_dim=1, block_dim=1)
 
 
-def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int, chals: Int,
-                          num: Int, den: Int, scratch: Int, zval: Int, chain_prod: Int, z2: Int, n_end: Int, d_end: Int) raises:
-    """One accumulator: its descriptor at `acc`, the stage-1 elements at `chals`, Z into zval (row, e), Z2 into z2 (h2, e),
-    the chain-end factors into n_end, d_end (h2, e)."""
+def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int, chals: Int, A: AccLayout, k: Int, pi: Int) raises:
+    """Accumulator k (product index pi): its descriptor at `acc`, the stage-1 elements at `chals`, Z into its
+    Z block (row, e), Z2 into its Z2 line (h2, e), the chain-end factors into its n_end, d_end lines (h2, e)."""
     comptime N = p.N()
     comptime B = BACKEND.block
+    var num = A.num
+    var den = A.den
+    var scratch = A.scratch
+    var zval = A.zval_at(k)
+    var chain_prod = A.chain_prod
+    var z2 = A.z2_at(pi)
+    var n_end = A.n_end_at(pi)
+    var d_end = A.d_end_at(pi)
     ctx.enqueue_function[k_factors[p]](arena.buf, Buf[1](trace), Buf[1](acc), Buf[16](chals), Buf[16](num), Buf[16](den),
                                        grid_dim=ceildiv(N, B), block_dim=B)
     comptime S = seg_len(p.h1())

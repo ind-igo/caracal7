@@ -29,7 +29,7 @@ from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
 from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER
-from caracal7.core.bytes import Base, Buf, u16
+from caracal7.core.bytes import Base, Buf, u16, get_u16
 from caracal7.core.arena import Arena
 from caracal7.core.dft import dft_axis, DftPlan
 from std.gpu import global_idx
@@ -239,6 +239,56 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
 
 
 # ---- host orchestration ----
+
+def _put_u16(mut l: List[UInt8], at: Int, v: Int):
+    l[at] = UInt8(v & 255)
+    l[at + 1] = UInt8(v >> 8)
+
+
+def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises -> Tuple[List[UInt8], List[UInt8], Int]:
+    """The residual's entry table and its merge index from the family table: one `families_g` row per
+    distinct (reads, gate) descriptor (bytes 16 to 28 of an entry) among the entries outside every Horner
+    accumulator's ingest range, and `merge` as (entry, 2) u16 (start, count) then u16 indices of the entries
+    each row sums. Entries that share the reads share X(point), so sum kappa_i X = (sum kappa_i) X.
+    Returns (families_g, merge, rows of families_g); families_g is padded to `entries` rows."""
+    if entries > 65535:
+        raise Error("the merge table indexes entries as u16")
+    var keep = List[Bool](length=entries, fill=True)
+    for k in range(len(accs) // ACC):
+        if Int(accs[k * ACC + 38]) == KIND_HORNER:
+            var first = get_u16(accs, k * ACC + 2)
+            for i in range(first - 32, first):
+                keep[i] = False
+    var fg = List[UInt8](length=entries * ENTRY, fill=0)
+    var mg = List[UInt8](length=entries * 6, fill=0)
+    var row_of = Dict[String, Int]()
+    var members = List[List[Int]]()
+    var rows = 0
+    for i in range(entries):
+        if not keep[i]:
+            continue
+        var key = String("")
+        for j in range(16, 29):
+            key += String(Int(families[i * ENTRY + j])) + ","
+        var u = row_of.get(key, -1)
+        if u < 0:
+            u = rows
+            row_of[key] = u
+            members.append(List[Int]())
+            for j in range(ENTRY):
+                fg[u * ENTRY + j] = families[i * ENTRY + j]
+            rows += 1
+        members[u].append(i)
+    var idx_off = entries * 4
+    var at = 0
+    for u in range(rows):
+        _put_u16(mg, u * 4, at)
+        _put_u16(mg, u * 4 + 2, len(members[u]))
+        for i in members[u]:
+            _put_u16(mg, idx_off + 2 * at, i)
+            at += 1
+    return (fg^, mg^, rows)
+
 
 def lde[p: Params](ctx: DeviceContext, arena: Arena,
                    coeff: Int, columns: Int, tab: TableLayout, ltmp: Int, dst: Int) raises:
