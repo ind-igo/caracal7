@@ -39,6 +39,11 @@ Output:
 - `query_error_per_attempt` is the sum over **all committed levels**, including level 1, of the miss
   probability of one transcript attempt; `query_error` divides it by `2^grind_bits`, the hashes one
   attempt costs the prover (see Grinding below).
+- `capacity_conjecture ...` is a projection under the up-to-capacity conjecture (radius `1 - rate - eta`,
+  per-query miss `rate + eta`): the queries each level would need at the same per-level target, and the
+  query bits the compiled queries would carry. `Profile.regime = REGIME_CAPACITY` compiles that regime;
+  `CLIENT` stays at `REGIME_UNIQUE`. The conjecture is unproven and the field terms are not re-derived
+  for it (they carry an `eta` dependence there, spec section 12); nothing in this note certifies it.
 - `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)` at the compiled `e`, rounded down to
   two decimals.
 - `projected_e16_...` and `projected_e20_...` change only the denominator to `127^16` or `127^20` at

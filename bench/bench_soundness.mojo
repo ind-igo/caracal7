@@ -8,7 +8,7 @@ from std.math import log2, max, abs
 from std.testing import assert_equal, assert_true, assert_raises
 
 from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params
+from caracal7.core.params import CLIENT, Params, REGIME_UNIQUE, REGIME_CAPACITY, query_count
 from caracal7.core.bytes import get_u16
 from caracal7.relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
 from caracal7.relations.statement import Compiled, Statement, Term, BIT
@@ -50,10 +50,13 @@ def horner_degree(rows: Int, scale: Int, ingest: Int, start: Int) -> Int:
     return max((rows - 2) * scale + ingest, (rows - 1) * scale if start != 0 else 0)
 
 
-def query_error(length: Int, dimension: Int, queries: Int) raises -> Float64:
+def query_error(length: Int, dimension: Int, queries: Int, regime: Int = REGIME_UNIQUE, eta_inv: Int = 16) raises -> Float64:
+    """The miss probability of `queries` draws: per query (1 + rate) / 2 in the unique regime (proven),
+    rate + eta under the capacity conjecture (unproven; the field terms are not re-derived for it)."""
     if dimension <= 0 or dimension >= length or queries <= 0:
         raise Error("query bound needs 0 < dimension < length and positive queries")
-    var miss = (1.0 + Float64(dimension) / Float64(length)) / 2.0
+    var rate = Float64(dimension) / Float64(length)
+    var miss = (1.0 + rate) / 2.0 if regime == REGIME_UNIQUE else rate + 1.0 / Float64(eta_inv)
     var error = 1.0
     for _ in range(queries):
         error *= miss
@@ -126,13 +129,13 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
 
     var gap = p.L()                    # level 1: uniform E^columns fold, block alphabet
     var batch = 0
-    var queries = query_error(p.L(), p.N() // 4, p.queries())
+    var queries = query_error(p.L(), p.N() // 4, p.queries(), p.regime, p.eta_inv)
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
         gap += 3 * level.L             # later folds: tensor randomness in three E elements
         batch += (4 if i == 0 else 1) * previous_queries + 1
-        queries += query_error(level.L, level.rows, level.queries)
+        queries += query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
         previous_queries = level.queries
     var terms: List[Tuple[String, Int]] = [
         ("alpha_batch", grid_alpha + small_alpha),
@@ -159,12 +162,22 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     var numerator = 0
     for term in result[0]:
         numerator += term[1]
-    print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits, "grind_bits", p.grind_bits)
+    print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits, "grind_bits", p.grind_bits, "regime", p.regime)
     print("columns W/Z/Q/public", s.columns_w, s.columns_z, s.columns_q, s.columns_p,
           "points", s.points, "entries", s.entries, "horner", s.accumulators(), "wiring_products", s.wiring_products())
     print("level 1: dimension/length/queries", p.N() // 4, p.L(), p.queries())
     for i in range(len(s.tail)):
         print("level", i + 2, "dimension/length/queries", s.tail[i].rows, s.tail[i].L, s.tail[i].queries)
+    # the capacity conjecture (unproven; the field terms are not re-derived for it): the queries each level
+    # would need at the same per-level target, and the query error of the compiled queries under it
+    var per_level = p.lambda_bits - p.grind_bits
+    var cap_queries = String(query_count(per_level, p.rate(), REGIME_CAPACITY, p.eta_inv))
+    var cap_error = query_error(p.L(), p.N() // 4, p.queries(), REGIME_CAPACITY, p.eta_inv)
+    for i in range(len(s.tail)):
+        cap_queries += "/" + String(query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), REGIME_CAPACITY, p.eta_inv))
+        cap_error += query_error(s.tail[i].L, s.tail[i].rows, s.tail[i].queries, REGIME_CAPACITY, p.eta_inv)
+    print("capacity_conjecture eta_inv", p.eta_inv, "queries_per_level", cap_queries,
+          "query_bits_at_compiled_queries", bits(cap_error / Float64(1 << p.grind_bits)))
     for term in result[0]:
         print("field_numerator", term[0], term[1])
     var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
@@ -194,7 +207,7 @@ def self_check() raises:
     # A compiled two-family 4x4 statement, once clear and once with one committed tail.
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
     comptime for i in range(2):
-        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0,
+        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16,
                             leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3)
         var st = Statement()
         st.col("x", BIT)

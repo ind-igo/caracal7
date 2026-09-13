@@ -6,7 +6,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params, Profile
+from caracal7.core.params import CLIENT, Params, Profile, REGIME_UNIQUE
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, ProofReader, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
@@ -18,7 +18,7 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)
 
 

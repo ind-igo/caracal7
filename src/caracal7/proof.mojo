@@ -23,7 +23,7 @@ from std.math import log2
 from std.memory import unsafe_memcpy
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.params import Params, domain_for
+from caracal7.core.params import Params, domain_for, query_count
 from caracal7.core.arena import Arena
 from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
@@ -64,7 +64,7 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
             raise Error("tail level does not fit the F4 domain")
         # queries at the exact rate rows / L, same formula as level 1
         var rate = Float64(rows) / Float64(L)
-        var queries = Int((Float64(p.lambda_bits - p.grind_bits) / _log2(2.0 / (1.0 + rate))).__ceil__())
+        var queries = query_count(p.lambda_bits - p.grind_bits, rate, p.regime, p.eta_inv)
         levels.append(TailLevel(length=length, rows=rows, L=L, cosets=cosets, queries=queries))
         length = rows
         digits -= p.tail_digits
@@ -400,7 +400,7 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     var bytes = List[UInt8]()
     append_u32(bytes, Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
-              p.lambda_bits, p.grind_bits, p.queries(), p.n_cw()]:
+              p.lambda_bits, p.grind_bits, p.regime, p.eta_inv, p.queries(), p.n_cw()]:
         append_u32(bytes, v)
     append_u32(bytes, shape.columns_w)
     append_u32(bytes, shape.columns_z)

@@ -1457,3 +1457,22 @@ The search (`transcript.k_grind`) took four tries to reach 3 ms per level:
 
 Verified: test_transcript (the probe equals absorb then squeeze), test_prover (the tail test runs at
 CLIENT with grinding; the byte-offset walk skips the nonces), `bench_ecdsa`, the ledger for all 16 cases.
+
+
+## The decoding regime is a profile knob (2026-09-13)
+
+`Profile.regime` selects the per-query miss probability the query counts are sized from: `REGIME_UNIQUE`,
+`(1 + rate) / 2`, the proven unique-decoding regime the ledger charges; or `REGIME_CAPACITY`,
+`rate + 1 / eta_inv`, the up-to-capacity conjecture. `query_count` in params.mojo is the one formula for
+level 1 and the tail schedule; the prefix carries both fields. `CLIENT` stays proven. The ledger prints
+the conjecture's numbers next to the compiled ones: at `eta = 1/16` ECDSA would sample 39/26/27/27
+queries instead of 112/95/97/97, Keccak-2048 52/27/27/27/27 instead of 131/96/96/97/97, about 3.4 times
+fewer, which is the proof-size lever spec section 12 describes. Switching is a one-line profile change
+plus the analysis obligations of that section; it is not made here.
+
+Two levers looked at and not taken: sparse openings (open a column only at the points that read it;
+Keccak reads 213 of its 5,656 column-point pairs) do not fit the product batching `beta_c gamma_p` that
+makes the Ligerito fold a single vector, so every column is opened at every point and the lever is fewer
+distinct read shifts in a circuit; and merging ECDSA's thirteen Horner accumulators is a circuit change
+(eight are per-lane plain fingerprints the wiring reads one coordinate at a time), worth about 120 Z
+columns or 85 KB of the 705 KB proof if the wiring can take tuple fingerprints.

@@ -13,6 +13,15 @@ from caracal7.core.field import E_BYTES
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
 comptime RATE_INV = 32              # rate rule of spec 9.5 for the tail levels: the smallest domain at rate <= 1/32 ...
 comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
+comptime REGIME_UNIQUE = 0          # proximity radius (1 - rate) / 2: proven (BCIKS20 1.2 / 1.7, the ledger's regime)
+comptime REGIME_CAPACITY = 1        # radius 1 - rate - eta: the up-to-capacity conjecture, unproven (docs/soundness.md)
+
+
+def query_count(lambda_bits: Int, rate: Float64, regime: Int, eta_inv: Int) -> Int:
+    """|S| = ceil(lambda' / -log2(miss)) with the per-query miss probability of the regime: (1 + rate) / 2 in
+    the unique-decoding regime, rate + 1 / eta_inv under the capacity conjecture (spec section 12)."""
+    var miss = (1.0 + rate) / 2.0 if regime == REGIME_UNIQUE else rate + 1.0 / Float64(eta_inv)
+    return Int(ceildiv(Float64(lambda_bits), -log2(miss)))
 
 
 def domain_for(rows: Int, rate_inv: Int = RATE_INV, fewest_cosets: Bool = False) -> Tuple[Int, Int]:
@@ -60,6 +69,8 @@ struct Profile(TrivialRegisterPassable, Writable):
     var tail_clear_max: Int # E elements sent in the clear at the last level
     var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
     var grind_bits: Int     # proof-of-work bits on every query seed; the per-level query target is lambda_bits - grind_bits
+    var regime: Int         # REGIME_UNIQUE (proven) or REGIME_CAPACITY (conjectured): the per-query miss probability
+    var eta_inv: Int        # the capacity regime's slack eta = 1 / eta_inv
     var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv (the tail keeps RATE_INV)
 
     def grid(self, rows_per_chain: Int, chains: Int) -> Params:
@@ -73,7 +84,8 @@ struct Profile(TrivialRegisterPassable, Writable):
         return Params(e=self.e, a1=ax1[0], m1=ax1[1], a2=ax2[0], m2=ax2[1],
                       L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
                       leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
-                      tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits, grind_bits=self.grind_bits)
+                      tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits, grind_bits=self.grind_bits,
+                      regime=self.regime, eta_inv=self.eta_inv)
 
 
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
@@ -82,7 +94,8 @@ struct Profile(TrivialRegisterPassable, Writable):
 # and Merkle work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain
 # (the tensor verifier's clear check costs units x clear length), 20 bits of grinding on every query seed (the
 # prover spends 2^20 hashes per level, milliseconds on the GPU, and samples 92-bit queries; docs/soundness.md).
-comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20, rate_inv=4)
+comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20,
+                          regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4)
 
 
 @fieldwise_init
@@ -99,6 +112,8 @@ struct Params(TrivialRegisterPassable, Writable):
     var tail_clear_max: Int # E elements sent in the clear at the last level
     var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
     var grind_bits: Int     # proof-of-work bits on every query seed (transcript.grind); 0 disables the nonce
+    var regime: Int         # REGIME_UNIQUE or REGIME_CAPACITY (query_count)
+    var eta_inv: Int        # eta = 1 / eta_inv in the capacity regime
 
     # ---- derived ----
     def h1(self) -> Int:
@@ -123,9 +138,9 @@ struct Params(TrivialRegisterPassable, Writable):
         return Float64(self.N()) / Float64(4 * self.n_cw() * self.L())
 
     def queries(self) -> Int:
-        """|S| = ceil((lambda' - grind_bits) / log2(2 / (1 + rate))), spec section 9 with the grinding bits taken off
-        the per-level target (each level's nonce costs the prover 2^grind_bits hashes per attempt)."""
-        return Int(ceildiv(Float64(self.lambda_bits - self.grind_bits), log2(2.0 / (1.0 + self.rate()))))
+        """|S| for the level-1 rate at the per-level target lambda' - grind_bits (each level's nonce costs the
+        prover 2^grind_bits hashes per attempt) in the profile's regime (query_count)."""
+        return query_count(self.lambda_bits - self.grind_bits, self.rate(), self.regime, self.eta_inv)
 
     def leaf_columns_max(self) -> Int:
         """Columns one tree can hold under the one-chunk leaf rule: leaf_bytes / (4 n_cw)."""
@@ -138,6 +153,8 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
         if self.grind_bits < 0 or self.grind_bits > 26 or self.grind_bits >= self.lambda_bits:
             raise Error("grind_bits in [0, 26] and below lambda_bits (u32 nonces: 2^grind_bits tries on average)")
+        if (self.regime != REGIME_UNIQUE and self.regime != REGIME_CAPACITY) or self.eta_inv < 2:
+            raise Error("regime is REGIME_UNIQUE or REGIME_CAPACITY; eta_inv >= 2")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:
