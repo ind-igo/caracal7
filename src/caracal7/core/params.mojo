@@ -2,7 +2,7 @@
 
 A `Profile` holds the deployment knobs (field, security, tail, leaf); `Profile.grid(rows_per_chain, chains)`
 derives the Params for a statement: each axis rounded up to the smallest legal size, the level-1 code domain
-by `domain_for` at the profile's `rate_inv` with the fewest cosets (the tail levels keep spec 9.5's rule).
+by `domain_for` at the profile's `rate_inv` with the fewest cosets; the tail levels use `tail_rate_inv` (8 since 2026-09-14).
 The grid belongs to the statement, the profile to the target.
 There is one profile, `CLIENT`; a second one appears with a second target (the VM), not with a second grid."""
 
@@ -81,7 +81,8 @@ struct Profile(TrivialRegisterPassable, Writable):
     var grind_bits: Int     # proof-of-work bits on every query seed; the per-level query target is lambda_bits - grind_bits
     var regime: Int         # REGIME_UNIQUE (proven) or REGIME_CAPACITY (conjectured): the per-query miss probability
     var eta_inv: Int        # the capacity regime's slack eta = 1 / eta_inv
-    var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv (the tail keeps RATE_INV)
+    var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv
+    var tail_rate_inv: Int  # tail domain rule: the smallest domain at rate <= 1/tail_rate_inv (spec 9.5's RATE_INV = 32 for the unique regime)
 
     def grid(self, rows_per_chain: Int, chains: Int) -> Params:
         """The Params of a statement with `chains` chains of `rows_per_chain` rows, padded up to legal sizes.
@@ -95,7 +96,7 @@ struct Profile(TrivialRegisterPassable, Writable):
                       L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
                       leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
                       tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits, grind_bits=self.grind_bits,
-                      regime=self.regime, eta_inv=self.eta_inv)
+                      regime=self.regime, eta_inv=self.eta_inv, tail_rate_inv=self.tail_rate_inv)
 
 
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
@@ -105,7 +106,7 @@ struct Profile(TrivialRegisterPassable, Writable):
 # (the tensor verifier's clear check costs units x clear length), 20 bits of grinding on every query seed (the
 # prover spends 2^20 hashes per level, milliseconds on the GPU, and samples 92-bit queries; docs/soundness.md).
 comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20,
-                          regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4)
+                          regime=REGIME_JOHNSON, eta_inv=16, rate_inv=4, tail_rate_inv=8)
 
 
 @fieldwise_init
@@ -124,6 +125,7 @@ struct Params(TrivialRegisterPassable, Writable):
     var grind_bits: Int     # proof-of-work bits on every query seed (transcript.grind); 0 disables the nonce
     var regime: Int         # REGIME_UNIQUE or REGIME_CAPACITY (query_count)
     var eta_inv: Int        # eta = 1 / eta_inv in the capacity regime
+    var tail_rate_inv: Int  # tail domain rule (tail_schedule): the smallest domain at rate <= 1/tail_rate_inv
 
     # ---- derived ----
     def h1(self) -> Int:
@@ -165,6 +167,10 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("grind_bits in [0, 26] and below lambda_bits (u32 nonces: 2^grind_bits tries on average)")
         if self.regime < REGIME_UNIQUE or self.regime > REGIME_JOHNSON or self.eta_inv < 2:
             raise Error("regime is REGIME_UNIQUE, REGIME_CAPACITY or REGIME_JOHNSON; eta_inv >= 2")
+        if self.tail_rate_inv < 2:
+            raise Error("tail_rate_inv >= 2")
+        if miss_probability(self.rate(), self.regime, self.eta_inv) >= 1.0:
+            raise Error("the regime's per-query miss probability must be below 1 at the level-1 rate (eta too large)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

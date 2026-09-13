@@ -41,11 +41,12 @@ Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later b
 
 The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track the conditional
 security budget. Since 2026-09-13 the extension is `E = F_(127^20)` and the query target 112 per
-level: 110 to 111 conditional bits on every case (90.7 to 97.1 before). The reported
-`security_bits: 112` is that query target, not a verified total; the note records the bounds and the
-outstanding proof and verifier obligations. The tables below were measured before that change
-(`e = 16`, 103); ECDSA at the new parameters, with 20 bits of grinding on the query seeds, is about 705 KB of proof,
-warm prove about 400 ms, verify about 135 ms on `bench_ecdsa` (decisions.md).
+level, and since 2026-09-14 the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
+Kopparty, Saraf, STOC 2026, Theorem 1.5) with 20 bits of grinding on the query seeds: 107.7 to 110.2
+conditional bits on every case (90.7 to 97.1 before 2026-09-13). The reported `security_bits: 112` is
+that query target, not a verified total; the note records the bounds and the outstanding proof and
+verifier obligations. The tables below were measured before these changes (`e = 16`, 103); ECDSA at the
+current parameters is 545,892 B of proof, warm prove 369 ms, verify 116 ms on `bench_ecdsa` (decisions.md).
 
 Recorded for reference; the harness and its caveats are in `docs/csp.md`. Method: the csp-benchmarks
 orchestrator (`BENCH_INPUT_PROFILE=full`, hyperfine 10 runs) against `caracal7/`, so every time is a

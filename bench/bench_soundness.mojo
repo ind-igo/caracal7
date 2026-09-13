@@ -8,7 +8,7 @@ from std.math import log2, max, abs, sqrt, ceil
 from std.testing import assert_equal, assert_true, assert_raises
 
 from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
+from caracal7.core.params import CLIENT, Params, Profile, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
 from caracal7.core.bytes import get_u16
 from caracal7.relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
 from caracal7.relations.statement import Compiled, Statement, Term, BIT
@@ -238,7 +238,7 @@ def self_check() raises:
     # A compiled two-family 4x4 statement, once clear and once with one committed tail.
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
     comptime for i in range(2):
-        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16,
+        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32,
                             leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3)
         var st = Statement()
         st.col("x", BIT)
@@ -260,6 +260,13 @@ def self_check() raises:
         assert_true(abs(result[1] - expected) < 1e-15)
 
 
+def johnson(tail_rate_inv: Int) -> Profile:
+    var q = CLIENT
+    q.regime = REGIME_JOHNSON
+    q.tail_rate_inv = tail_rate_inv
+    return q
+
+
 def main() raises:
     self_check()
     print("CONDITIONAL INTERACTIVE LEDGER -- NOT A SECURITY CERTIFICATION. docs/soundness.md lists open obligations.")
@@ -276,4 +283,7 @@ def main() raises:
         report[CLIENT.grid(64, 720)]("poseidon", n, Poseidon(List[Int](length=n, fill=0)))
     # statement() uses Ecdsa.circuit(), independent of signature values; no live walk or witness is needed.
     report[CLIENT.grid(144, 576)]("ecdsa", 32, Ecdsa(Big(), Big(), Big(), Point.identity()))
+    # tail rate sweep in the Johnson regime: the rho^-1.5 constant of BCHKS25 1.5 punishes low-rate tails
+    comptime for r in [4, 8, 16, 32]:
+        report[johnson(r).grid(144, 576)]("ecdsa_johnson_tail_rate_inv_" + String(r), 32, Ecdsa(Big(), Big(), Big(), Point.identity()))
     print("\nSTATUS: unresolved proof/implementation obligations; no certified security_bits emitted.")

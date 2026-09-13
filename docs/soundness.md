@@ -1,13 +1,15 @@
 # Soundness ledger for the CSP configuration
 
 Status: **conditional analysis, not certification**. Reviewed against prover commit `8f94cc7` on
-2026-09-12; parameters updated 2026-09-13 (`E = F_(127^20)`, query target 112, decisions.md). The
+2026-09-12; parameters updated 2026-09-13 (`E = F_(127^20)`, query target 112) and 2026-09-14 (Johnson
+regime, tail rate 1/8, decisions.md). The
 executable ledger compiles the current source; the conclusions below require the proof obligations
 and implementation gaps in this note to be closed. A successful calculation or test run does not
 establish a cryptographic security level.
 
 The benchmark metadata says `security_bits: 112`. In `core/params.mojo`, 112 is the per-level
-**query target**, met as 92 bits of queries plus 20 bits of grinding on every query seed (below), with
+**query target**, met as 92 bits of queries at the Johnson radius `1 - sqrt(rate) - 1/16` (BCHKS25
+Theorem 1.5 below) plus 20 bits of grinding on every query seed, with
 `E = F_(127^20)` (20 coordinates; `E16` in `core/field.mojo` rebuilds the old
 16-coordinate tower for measurement). It is not the total soundness budget. Do not use the metadata
 as a verified claim. The upstream
@@ -70,21 +72,21 @@ and the gaps below are not assigned zero error; they are **outside this conditio
 These are diagnostic bounds under the assumptions below, not measured attack costs or certified
 security levels. Poseidon sizes sharing a grid have identical ledgers.
 
-| Workload | Input | Grid | Conditional IOP bits, e = 20, lambda' 112 | e = 16, lambda' 103 (before 2026-09-13) |
-|---|---:|---:|---:|---:|
-| SHA-256 | 128 B | 32 x 224 | 110.46 | 95.00 |
-| SHA-256 | 256 B | 32 x 336 | 110.70 | 94.51 |
-| SHA-256 | 512 B | 32 x 672 | 110.46 | 93.44 |
-| SHA-256 | 1024 B | 32 x 1152 | 110.26 | 92.64 |
-| SHA-256 | 2048 B | 32 x 2688 | 110.21 | 90.71 |
-| Keccak | 128 B | 64 x 24 | 110.70 | 97.08 |
-| Keccak | 256 B | 64 x 48 | 110.54 | 96.11 |
-| Keccak | 512 B | 64 x 96 | 110.54 | 95.17 |
-| Keccak | 1024 B | 64 x 192 | 110.26 | 94.20 |
-| Keccak | 2048 B | 64 x 384 | 110.15 | 93.20 |
-| Poseidon | 2, 4, 8 elements | 64 x 384 | 110.15 | 93.20 |
-| Poseidon | 12, 16 elements | 64 x 896 | 110.11 | 91.66 |
-| ECDSA | 1 signature | 144 x 576 | 110.58 | 90.69 |
+| Workload | Input | Grid | Conditional IOP bits, e = 20, Johnson, tail rate 1/8 (2026-09-14) | unique, tail rate 1/32 (2026-09-13) | e = 16, lambda' 103 (before 2026-09-13) |
+|---|---:|---:|---:|---:|---:|
+| SHA-256 | 128 B | 32 x 224 | 109.93 | 110.46 | 95.00 |
+| SHA-256 | 256 B | 32 x 336 | 109.68 | 110.70 | 94.51 |
+| SHA-256 | 512 B | 32 x 672 | 109.27 | 110.46 | 93.44 |
+| SHA-256 | 1024 B | 32 x 1152 | 108.51 | 110.26 | 92.64 |
+| SHA-256 | 2048 B | 32 x 2688 | 107.65 | 110.21 | 90.71 |
+| Keccak | 128 B | 64 x 24 | 110.19 | 110.70 | 97.08 |
+| Keccak | 256 B | 64 x 48 | 110.11 | 110.54 | 96.11 |
+| Keccak | 512 B | 64 x 96 | 109.92 | 110.54 | 95.17 |
+| Keccak | 1024 B | 64 x 192 | 109.33 | 110.26 | 94.20 |
+| Keccak | 2048 B | 64 x 384 | 108.86 | 110.15 | 93.20 |
+| Poseidon | 2, 4, 8 elements | 64 x 384 | 108.86 | 110.15 | 93.20 |
+| Poseidon | 12, 16 elements | 64 x 896 | 107.77 | 110.11 | 91.66 |
+| ECDSA | 1 signature | 144 x 576 | 107.65 | 110.58 | 90.69 |
 
 At `e = 16` only two of the sixteen cases reached 96 bits: the dominant contribution was the PCS
 proximity gap, particularly the first committed tail's large code domain. For ECDSA,
@@ -152,11 +154,20 @@ proximity result; see Diamond and Gruen,
 Corollary 3.7, and the Ligerito construction. The last committed code is included even though its
 folded message is sent in the clear. There is no extra code or sumcheck after that clear message.
 
-**Johnson projection (e = 20, eta = 1/16, 2026-09-14).** ECDSA: 74/39/45/45 queries (203 against 401) at
-101.45 conditional bits; SHA-256 2048: 76/39/45/45/45 at 101.52; Poseidon 12: 88/42/44/45/45 at 103.07;
-the small cases 105 to 107. The field term caps the regime near 101 bits because the tail levels sit at
-rates near 1/60, where the `rho^-1.5` constant is large; holding 112 would take e = 22, a higher tail
-rate rule for this regime, or a per-level `eta`. Not adopted: the three obligations above are open.
+**Johnson regime adopted (2026-09-14).** `CLIENT` compiles `REGIME_JOHNSON` with `eta = 1/16` and the
+tail rate rule `tail_rate_inv = 8` in place of spec 9.5's 1/32. The ledger's ECDSA sweep over the tail
+rate (all at 74 level-1 queries) is why: at 1/32 the tail levels sit near rate 1/60, where the
+`rho^-1.5` constant of Theorem 1.5 is large, and the field term caps the case at 101.45 bits with
+74/39/45/45 queries; 1/16 gives 105.24 with 74/51/55/55; 1/8 gives 107.65 with 74/70/72/72; 1/4 gives
+108.04 with 74/108/108/108. The 1/8 rule keeps the bits within three of the unique ledger with 288
+queries against 401, and its tail domains are seven times smaller (level 2: 92,160 against 645,120),
+which the prover's tail encode and the verifier's openings both see. ECDSA measures 545,892 B of proof,
+warm prove 369 ms, verify 116 ms (`bench_ecdsa`, from about 705 KB / 400 ms / 135 ms). The ledger runs
+107.65 to 110.19 bits across the cases. What is charged is the pairs form of Theorem 1.5 in the places
+the unique term was charged; the three obligations above (affine-space form, mutual form, list-regime
+level 1 argument) stay open and are now on the critical path of this note rather than a projection.
+A per-level `eta` (the tail at rate 1/8 could take `eta = 1/24` with `m` still 3) is a small further
+lever not taken.
 
 **Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
 grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from

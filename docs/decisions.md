@@ -1487,3 +1487,16 @@ cost about 33 bits at our sizes and was why the Johnson regime looked worse than
 new term the whole ECDSA ledger projects to 101 bits at e = 20 with half the queries. The ledger prints the
 projection for every case; `CLIENT` stays at `REGIME_UNIQUE` because the batched (affine-space) and
 mutual forms and the list-regime level 1 argument are not yet written down for caracal7 (docs/soundness.md).
+
+## The Johnson regime is the client profile, tail rate 1/8 (2026-09-14)
+
+`CLIENT` compiles `REGIME_JOHNSON` (`eta = 1/16`) and a new knob `tail_rate_inv = 8` (`Profile` and
+`Params`, used by `tail_schedule`). The unique regime with spec 9.5's 1/32 tail rule stays available as a
+profile (`tests/test_prover.mojo` keeps it as `SPEC95` for the spec's worked rows). Why 1/8: the ledger's
+ECDSA sweep (`bench_soundness`, four extra cases) shows the BCHKS25 1.5 constant grows as `rho^-1.5`, so
+the low-rate tails the unique regime liked cost bits here: 101.45 at 1/32, 105.24 at 1/16, 107.65 at 1/8,
+108.04 at 1/4, with 203 / 235 / 288 / 398 queries. 1/8 keeps the bits within three of the unique ledger
+at 72 percent of its queries and one seventh of its level-2 domain. Measured on ECDSA: 545,892 B, warm
+prove 369 ms, verify 116 ms, from about 705 KB / 400 ms / 135 ms. The ledger's three open obligations for
+this regime (docs/soundness.md) are now on the critical path. Not taken: a per-level `eta`, and e = 22
+to recover the last bits (the level-1 term alone caps the regime near 107.5 at e = 20).

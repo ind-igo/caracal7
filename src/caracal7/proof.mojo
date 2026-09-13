@@ -57,7 +57,7 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
     var digits = p.a1 + p.a2
     while length > p.tail_clear_max and digits >= p.tail_digits:
         var rows = length >> p.tail_digits
-        var dom = domain_for(rows)
+        var dom = domain_for(rows, p.tail_rate_inv)
         var L = dom[0]
         var cosets = dom[1]
         if L == 0:

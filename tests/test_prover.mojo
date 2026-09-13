@@ -18,7 +18,8 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime SPEC95 = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4, tail_rate_inv=32)   # CLIENT before 2026-09-14: the spec 9.5 worked rows
+comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4, tail_rate_inv=32)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)
 
 
@@ -28,21 +29,29 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var shape = synthetic_statement(53).compile[p]().take_shape()
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 2 * E_BYTES + 3 * E_BYTES)
-    # CLIENT folds while binary digits remain: 8 -> two folds -> 36 = 9 x 4 in the clear
-    comptime client = CLIENT.grid(72, 32)
-    var f = tail_schedule[client]()
+    # the spec 9.5 rule (unique regime, tail rate 1/32) folds while binary digits remain: 8 -> two folds -> 36 = 9 x 4 in the clear
+    comptime spec = SPEC95.grid(72, 32)
+    var f = tail_schedule[spec]()
     assert_equal(len(f), 2)
     assert_equal(f[0].rows, 288)
     assert_equal(f[0].L, 9216)
     assert_equal(f[0].cosets, 2)
     assert_equal(f[1].rows, 36)
     assert_equal(f[1].L, 1152)
+    # CLIENT (Johnson regime, tail rate 1/8) keeps the rows and takes the smaller domains
+    comptime client = CLIENT.grid(72, 32)
+    var g = tail_schedule[client]()
+    assert_equal(len(g), 2)
+    assert_equal(g[0].L, 2304)
+    assert_equal(g[0].cosets, 1)
+    assert_equal(g[1].L, 288)
+    assert_true(g[0].queries >= 60 and g[0].queries <= 80)   # miss sqrt(1/8) + 1/16 at 92 bits: 73
 
 
 def test_tail_schedule_folds_a_larger_grid() raises:
     # 288 x 128 (spec 9.5 worked row): N = 36864 -> 4608 rows on 161280 (rate 1/35) -> 576 rows on 18432 = 4 x 4608 (1/32)
     # -> 72 on 2304 -> 9 on 288 -> clear (14 binary digits, four folds, the odd digit 9 plus two binary digits remain)
-    comptime big = CLIENT.grid(288, 128)
+    comptime big = SPEC95.grid(288, 128)
     var s = tail_schedule[big]()
     assert_equal(len(s), 4)
     assert_equal(s[0].rows, 4608)
@@ -62,7 +71,7 @@ def test_tail_schedule_stops_when_binary_digits_run_out() raises:
     # spec 9.5 narrow row, 1008 x 252: 6 binary digits -> two folds -> 3969 in the clear (odd digit only).
     # The tail schedule does not depend on level 1 (63,504 symbols per column: two cosets of 161,280 at the
     # profile's rate 1/4; the spec's 1/32 rule needed the codeword split).
-    comptime narrow = CLIENT.grid(1008, 252)
+    comptime narrow = SPEC95.grid(1008, 252)
     var s = tail_schedule[narrow]()
     assert_equal(len(s), 2)
     assert_equal(s[0].rows, 31752)
@@ -92,15 +101,16 @@ def test_layout_plans_the_arena() raises:
 def test_derived_grids() raises:
     """The derivation rounds each axis up to a legal size and picks the level-1 domain by the rate rule; the
     spec's throughput proxy (2016 x 576) needs the codeword split, which check() names."""
-    comptime g = CLIENT.grid(70, 30)
+    # geometry is regime-independent; the query counts are the unique regime's (SPEC95)
+    comptime g = SPEC95.grid(70, 30)
     assert_equal(g.h1(), 72)
     assert_equal(g.h2(), 32)
     assert_equal(g.L(), 2304)                         # 576 symbols per column: one coset of 2304, rate 1/4
-    comptime wide = CLIENT.grid(288, 128)
+    comptime wide = SPEC95.grid(288, 128)
     assert_equal(wide.L(), 40320)                     # 9216 symbols: one coset of 2^7 x 315, rate 0.229
     assert_equal(wide.m_cosets, 1)
     assert_equal(wide.queries(), 131)                # ceil((112 - 20) / log2(2 / 1.229))
-    comptime proxy = CLIENT.grid(2016, 576)
+    comptime proxy = SPEC95.grid(2016, 576)
     assert_equal(proxy.N(), 1161216)
     var stopped = String("")
     try:
@@ -361,7 +371,7 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
 
 def test_prove_and_verify_with_tail() raises:
     """288 x 128: four committed tail levels (4608 rows on 161280, 576 on 4 x 4608, 72, 9), 9 in the clear."""
-    comptime big = CLIENT.grid(288, 128)
+    comptime big = SPEC95.grid(288, 128)
     var ctx = DeviceContext()
     var c = synthetic_statement().compile[big]()
     var shape = synthetic_statement().compile[big]().take_shape()
