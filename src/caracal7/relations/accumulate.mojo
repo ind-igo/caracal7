@@ -9,8 +9,8 @@ ingest entry u16 [2, 4), ingest count [4, 6), start u8 [6], scale u8 [7] (0 none
 ingest terms are the family entries themselves (ir.Families.horner), so the kernel and the residual read
 one definition: R(1, x2) = start, R(omega1 x1, x2) = scale R - sum_entries coef chal c(omega1^k1 x1, x2)
 (the entries carry the transition's sign). No Z2, N, or D: chain ends meet in chain-end families
-(smallgrid.mojo). ponytail: one thread per chain for the scan (h1 steps); the segmented affine scan of
-10.1 when a client grid measures it.
+(smallgrid.mojo). ponytail: one thread per (accumulator, chain) for the scan (h1 steps); the segmented
+affine scan of 10.1 if the scan still shows in a profile.
 fp(c) = sum_j c_j b_j is the fingerprint of 6.1 (b_j the unit vector j of E: no multiplication, the
 column bytes are the coordinates). The factors per kind:
     KIND_PERM (6.2)     N = gamma + fp(num),  D = gamma + fp(den)
@@ -59,7 +59,7 @@ from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ex
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
-from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
+from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED
 from caracal7.core.arena import Arena, Bump
 
 
@@ -258,57 +258,74 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[16], wire: Buf[1], sigma: Bu
     chain_prod.store(base, j, ext_mul[4](n, ext_inv0[4](d)))
 
 
-def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], acc: Buf[1], chals: Buf[16], num: Buf[16]):
-    """One thread per row: sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the
-    read cyclic inside the chain (fields of ir.mojo; kappa at [0, 16) is not read, it is folded later)."""
+def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1], chals: Buf[16], zval: Buf[16], count: Int32):
+    """One thread per (accumulator, row), the Horner descriptors of the `count` at `accs` (other kinds skip):
+    the sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the read cyclic inside
+    the chain (fields of ir.mojo; kappa at [0, 16) is not read, it is folded later), into the accumulator's
+    Z block, which k_horner_scan then scans in place."""
     comptime N = p.N()
     comptime h1 = p.h1()
-    var row = global_idx.x
-    if row >= N:
+    var t = global_idx.x
+    if t >= Int(count) * N:
+        return
+    var k = t // N
+    var row = t % N
+    var o_acc = k * ACC
+    if Int(accs.load(base, o_acc + 38)) != KIND_HORNER:
         return
     var x2 = row // h1
     var x1 = row % h1
-    var first = u16(base, acc.at(2))
-    var count = u16(base, acc.at(4))
+    var first = u16(base, accs.at(o_acc + 2))
+    var n = u16(base, accs.at(o_acc + 4))
     var s = SIMD[DType.float32, 16](0)          # a scalar times an E value is a lane product: coef c_a
-    for i in range(first, first + count):       # below 2^14, times a canonical challenge below 2^21, reduced
+    for i in range(first, first + n):           # below 2^14, times a canonical challenge below 2^21, reduced
         var o = i * ENTRY
         var col = u16(base, families.at(o + 16))
         var k1 = u16(base, families.at(o + 18)) // 2
-        var t = Float32(Int(trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1))) * Float32(Int(families.load(base, o + 29)))
+        var v = Float32(Int(trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1))) * Float32(Int(families.load(base, o + 29)))
         var chal = Int(families.load(base, o + 32))
         if chal != 0:
-            s += fp_reduce(chals.load(base, chal - 1).cast[DType.float32]() * t)
+            s += fp_reduce(chals.load(base, chal - 1).cast[DType.float32]() * v)
         else:
-            s[0] += fp_reduce(t)
-    num.store(base, row, fp_canonical(s))
+            s[0] += fp_reduce(v)
+    zval.store(base, k * N + row, fp_canonical(s))
 
 
-def k_horner_scan[p: Params](base: Base, acc: Buf[1], chals: Buf[16], num: Buf[16], zval: Buf[16]):
-    """One thread per chain: R(1) = start, R(next) = scale R - ingest(row)."""
+def k_horner_scan[p: Params](base: Base, accs: Buf[1], chals: Buf[16], zval: Buf[16], count: Int32):
+    """One thread per (accumulator, chain), the Horner descriptors of the `count` at `accs`: R(1) = start,
+    R(next) = scale R - ingest(row), over the ingest sums k_ingest left in the Z block, in place."""
+    comptime N = p.N()
     comptime h1 = p.h1()
-    var x2 = global_idx.x
-    if x2 >= p.h2():
+    comptime h2 = p.h2()
+    var t = global_idx.x
+    if t >= Int(count) * h2:
+        return
+    var k = t // h2
+    var x2 = t % h2
+    var o_acc = k * ACC
+    if Int(accs.load(base, o_acc + 38)) != KIND_HORNER:
         return
     var r = SIMD[DType.float32, 16](0)
-    r[0] = Float32(acc.load(base, 6))
+    r[0] = Float32(accs.load(base, o_acc + 6))
     var scale = ext_one[4]()
-    if acc.load(base, 7) != 0:
-        scale = chals.load(base, Int(acc.load(base, 7)) - 1)
+    if accs.load(base, o_acc + 7) != 0:
+        scale = chals.load(base, Int(accs.load(base, o_acc + 7)) - 1)
     var scale_f = scale.cast[DType.float32]()
     for x1 in range(h1):                            # |r| <= 190, scale canonical: the product is below 3.1 M
-        var row = x2 * h1 + x1
+        var row = k * N + x2 * h1 + x1
+        var ingest = zval.load(base, row).cast[DType.float32]()
         zval.store(base, row, fp_canonical(r))
-        r = fp_reduce(fp_ext_mul[4](scale_f, r) - num.load(base, row).cast[DType.float32]())
+        r = fp_reduce(fp_ext_mul[4](scale_f, r) - ingest)
 
 
-def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, acc: Int, chals: Int, A: AccLayout, k: Int) raises:
-    """KIND_HORNER accumulator k: R into its Z block (row, e)."""
+def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, accs: Int, chals: Int, A: AccLayout, count: Int) raises:
+    """Every KIND_HORNER accumulator among the `count` descriptors at `accs`: R into its Z block (row, e),
+    two launches over all of them (a client grid has 13 on 576 chains: one at a time starved the GPU)."""
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](acc), Buf[16](chals), Buf[16](A.num),
-                                      grid_dim=ceildiv(p.N(), B), block_dim=B)
-    ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](acc), Buf[16](chals), Buf[16](A.num), Buf[16](A.zval_at(k)),
-                                           grid_dim=ceildiv(p.h2(), B), block_dim=B)
+    ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](accs), Buf[16](chals), Buf[16](A.zval), Int32(count),
+                                      grid_dim=ceildiv(count * p.N(), B), block_dim=B)
+    ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](accs), Buf[16](chals), Buf[16](A.zval), Int32(count),
+                                           grid_dim=ceildiv(count * p.h2(), B), block_dim=B)
 
 
 def wiring[p: Params](ctx: DeviceContext, arena: Arena, A: AccLayout, g: Int, pi: Int, wire: Int, sigma: Int, columns_w: Int, wchal: Int,

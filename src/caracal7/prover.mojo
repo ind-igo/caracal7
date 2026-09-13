@@ -442,12 +442,14 @@ struct Prover[p: Params, H: Hash]:
         ref L = self.layout
         ref S = self.shape
         var A = L.acc
+        var horners = 0
         for k in range(S.accumulators()):
-            var acc = L.accs + k * ACC
             if acc_kind(S.accs, k) == KIND_HORNER:
-                horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, acc, L.chal.stage1, A, k)
+                horners += 1
             else:
-                accumulate[Self.p](ctx, self.arena, L.w.enc.trace, acc, L.chal.stage1, A, k, S.product_of(k))
+                accumulate[Self.p](ctx, self.arena, L.w.enc.trace, L.accs + k * ACC, L.chal.stage1, A, k, S.product_of(k))
+        if horners > 0:
+            horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, L.accs, L.chal.stage1, A, S.accumulators())
         for g in range(S.wiring_products()):
             wiring[Self.p](ctx, self.arena, A, g, S.wiring_product(g), L.wires + g * WIRE, L.sigma, S.columns_w, L.chal.wchal,
                            ext_pow[1](self.kappa, 2 * g), ext_pow[1](self.kappa, 2 * g + 1), self.domains.omega2)
