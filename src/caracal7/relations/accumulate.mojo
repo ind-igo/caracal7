@@ -105,9 +105,6 @@ struct AccLayout(TrivialRegisterPassable):
     def d_end_at(self, pi: Int) -> Int:
         return self.d_end + pi * self.line
 
-    def wline_at(self, g: Int, j: Int) -> Int:
-        return self.wlines + (4 * g + j) * self.line
-
 
 def k_derive_chals(base: Base, chals: Buf[16], table: Buf[1], rows: Int32):
     """One thread: element SAMPLED + i = op(a, b) per table row, in order (ir.derived_chals is the host twin)."""

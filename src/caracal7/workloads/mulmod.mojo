@@ -810,6 +810,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         cy.extend(_cols(layout, "y" + String(k), False))
     var fold1 = _fold_cols(layout, "r", "h", "o", "z")
     var fold2 = _fold_cols(layout, "o", "g", "f", "v")
+    var failed = List[Int](length=p.h2(), fill=0)
     var errors = List[String](length=p.h2(), fill=String(""))
 
     @parameter
@@ -827,6 +828,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
                 _fold_chain[p](chain, fold1)
                 _fold_chain[p](chain, fold2)
         except e:
+            failed[x2] = 1
             errors[x2] = String(e)
             return
         for c in range(columns):
@@ -834,7 +836,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
 
     parallelize[one_chain](p.h2())
     for x2 in range(p.h2()):
-        if errors[x2].byte_length() > 0:
+        if failed[x2] != 0:
             raise Error(errors[x2])
     return trace^
 

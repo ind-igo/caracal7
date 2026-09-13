@@ -28,7 +28,9 @@ library by the crate's `build.rs` with the repo's Mojo toolchain.
 - **Prepared context** (`Session` in `workload.mojo`): the compiled statement, the constructed prover,
   its tables uploaded, the arena filled, synchronized. Sessions share one `DeviceContext`
   (`c7_runtime`): kernels compile once per context, so a fresh context per session would make every
-  prove cold.
+  prove cold. `c7_runtime` also creates the Mojo runtime's CPU device when the process has none: a Mojo
+  `main` does that before user code, a C caller does not, and `parallelize` (the trace writer) faults
+  without it.
 - **Timed prove**: everything that depends on the inputs. Trace, advice, public data, the loads, then
   `Prover.prove`. Verify is `verify_workload` with `W.public_data` inside, as on the shell track.
 - **Preprocessing size** is the per-grid tables the constructor builds (`Session.preprocessing_bytes`),

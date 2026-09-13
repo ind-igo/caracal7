@@ -102,6 +102,11 @@ loads and the prove, without process start or kernel compile. Preprocessing is t
 | poseidon | 16 | 204 | 36 | 460,109 | 356,056 | 56 | 4,472,832 |
 | ecdsa | 1 sig | 435 | 83 | 655,488 | 576,268 | 89 | 19,574,784 |
 
+After the parallel trace writer and the batched Z stage (2026-09-13, decisions.md "ECDSA: the serial spots run
+wide"), the ECDSA row is 404 ms prove, 86 ms verify, the other rows are not remeasured; the in-process warm
+prove is 349 to 356 ms against 374 to 384 for the previous commit in the same session (an A/B, since this
+machine's GPU clock drifts by 10 percent over a long session).
+
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
 session's arena being released); the 1024-byte SHA-256 row is one such run, its warm prove is 75 ms.
 

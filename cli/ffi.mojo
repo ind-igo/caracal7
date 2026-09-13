@@ -7,6 +7,7 @@ the grid, a compile-time parameter. Sessions share the one `c7_runtime` device c
 y_Q, r, s as 32-byte big-endian words. Targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa."""
 
 from max.gpu.host import DeviceContext
+from std.ffi import external_call
 
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.hash import Blake3
@@ -150,7 +151,11 @@ def _call(op: Int, target: Int, size: Int, handle: Int, data: Bytes, buf: MutByt
 
 @export("c7_runtime")
 def c7_runtime() abi("C") -> Int:
-    """The device context every session shares (kernels compile once per context), or -1. Never freed."""
+    """The device context every session shares (kernels compile once per context), or -1. Never freed.
+    First creates the Mojo runtime's CPU device if the process has none: a Mojo `main` does that before
+    user code, a C caller does not, and `parallelize` (the trace writer) faults without it."""
+    if external_call["KGEN_CompilerRT_AsyncRT_GetCurrentCPUDevice", Int]() == 0:
+        _ = external_call["KGEN_CompilerRT_AsyncRT_GetOrCreateCPUDevice", Int]()
     try:
         return _leak(DeviceContext())
     except e:
