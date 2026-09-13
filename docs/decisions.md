@@ -1344,3 +1344,31 @@ dumping one SHA-256 and one Poseidon proof before and after) or a launch. What m
   find their own point indices from the shape's list; there is no shared verification context.
 - **Left alone.** `Shape` is the serialized artifact and stays one struct; the CLI needs only `compile` and
   `take_shape`. Loaders, `prove_workload`, `verify_workload` and every kernel are unchanged.
+
+## ECDSA: the serial spots run wide (2026-09-13)
+
+At the 144 x 576 grid three places ran the chains or the products one after another, on a GPU that wants
+tens of thousands of threads per launch and a host with eight performance cores. Measured before and after
+on the warm prover (`bench/bench_ecdsa.mojo` and a per-kernel scratch bench):
+
+- **The trace writer runs the chains in parallel.** `circuit_trace` wrote the 576 chains one after
+  another on one core: 64 ms. Each chain has its own buffer and its own rows of every column, so the loop
+  is `parallelize` over chains (`max.algorithm`), one buffer per chain, an error kept per chain and raised
+  by the caller: 18 ms.
+- **All Horner accumulators in two launches.** `k_ingest` and `k_horner_scan` ran per accumulator, the scan
+  with one thread per chain: 13 launches of 576 threads for ECDSA, 16 ms in all. They now take the whole
+  descriptor list, ingest into the accumulator's Z block (no shared scratch) and scan it in place over
+  (accumulator, chain): 4 ms. The segmented affine scan of spec 10.1 stays deferred; at 13 x 576 threads
+  the scan is 1.5 ms.
+- **The wiring products batched.** `k_wire_factors` and `k_z2` ran per product (576 threads, then one
+  thread), and the small grid gathered and transformed each product's six lines with about forty launches
+  of 1,152 threads: 5 and 12 ms for six products, almost all launch overhead. One factor launch over
+  (product, chain), one Z2 launch over products (`chain_prod` has a line per wiring product), then one
+  gather over all the lines, one plan pair over `6 count` lines (`dft_axis` takes a line count) and one
+  term kernel that sums the products per coset point: 1.1 and 1.0 ms. `SmallGridLayout` sizes its
+  line, coefficient and scratch regions by the batch. Accumulator products and chain-end terms keep the
+  per-term path; ECDSA has none of the former and two of the latter.
+
+Not changed: the LDE (58 ms) and the RS encodes (43 and 38 ms) are already one launch over every column
+and scale with the cells; `k_values_to_trace` (5 ms) is a byte-wise transposition and next in line.
+Verified: the full test suite; the ECDSA round trip; `bench_ecdsa`.

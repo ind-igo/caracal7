@@ -216,7 +216,7 @@ struct ProverLayout:
         self.sigma = bump.alloc(len(shape.sigma))
         self.acc = AccLayout.__init__[p](bump, shape.accumulators(), shape.products(), shape.wiring_products())
         self.sort = SortLayout.__init__[p](bump, shape.lookups(), shape.max_table_rows())
-        self.sg = SmallGridLayout.__init__[p](bump)
+        self.sg = SmallGridLayout.__init__[p](bump, 6 * shape.wiring_products())
         self.lde = LdeLayout.__init__[p](bump, shape)
         self.open = OpenLayout.__init__[p](bump, shape)
         var stage = max(multiproof_region[H](4 * p.n_cw() * shape.columns_w, p.L(), p.queries()),
@@ -450,9 +450,9 @@ struct Prover[p: Params, H: Hash]:
                 accumulate[Self.p](ctx, self.arena, L.w.enc.trace, L.accs + k * ACC, L.chal.stage1, A, k, S.product_of(k))
         if horners > 0:
             horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, L.accs, L.chal.stage1, A, S.accumulators())
-        for g in range(S.wiring_products()):
-            wiring[Self.p](ctx, self.arena, A, g, S.wiring_product(g), L.wires + g * WIRE, L.sigma, S.columns_w, L.chal.wchal,
-                           ext_pow[1](self.kappa, 2 * g), ext_pow[1](self.kappa, 2 * g + 1), self.domains.omega2)
+        if S.wiring_products() > 0:
+            wiring[Self.p](ctx, self.arena, A, S.wiring_products(), S.wiring_product(0), L.wires, L.sigma, S.columns_w, L.chal.wchal,
+                           self.kappa, self.domains.omega2)
         if S.columns_z > 0:
             ctx.enqueue_function[k_values_to_trace[Self.p]](self.arena.buf, Buf[1](A.zval), Buf[1](L.z.enc.trace), Int32(S.accumulators()),
                                                             grid_dim=ceildiv(S.columns_z * Self.p.N(), BACKEND.block), block_dim=BACKEND.block)
@@ -467,9 +467,9 @@ struct Prover[p: Params, H: Hash]:
             var pi = S.product_of(k)
             if pi >= 0:
                 small_grid_accumulator[Self.p](ctx, self.arena, L.tables, A, k, pi, L.sg, L.chal.alpha, S.family_of(k), e2, pi == 0)
-        for g in range(S.wiring_products()):
-            var pi = S.wiring_product(g)
-            small_grid_wiring[Self.p](ctx, self.arena, L.tables, A, g, pi, L.sg, L.chal.alpha, get_u16(S.wires, g * WIRE + 4), e2, pi == 0)
+        if S.wiring_products() > 0:
+            small_grid_wiring[Self.p](ctx, self.arena, L.tables, A, S.wiring_products(), S.wiring_product(0), L.wires, L.sg, L.chal.alpha, e2,
+                                      S.wiring_product(0) == 0)
         for i in range(len(S.ends) // END):
             small_grid_end[Self.p](ctx, self.arena, L.tables, A.zval, S.columns_w, S.ends, i, L.sg, L.chal.alpha, L.chal.stage1, e2, S.products() == 0 and i == 0)
         if S.accumulators() > 0:

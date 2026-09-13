@@ -40,8 +40,8 @@ from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND
 from caracal7.core.dft import DftPlan, dft_axis
 
-from caracal7.core.bytes import Base, Buf, get_u16
-from caracal7.relations.ir import END, NONE
+from caracal7.core.bytes import Base, Buf, u16, get_u16
+from caracal7.relations.ir import END, NONE, WIRE
 from caracal7.relations.accumulate import AccLayout
 from caracal7.core.arena import Arena, Bump
 from std.gpu import global_idx
@@ -50,20 +50,22 @@ from std.gpu import global_idx
 struct SmallGridLayout(TrivialRegisterPassable):
     """Arena offsets of the small-grid stage, all E-valued and sized by h2. The stage's callers name
     only `q3`, the output; the rest is its scratch."""
-    var lines: Int      # (6, 2 h2, e)  lines on the coset: Z2 and its shift, then up to two numerator and two denominator lines
-    var coef: Int       # (h2, e)       a line's coefficients on the way to the coset
+    var lines: Int      # (nl, 2 h2, e) lines on the coset: per term Z2 and its shift, then up to two numerator and two denominator lines
+    var coef: Int       # (nl, h2, e)   the lines' coefficients on the way to the coset
     var r2: Int         # (2 h2, e)     R2 on the coset, summed over the terms
     var q3c: Int        # (2 h2, e)     the Q3 coefficients
-    var scr: Int        # (2 h2, e)     a gathered line (h2) or a plan's scratch
+    var scr: Int        # (nl, 2 h2, e) the gathered lines (h2 each) or a plan's scratch
     var q3: Int         # (2 h2, e)     Q3 on G2 in the clear, sent with the Q root
 
-    def __init__[p: Params](out self, mut bump: Bump):
+    def __init__[p: Params](out self, mut bump: Bump, lines: Int = 6):
+        """`lines` the most lines a batched term set gathers (6 per wiring product); one product at a time needs 6."""
         comptime u = p.h2() * p.e
-        self.lines = bump.alloc(12 * u)
-        self.coef = bump.alloc(u)
+        var nl = max(6, lines)
+        self.lines = bump.alloc(2 * nl * u)
+        self.coef = bump.alloc(nl * u)
         self.r2 = bump.alloc(2 * u)
         self.q3c = bump.alloc(2 * u)
-        self.scr = bump.alloc(2 * u)
+        self.scr = bump.alloc(2 * nl * u)
         self.q3 = bump.alloc(2 * u)
 
 
@@ -134,11 +136,64 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, arena: Arena, tab: Tab
                           [(A.d_end_at(pi), 16)], sg, alpha, power, e2, first)
 
 
-def small_grid_wiring[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, A: AccLayout, g: Int, pi: Int,
-                                 sg: SmallGridLayout, alpha: Int, power: Int, e2: F2, first: Bool) raises:
-    """The grand-product term of wiring product g (product index pi): its factor lines n0 n1 against d0 d1."""
-    small_grid_product[p](ctx, arena, tab, A.z2_at(pi), [(A.wline_at(g, 0), 16), (A.wline_at(g, 1), 16)],
-                          [(A.wline_at(g, 2), 16), (A.wline_at(g, 3), 16)], sg, alpha, power, e2, first)
+def k_gather_wire_lines[p: Params](base: Base, z2: Buf[16], wlines: Buf[16], dst: Buf[16], count: Int32):
+    """dst (6 count, h2, e): per wiring product g its Z2 line, the shift, n0, n1, d0, d1 as contiguous rows."""
+    comptime h2 = p.h2()
+    var t = global_idx.x
+    if t >= Int(count) * 6 * h2:
+        return
+    var l = t // h2
+    var i = t % h2
+    var g = l // 6
+    var s = l % 6
+    var v: E
+    if s < 2:
+        v = z2.load(base, g * h2 + i + s)
+    else:
+        v = wlines.load(base, (4 * g + s - 2) * h2 + i)
+    dst.store(base, l * h2 + i, v)
+
+
+def k_wire_terms[p: Params](base: Base, lines: Buf[16], wires: Buf[1], c2p: Buf[2], e2a: UInt8, e2b: UInt8,
+                            alpha: Buf[16], dst: Buf[16], count: Int32, accumulate: Int32):
+    """dst[t] (+)= sum over the wiring products g of alpha^family(g) (c_t - e2) (b d0 d1 - a n0 n1) at coset
+    point t < 2 h2; lines (6 count, 2 h2, e) as k_gather_wire_lines lays them out, on the coset."""
+    comptime n = 2 * p.h2()
+    var t = global_idx.x
+    if t >= n:
+        return
+    var g_t = f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()
+    var total = SIMD[DType.float32, 16](0)
+    for g in range(Int(count)):
+        var a = lines.load(base, (6 * g) * n + t).cast[DType.float32]()          # fp32 lanes, every product reduced
+        var b = lines.load(base, (6 * g + 1) * n + t).cast[DType.float32]()
+        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (6 * g + 2) * n + t).cast[DType.float32]()))
+        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (6 * g + 3) * n + t).cast[DType.float32]()))
+        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (6 * g + 4) * n + t).cast[DType.float32]()))
+        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (6 * g + 5) * n + t).cast[DType.float32]()))
+        var power = u16(base, wires.at(g * WIRE + 4))
+        total = fp_reduce(total + fp_ext_mul[4](fp_ext_pow[4](alpha.load(base, 0), power), fp_reduce(fp_ext_mul[4](g_t, fp_reduce(b - a)))))
+    if accumulate != 0:
+        total += dst.load(base, t).cast[DType.float32]()
+    dst.store(base, t, fp_canonical(total))
+
+
+def small_grid_wiring[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, A: AccLayout, count: Int, pi0: Int, wires: Int,
+                                 sg: SmallGridLayout, alpha: Int, e2: F2, first: Bool) raises:
+    """The grand-product terms of the `count` wiring products (product indices from pi0), their factor
+    lines n0 n1 against d0 d1, weighted by alpha^family each: one gather, one plan pair over all the
+    lines, one term kernel (one product at a time was 40 launches of 1,152 threads per product)."""
+    comptime h2 = p.h2()
+    comptime B = BACKEND.block
+    comptime e = p.e
+    var nl = 6 * count
+    ctx.enqueue_function[k_gather_wire_lines[p]](arena.buf, Buf[16](A.z2_at(pi0)), Buf[16](A.wlines), Buf[16](sg.scr), Int32(count),
+                                                 grid_dim=ceildiv(nl * h2, B), block_dim=B)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, sg.scr, sg.coef, sg.scr, 8, nl, tab.base + tab.inv2)
+    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, sg.coef, sg.lines, sg.scr, 8, nl, tab.base + tab.cfwd2p)
+    ctx.enqueue_function[k_wire_terms[p]](arena.buf, Buf[16](sg.lines), Buf[1](wires), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
+                                          Buf[16](alpha), Buf[16](sg.r2), Int32(count), Int32(0 if first else 1),
+                                          grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
 def k_end_term[p: Params](base: Base, lines: Buf[16], two: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8, gate: Int32,

@@ -285,9 +285,9 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     arena.upload(ctx, o_acc, _host(ctx, c.shape.accs))
     arena.upload(ctx, o_chals, _host(ctx, chals))
     var ends = List[E]()
+    horner[p](ctx, arena, o_trace, o_fam, o_acc, o_chals, A, 3)
     for k in range(3):
         assert_equal(acc_kind(c.shape.accs, k), KIND_HORNER)
-        horner[p](ctx, arena, o_trace, o_fam, o_acc + k * ACC, o_chals, A, k)
         var got = _down(ctx, arena, A.zval_at(k), N * 16)
         assert_true(got == host_horner[p](c.families, c.shape.accs, k, trace, chals), "R differs from the host for accumulator " + String(k))
         for x2 in range(h2):

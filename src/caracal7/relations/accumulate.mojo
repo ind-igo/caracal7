@@ -47,7 +47,7 @@ the four factor lines (n0, n1, d0, d1: (4, x2, e)) for the small grid and chain_
 slot contributes 1. Products multiply across groups: the verifier closes them jointly on the public factors.
 
 The scan is the two-level one of 10.1: segments of S = seg_len(h1) rows in parallel (N / S threads),
-one thread per chain over the segment totals, a fix-up per row. ponytail: one thread for Z2 (h2 steps). A zero D (probability ~ 1 / |E|)
+one thread per chain over the segment totals, a fix-up per row. ponytail: one thread per product for Z2 (h2 steps). A zero D (probability ~ 1 / |E|)
 gives 0 from ext_inv0 for its segment, a zero chain product, and a proof the verifier rejects; no abort path.
 """
 
@@ -72,7 +72,7 @@ struct AccLayout(TrivialRegisterPassable):
     var den: Int
     var scratch: Int
     var zval: Int           # (accumulator, row, e)     Z values, the Z tree's trace before the coordinate split
-    var chain_prod: Int     # (x2, e)
+    var chain_prod: Int     # (product, x2, e)         one line for the accumulators in turn, one per wiring product
     var z2: Int             # (product, x2, e) + e      Z2 in the clear; one trailing 1 (k_z2)
     var n_end: Int          # (accumulator, x2, e)      N(e1, x2), D(e1, x2), indexed by pi: only accumulators write them,
     var d_end: Int          #                           and their pi is below `accumulators`; wiring products have none
@@ -87,7 +87,7 @@ struct AccLayout(TrivialRegisterPassable):
         self.den = bump.alloc(self.rows)
         self.scratch = bump.alloc(self.rows)
         self.zval = bump.alloc(accumulators * self.rows)
-        self.chain_prod = bump.alloc(self.line)
+        self.chain_prod = bump.alloc(max(1, wiring) * self.line)
         self.z2 = bump.alloc(products * self.line + p.e)
         self.n_end = bump.alloc(accumulators * self.line)
         self.d_end = bump.alloc(accumulators * self.line)
@@ -214,27 +214,33 @@ def k_seg_fixup[p: Params](base: Base, scratch: Buf[16], zval: Buf[16]):
     zval.store(base, row, ext_mul[4](zval.load(base, row), scratch.load(base, (row // S) * S)))
 
 
-def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16]):
-    """One thread: Z2 across the chains, then Z2(omega2^h2) = Z2(1) = 1 at index h2 so the shifted
-    line Z2(omega2 X2) of the small grid is the same buffer one element on."""
-    if global_idx.x != 0:
+def k_z2[p: Params](base: Base, chain_prod: Buf[16], z2: Buf[16], count: Int32):
+    """One thread per product line g < count: Z2 across the chains from chain_prod line g into z2 line g,
+    then Z2(omega2^h2) = Z2(1) = 1 after the last line so the shifted line Z2(omega2 X2) of the small grid
+    is the same buffer one element on (between lines that entry is the next line's Z2(1))."""
+    var g = global_idx.x
+    if g >= Int(count):
         return
     var z = ext_one[4]().cast[DType.float32]()
     for x2 in range(p.h2()):
-        z2.store(base, x2, fp_canonical(z))
-        z = fp_reduce(fp_ext_mul[4](z, chain_prod.load(base, x2).cast[DType.float32]()))
-    z2.store(base, p.h2(), ext_one[4]())
+        z2.store(base, g * p.h2() + x2, fp_canonical(z))
+        z = fp_reduce(fp_ext_mul[4](z, chain_prod.load(base, g * p.h2() + x2).cast[DType.float32]()))
+    if g == Int(count) - 1:
+        z2.store(base, Int(count) * p.h2(), ext_one[4]())
 
 
-def k_wire_factors[p: Params](base: Base, zval: Buf[16], wire: Buf[1], sigma: Buf[1], slot0: Int32, columns_w: Int32, wchal: Buf[16],
-                              ka: UInt8, kb: UInt8, kc: UInt8, kd: UInt8, wa: UInt8, wb: UInt8, chain_prod: Buf[16], lines: Buf[16]):
-    """One thread per chain: the wiring factor lines and N / D (module docstring). (ka, kb), (kc, kd) are the
-    two slots' coset representatives, (wa, wb) omega2."""
+def k_wire_factors[p: Params](base: Base, zval: Buf[16], wires: Buf[1], sigma: Buf[1], columns_w: Int32, wchal: Buf[16],
+                              ka: UInt8, kb: UInt8, wa: UInt8, wb: UInt8, chain_prod: Buf[16], lines: Buf[16], count: Int32):
+    """One thread per (wiring product g < count, chain): the factor lines (4, x2, e) of product g at lines
+    + 4 g and N / D into chain_prod line g (module docstring). Product g's slots are 2 g and 2 g + 1 with
+    coset representatives kappa^(2 g), kappa^(2 g + 1); (ka, kb) is kappa, (wa, wb) omega2."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
-    var j = global_idx.x
-    if j >= h2:
+    var t = global_idx.x
+    if t >= Int(count) * h2:
         return
+    var g = t // h2
+    var j = t % h2
     var x = ext_pow[1](F2(wa, wb), j)
     var beta = wchal.load(base, 0)
     var gamma = wchal.load(base, 1)
@@ -243,19 +249,19 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[16], wire: Buf[1], sigma: Bu
     for s in range(2):
         var ns = ext_one[4]()
         var ds = ext_one[4]()
-        var col = u16(base, wire.at(2 * s))
+        var col = u16(base, wires.at(g * WIRE + 2 * s))
         if col != NONE:
             var w = zval.load(base, ((col - Int(columns_w)) // p.e) * p.N() + j * h1 + h1 - 1)
-            var kappa = F2(ka, kb) if s == 0 else F2(kc, kd)
-            var sg = F2(sigma.load(base, ((Int(slot0) + s) * h2 + j) * 2), sigma.load(base, ((Int(slot0) + s) * h2 + j) * 2 + 1))
+            var kappa = ext_pow[1](F2(ka, kb), 2 * g + s)
+            var sg = F2(sigma.load(base, ((2 * g + s) * h2 + j) * 2), sigma.load(base, ((2 * g + s) * h2 + j) * 2 + 1))
             var wg = f_add(w, gamma)
             ns = f_add(wg, ext_mul[4](beta, ext_embed[4](ext_mul[1](kappa, x))))
             ds = f_add(wg, ext_mul[4](beta, ext_embed[4](sg)))
-        lines.store(base, s * h2 + j, ns)
-        lines.store(base, (2 + s) * h2 + j, ds)
+        lines.store(base, (4 * g + s) * h2 + j, ns)
+        lines.store(base, (4 * g + 2 + s) * h2 + j, ds)
         n = ext_mul[4](n, ns)
         d = ext_mul[4](d, ds)
-    chain_prod.store(base, j, ext_mul[4](n, ext_inv0[4](d)))
+    chain_prod.store(base, g * h2 + j, ext_mul[4](n, ext_inv0[4](d)))
 
 
 def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1], chals: Buf[16], zval: Buf[16], count: Int32):
@@ -328,15 +334,15 @@ def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: In
                                            grid_dim=ceildiv(count * p.h2(), B), block_dim=B)
 
 
-def wiring[p: Params](ctx: DeviceContext, arena: Arena, A: AccLayout, g: Int, pi: Int, wire: Int, sigma: Int, columns_w: Int, wchal: Int,
-                      kappa_a: F2, kappa_b: F2, omega2: F2) raises:
-    """Wiring product g (product index pi): its factor lines into A.wlines (4, h2, e) and its Z2 line (h2 + 1, e).
-    Its slots are 2 g and 2 g + 1; kappa_a, kappa_b are kappa to those powers."""
+def wiring[p: Params](ctx: DeviceContext, arena: Arena, A: AccLayout, count: Int, pi0: Int, wires: Int, sigma: Int, columns_w: Int, wchal: Int,
+                      kappa: F2, omega2: F2) raises:
+    """The `count` wiring products (product indices pi0, pi0 + 1, ...): their factor lines into A.wlines
+    (product, 4, h2, e) and their Z2 lines, two launches for all of them."""
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[16](A.zval), Buf[1](wire), Buf[1](sigma), Int32(2 * g), Int32(columns_w), Buf[16](wchal),
-                                            kappa_a[0], kappa_a[1], kappa_b[0], kappa_b[1], omega2[0], omega2[1], Buf[16](A.chain_prod), Buf[16](A.wline_at(g, 0)),
-                                            grid_dim=ceildiv(p.h2(), B), block_dim=B)
-    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](A.chain_prod), Buf[16](A.z2_at(pi)), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[16](A.zval), Buf[1](wires), Buf[1](sigma), Int32(columns_w), Buf[16](wchal),
+                                            kappa[0], kappa[1], omega2[0], omega2[1], Buf[16](A.chain_prod), Buf[16](A.wlines), Int32(count),
+                                            grid_dim=ceildiv(count * p.h2(), B), block_dim=B)
+    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](A.chain_prod), Buf[16](A.z2_at(pi0)), Int32(count), grid_dim=ceildiv(count, B), block_dim=B)
 
 
 def derive_chals(ctx: DeviceContext, arena: Arena, chals: Int, table: Int, rows: Int) raises:
@@ -366,4 +372,4 @@ def accumulate[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, acc: Int
     ctx.enqueue_function[k_chain_scan[p]](arena.buf, Buf[16](num), Buf[16](den), Buf[16](scratch), Buf[16](chain_prod),
                                           Buf[16](n_end), Buf[16](d_end), grid_dim=ceildiv(p.h2(), B), block_dim=B)
     ctx.enqueue_function[k_seg_fixup[p]](arena.buf, Buf[16](scratch), Buf[16](zval), grid_dim=ceildiv(N, B), block_dim=B)
-    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_z2[p]](arena.buf, Buf[16](chain_prod), Buf[16](z2), Int32(1), grid_dim=1, block_dim=1)
