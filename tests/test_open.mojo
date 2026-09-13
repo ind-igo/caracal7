@@ -6,7 +6,7 @@ a test may do."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed
+from caracal7.core.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
 from caracal7.verifier import encode_at
 from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
@@ -34,7 +34,7 @@ def _dl(ctx: DeviceContext, prover: Prover[p, Blake3], off: Int, bytes: Int) rai
 
 
 def _horner(coef: List[UInt8], off: Int, stride: Int, ext: Int, z1: E, z2: E, rows: Int) -> E:
-    """sum_{k2 < rows, k1} coef[off + (k2 h1 + k1) stride] z1^k1 z2^k2, coefficient width ext (2 or 16)."""
+    """sum_{k2 < rows, k1} coef[off + (k2 h1 + k1) stride] z1^k1 z2^k2, coefficient width ext (2 or e)."""
     var acc = E(0)
     for k2 in range(rows - 1, -1, -1):
         var inner = E(0)
@@ -43,8 +43,8 @@ def _horner(coef: List[UInt8], off: Int, stride: Int, ext: Int, z1: E, z2: E, ro
             var c = E(0)
             for t in range(ext):
                 c[t] = coef[at + t]
-            inner = f_add(ext_mul[4](inner, z1), c)
-        acc = f_add(ext_mul[4](acc, z2), inner)
+            inner = f_add(ext_mul[E_LEVEL](inner, z1), c)
+        acc = f_add(ext_mul[E_LEVEL](acc, z2), inner)
     return acc
 
 
@@ -91,7 +91,7 @@ def test_openings_and_fold() raises:
         for tau in range(p.e):
             var basis = E(0)
             basis[tau] = 1
-            got = f_add(got, ext_mul[4](basis, list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
+            got = f_add(got, ext_mul[E_LEVEL](basis, list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
         assert_true(want == got, "quotient opening mismatch")
     # fold at a few slots
     var slots: List[Int] = [0, 1, 77, N // 2, N - 1]

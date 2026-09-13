@@ -4,7 +4,7 @@ kernel module defines its own."""
 
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 
-from caracal7.core.field import E
+from caracal7.core.field import E, E_BYTES, E_WIDTH
 
 comptime Base = MutPointer[UInt8, MutAnyOrigin]   # the arena base every kernel takes
 
@@ -41,13 +41,30 @@ struct Buf[W: Int](TrivialRegisterPassable, DevicePassable):
         """Pointer to element i, for the Hash methods."""
         return base.unsafe_offset(self.at(i))
 
-    @always_inline
-    def load(self, base: Base, i: Int) -> SIMD[DType.uint8, Self.W]:
-        return base.unsafe_load[width=Self.W](self.at(i))
+    # An E value is E_BYTES in memory and E_WIDTH lanes in a register (field.mojo): the access is 16 + 4.
+    comptime split: Bool = Self.W == E_BYTES and E_BYTES != E_WIDTH
+    comptime R: Int = E_WIDTH if Self.split else Self.W
 
     @always_inline
-    def store(self, base: Base, i: Int, v: SIMD[DType.uint8, Self.W]):
-        base.unsafe_store[width=Self.W](self.at(i), v)
+    def load(self, base: Base, i: Int) -> SIMD[DType.uint8, Self.R]:
+        comptime if Self.split:
+            var lo = base.unsafe_load[width=16](self.at(i))
+            var hi = base.unsafe_load[width=4](self.at(i) + 16)
+            var r = lo.join(SIMD[DType.uint8, 16](0))       # lane stores: Metal has no llvm.vector.insert
+            comptime for l in range(4):
+                r[16 + l] = hi[l]
+            return rebind[SIMD[DType.uint8, Self.R]](r)
+        else:
+            return rebind[SIMD[DType.uint8, Self.R]](base.unsafe_load[width=Self.W](self.at(i)))
+
+    @always_inline
+    def store(self, base: Base, i: Int, v: SIMD[DType.uint8, Self.R]):
+        comptime if Self.split:
+            var x = rebind[SIMD[DType.uint8, E_WIDTH]](v)
+            base.unsafe_store[width=16](self.at(i), x.slice[16]())
+            base.unsafe_store[width=4](self.at(i) + 16, x.slice[4, offset=16]())
+        else:
+            base.unsafe_store[width=Self.W](self.at(i), rebind[SIMD[DType.uint8, Self.W]](v))
 
 
 # ---- device reads of the little-endian integer fields of descriptors and headers ----
@@ -115,6 +132,6 @@ def check_field_bytes(bytes: Span[UInt8, _]) raises:
 def list_e(l: Span[UInt8, _], i: Int) -> E:
     """Element i of a (.., e) byte span; coordinates must already be canonical (< 127)."""
     var v = E(0)
-    for t in range(16):
-        v[t] = l[i * 16 + t]
+    for t in range(E_BYTES):
+        v[t] = l[i * E_BYTES + t]
     return v

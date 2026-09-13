@@ -1,16 +1,15 @@
 # Soundness ledger for the CSP configuration
 
 Status: **conditional analysis, not certification**. Reviewed against prover commit `8f94cc7` on
-2026-09-12. The executable ledger compiles the current source; the conclusions below require the
-proof obligations and implementation gaps in this note to be closed. A successful calculation or
-test run does not establish a cryptographic security level.
+2026-09-12; parameters updated 2026-09-13 (`E = F_(127^20)`, query target 112, decisions.md). The
+executable ledger compiles the current source; the conclusions below require the proof obligations
+and implementation gaps in this note to be closed. A successful calculation or test run does not
+establish a cryptographic security level.
 
-The current working tree adds the canonical-field-byte checks described in I1 below. That fix
-does not change the parameters, proof format, or conditional budget reported here.
-
-The benchmark metadata currently says `security_bits: 103`. In `core/params.mojo`, 103 is the
-per-level **query target**, with `E = F_(127^16)`. It is not the total soundness budget. Do not use
-the existing metadata as a verified claim. The upstream
+The benchmark metadata says `security_bits: 112`. In `core/params.mojo`, 112 is the per-level
+**query target**, with `E = F_(127^20)` (20 coordinates; `E16` in `core/field.mojo` rebuilds the old
+16-coordinate tower for measurement). It is not the total soundness budget. Do not use the metadata
+as a verified claim. The upstream
 [eligibility rule](https://github.com/ethereum/csp-benchmarks/blob/main/CONTRIBUTING.md#benchmark-eligibility)
 requires at least 96 bits; the project's own goal is more than 100 bits.
 
@@ -37,10 +36,10 @@ Output:
 
 - `field_numerator NAME A` means the candidate error contribution `A / 127^e`.
 - `query_error` is the sum over **all committed levels**, including level 1.
-- `conditional_iop_bits` is `-log2(query_error + sum(A)/127^16)`, rounded down to two decimals.
-- `projected_e20_same_geometry_and_queries` changes only the denominator to `127^20`. It is not
-  a compiled e20 profile, a performance estimate, or a security certification. The implementation
-  currently rejects e20.
+- `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)` at the compiled `e`, rounded down to
+  two decimals.
+- `projected_e16_...` and `projected_e20_...` change only the denominator to `127^16` or `127^20` at
+  the same geometry and queries. They are not performance estimates or security certifications.
 
 Calculations use Float64 for diagnostic sizing, not interval arithmetic or a machine-checked proof.
 Exit zero means the calculation succeeded. The program always reports unresolved obligations and
@@ -52,28 +51,29 @@ and the gaps below are not assigned zero error; they are **outside this conditio
 These are diagnostic bounds under the assumptions below, not measured attack costs or certified
 security levels. Poseidon sizes sharing a grid have identical ledgers.
 
-| Workload | Input | Grid | Conditional IOP bits | e20 arithmetic projection |
+| Workload | Input | Grid | Conditional IOP bits, e = 20, lambda' 112 | e = 16, lambda' 103 (before 2026-09-13) |
 |---|---:|---:|---:|---:|
-| SHA-256 | 128 B | 32 x 224 | 95.00 | 101.28 |
-| SHA-256 | 256 B | 32 x 336 | 94.51 | 101.16 |
-| SHA-256 | 512 B | 32 x 672 | 93.44 | 101.28 |
-| SHA-256 | 1024 B | 32 x 1152 | 92.64 | 100.98 |
-| SHA-256 | 2048 B | 32 x 2688 | 90.71 | 100.94 |
-| Keccak | 128 B | 64 x 24 | 97.08 | 101.16 |
-| Keccak | 256 B | 64 x 48 | 96.11 | 101.33 |
-| Keccak | 512 B | 64 x 96 | 95.17 | 101.33 |
-| Keccak | 1024 B | 64 x 192 | 94.20 | 100.98 |
-| Keccak | 2048 B | 64 x 384 | 93.20 | 101.06 |
-| Poseidon | 2, 4, 8 elements | 64 x 384 | 93.20 | 101.06 |
-| Poseidon | 12, 16 elements | 64 x 896 | 91.66 | 100.99 |
-| ECDSA | 1 signature | 144 x 576 | 90.69 | 101.36 |
+| SHA-256 | 128 B | 32 x 224 | 110.46 | 95.00 |
+| SHA-256 | 256 B | 32 x 336 | 110.70 | 94.51 |
+| SHA-256 | 512 B | 32 x 672 | 110.46 | 93.44 |
+| SHA-256 | 1024 B | 32 x 1152 | 110.26 | 92.64 |
+| SHA-256 | 2048 B | 32 x 2688 | 110.21 | 90.71 |
+| Keccak | 128 B | 64 x 24 | 110.70 | 97.08 |
+| Keccak | 256 B | 64 x 48 | 110.54 | 96.11 |
+| Keccak | 512 B | 64 x 96 | 110.54 | 95.17 |
+| Keccak | 1024 B | 64 x 192 | 110.26 | 94.20 |
+| Keccak | 2048 B | 64 x 384 | 110.15 | 93.20 |
+| Poseidon | 2, 4, 8 elements | 64 x 384 | 110.15 | 93.20 |
+| Poseidon | 12, 16 elements | 64 x 896 | 110.11 | 91.66 |
+| ECDSA | 1 signature | 144 x 576 | 110.58 | 90.69 |
 
-Only two of the sixteen cases reach 96 bits in this conditional ledger. The dominant contribution
-is the PCS proximity gap, particularly the first committed tail's large code domain. For ECDSA,
-`A_pcs_gap = 161280 + 3*(645120 + 43008 + 5376) = 2241792`; the full numerator is 2282470.
-Increasing query counts cannot reduce that field term. Increasing e to 20 would bring this
-arithmetic budget to about 101 bits, but requires new field arithmetic and does not close the
-remaining proof, arithmetic, or Fiat-Shamir obligations. The table does not justify submitting any case yet.
+At `e = 16` only two of the sixteen cases reached 96 bits: the dominant contribution was the PCS
+proximity gap, particularly the first committed tail's large code domain. For ECDSA,
+`A_pcs_gap = 161280 + 3*(645120 + 43008 + 5376) = 2241792`; the full numerator is 2282533, which
+over `127^20` is about 2^-118.7. Increasing query counts cannot reduce that field term; the field
+did. At `e = 20` the query term binds (101 bits at the old target of 103 per level, since four levels
+sum), so the per-level target is 112 and the total sits at 110 to 111 bits. The remaining proof,
+arithmetic, and Fiat-Shamir obligations are unchanged; the table does not by itself justify submitting.
 
 ## Claim and composition
 
@@ -246,6 +246,7 @@ number of successful random tests measures a failure probability near 2^-96.
 
 Before submission: close P1-P5 and the lowering/code
 obligations with independent cryptographic review, then evaluate the complete claim at the chosen
-target. If the accepted bound requires a larger extension, implement it and remeasure proof bytes,
-latency, and memory. A better theorem is also an option; adding queries cannot reduce the `A/Q`
-terms. Only then replace the currently unsupported `security_bits: 103` metadata.
+target. A better theorem (the list-decoding regime, spec section 12) is the lever on the query term
+and the proof size; adding queries cannot reduce the `A/Q` terms, and the extension is now sized so
+they sit below the query term. Only then treat the `security_bits: 112` metadata as more than a
+query target.

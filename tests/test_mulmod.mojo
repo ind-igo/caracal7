@@ -8,7 +8,7 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.hash import Blake3
-from caracal7.core.field import E, ext_mul
+from caracal7.core.field import E, ext_mul, E_LEVEL, E_BYTES
 from caracal7.core.bytes import list_e
 from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
 from caracal7.workloads.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
@@ -36,8 +36,8 @@ def single(a: List[UInt8], b: List[UInt8]) raises -> Mulmod:
 
 
 def _chals() -> List[UInt8]:
-    var v = List[UInt8](capacity=48)
-    for i in range(48):
+    var v = List[UInt8](capacity=3 * E_BYTES)
+    for i in range(3 * E_BYTES):
         v.append(UInt8((i * 53 + 7) % 127))
     return v^
 
@@ -119,7 +119,7 @@ def test_trace_satisfies_every_bit_family() raises:
                 cols.append(trace[col * N + x1])
         r.append(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals))
     var z6 = list_e(chals, Int(c.shape.ends[7]) - 1)
-    assert_equal(ext_mul[4](ext_mul[4](r[0], r[2]), z6), r[4])
+    assert_equal(ext_mul[E_LEVEL](ext_mul[E_LEVEL](r[0], r[2]), z6), r[4])
     var off = 18 * N
     for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "f0", "f1", "f2", "f3"]:
         for x1 in range(h1):

@@ -130,7 +130,7 @@ pub const CARACAL7_BENCH_PROPERTIES: BenchProperties = BenchProperties {
     arithm: Cow::Borrowed("column families over a chain grid"),
     is_zk: false,
     is_zkvm: false,
-    security_bits: 103,
+    security_bits: 112,
     is_pq: true,
     is_maintained: true,
     is_audited: AuditStatus::NotAudited,

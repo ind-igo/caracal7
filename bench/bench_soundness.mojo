@@ -7,6 +7,7 @@ No GPU work, proofs, or cached shape counts. Exit zero means the calculation ran
 from std.math import log2, max, abs
 from std.testing import assert_equal, assert_true, assert_raises
 
+from caracal7.core.field import E_BYTES
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.bytes import get_u16
 from caracal7.relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
@@ -168,6 +169,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
         print("field_numerator", term[0], term[1])
     print("query_error", result[1], "query_bits", bits(result[1]), "field_numerator_total", numerator)
     print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + result[1]))
+    print("projected_e16_same_geometry_and_queries", bits(Float64(numerator) / field_order(16) + result[1]))
     print("projected_e20_same_geometry_and_queries", bits(Float64(numerator) / field_order(20) + result[1]))
 
 
@@ -191,7 +193,7 @@ def self_check() raises:
     # A compiled two-family 4x4 statement, once clear and once with one committed tail.
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
     comptime for i in range(2):
-        comptime p = Params(e=16, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1,
+        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1,
                             leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3)
         var st = Statement()
         st.col("x", BIT)
@@ -216,7 +218,7 @@ def self_check() raises:
 def main() raises:
     self_check()
     print("CONDITIONAL INTERACTIVE LEDGER -- NOT A SECURITY CERTIFICATION. docs/soundness.md lists open obligations.")
-    print("e20 is arithmetic-only projection: implementation supports e16; no Fiat-Shamir/hash/quantum bound included.")
+    print("the e16/e20 projections change only the field order; the compiled e is E_BYTES (field.mojo); no Fiat-Shamir/hash/quantum bound included.")
     # ponytail: the case whitelist mirrors cli/ffi.mojo; update both when benchmark routing changes.
     # Only the routing is repeated: Params, tail_schedule, statements, and all counts come from production code.
     comptime for i in range(5):

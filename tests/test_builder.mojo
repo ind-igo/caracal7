@@ -4,6 +4,7 @@ a failing case, and a padded trace with a bit, a limb, and a restriction proves 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
+from caracal7.core.field import E_BYTES
 from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape
@@ -45,12 +46,12 @@ def _hand_written(columns_w: Int = 10, with_accumulator: Bool = True, with_looku
     f.add(7, 126, 0, col_b=5, mult=1)
     if with_accumulator:
         f.accumulator(8, columns_w, [0], [8])              # (X1 - e1) (Z(next) (gamma + c8) - Z (gamma + c0))
-        f.accumulator(9, columns_w + 16, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
+        f.accumulator(9, columns_w + E_BYTES, [0, 1], [8, 9])   # width-2 records (c0, c1) against (c8, c9): the basis products b_t b_j
     if with_lookup:                                        # (c10, c11) in `synthetic_table`; the prover sorts them into (c12, c13)
-        f.lookup(10, columns_w + (32 if with_accumulator else 0), [10, 11], [12, 13], 0)
+        f.lookup(10, columns_w + (2 * E_BYTES if with_accumulator else 0), [10, 11], [12, 13], 0)
     if with_public:                                        # c_{w-1} - c0 pub: the public column is the first past W and Z
         f.add(10, 1, columns_w - 1)
-        f.add(10, 126, 0, col_b=columns_w + (32 if with_accumulator else 0))
+        f.add(10, 126, 0, col_b=columns_w + (2 * E_BYTES if with_accumulator else 0))
     return f^
 
 
@@ -212,7 +213,7 @@ def test_padded_trace_proves_and_verifies() raises:
     assert_equal(c.layout.columns_w(), 5)
     assert_equal(c.layout.col("l.sorted"), 4)
     assert_equal(c.shape.accumulators(), 1)
-    assert_equal(c.shape.entries, 2 + 2 + 16 * (2 + 3))
+    assert_equal(c.shape.entries, 2 + 2 + E_BYTES * (2 + 3))
     var live = N - 2 * h1
     var trace = List[UInt8](length=5 * N, fill=0)
     var s = 7

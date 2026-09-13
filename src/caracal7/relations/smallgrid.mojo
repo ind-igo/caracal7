@@ -34,7 +34,7 @@ TODO(memory): the memory chain-end rule of 6.4 adds a term to R2 here when a pro
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_inv0, ext_one, fp_ext_mul, fp_ext_pow, fp_reduce, fp_canonical
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_embed, ext_inv, ext_inv0, ext_one, fp_ext_mul, fp_ext_pow, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32, E_DFT_V
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND
@@ -69,12 +69,12 @@ struct SmallGridLayout(TrivialRegisterPassable):
         self.q3 = bump.alloc(2 * u)
 
 
-def k_gather_line[p: Params](base: Base, src: Buf[1], stride: Int32, dst: Buf[16]):
+def k_gather_line[p: Params](base: Base, src: Buf[1], stride: Int32, dst: Buf[E_BYTES]):
     """dst[t] = the E value at src + t stride, t < h2: a line as contiguous rows for dft_axis."""
     var t = global_idx.x
     if t >= p.h2():
         return
-    dst.store(base, t, base.unsafe_load[width=16](src.at(t * Int(stride))))
+    dst.store(base, t, Buf[E_BYTES](src.at(t * Int(stride))).load(base, 0))
 
 
 def _line_on_coset[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, src: Int, stride: Int, sg: SmallGridLayout, dst: Int) raises:
@@ -82,29 +82,29 @@ def _line_on_coset[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout
     coefficients, then cfwd2p (the twist gamma2^k inside the plan)."""
     comptime h2 = p.h2()
     comptime B = BACKEND.block
-    ctx.enqueue_function[k_gather_line[p]](arena.buf, Buf[1](src), Int32(stride), Buf[16](sg.scr), grid_dim=ceildiv(h2, B), block_dim=B)
-    dft_axis[DftPlan(h2, h2), 4](ctx, arena, sg.scr, sg.coef, sg.scr, 8, 1, tab.base + tab.inv2)
-    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, sg.coef, dst, sg.scr, 8, 1, tab.base + tab.cfwd2p)
+    ctx.enqueue_function[k_gather_line[p]](arena.buf, Buf[1](src), Int32(stride), Buf[E_BYTES](sg.scr), grid_dim=ceildiv(h2, B), block_dim=B)
+    dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, sg.scr, sg.coef, sg.scr, E_BYTES // 2, 1, tab.base + tab.inv2)
+    dft_axis[DftPlan(2 * h2, h2), E_DFT_V](ctx, arena, sg.coef, dst, sg.scr, E_BYTES // 2, 1, tab.base + tab.cfwd2p)
 
 
-def k_product_term[p: Params](base: Base, lines: Buf[16], nn: Int32, nd: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8,
-                              alpha: Buf[16], power: Int32, dst: Buf[16], accumulate: Int32):
+def k_product_term[p: Params](base: Base, lines: Buf[E_BYTES], nn: Int32, nd: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8,
+                              alpha: Buf[E_BYTES], power: Int32, dst: Buf[E_BYTES], accumulate: Int32):
     """dst[t] (+)= alpha^power (c_t - e2) (b prod den - a prod num) at coset point t < 2 h2; lines (6, 2 h2, e)
     hold a, b, the nn num lines, the nd den lines."""
     comptime n = 2 * p.h2()
     var t = global_idx.x
     if t >= n:
         return
-    var a = lines.load(base, t).cast[DType.float32]()          # fp32 lanes, every product reduced
-    var b = lines.load(base, n + t).cast[DType.float32]()
+    var a = to_f32(lines.load(base, t))          # fp32 lanes, every product reduced
+    var b = to_f32(lines.load(base, n + t))
     for i in range(Int(nn)):
-        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (2 + i) * n + t).cast[DType.float32]()))
+        a = fp_reduce(fp_ext_mul[E_LEVEL](a, to_f32(lines.load(base, (2 + i) * n + t))))
     for i in range(Int(nd)):
-        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (2 + Int(nn) + i) * n + t).cast[DType.float32]()))
-    var g = f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()
-    var q = fp_ext_mul[4](fp_ext_pow[4](alpha.load(base, 0), Int(power)), fp_reduce(fp_ext_mul[4](g, fp_reduce(b - a))))
+        b = fp_reduce(fp_ext_mul[E_LEVEL](b, to_f32(lines.load(base, (2 + Int(nn) + i) * n + t))))
+    var g = to_f32(f_sub(ext_embed[E_LEVEL](c2p.load(base, t)), ext_embed[E_LEVEL](F2(e2a, e2b))))
+    var q = fp_ext_mul[E_LEVEL](fp_ext_pow[E_LEVEL](alpha.load(base, 0), Int(power)), fp_reduce(fp_ext_mul[E_LEVEL](g, fp_reduce(b - a))))
     if accumulate != 0:
-        q += dst.load(base, t).cast[DType.float32]()
+        q += to_f32(dst.load(base, t))
     dst.store(base, t, fp_canonical(q))
 
 
@@ -118,13 +118,13 @@ def small_grid_product[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLa
     comptime e = p.e
     if len(num) == 0 or len(num) > 2 or len(den) == 0 or len(den) > 2:
         raise Error("a grand-product term has one or two lines per side (degree < 3 h2)")
-    var specs: List[Tuple[Int, Int]] = [(z2, 16), (z2 + 16, 16)]
+    var specs: List[Tuple[Int, Int]] = [(z2, e), (z2 + e, e)]
     specs.extend(num.copy())
     specs.extend(den.copy())
     for i in range(len(specs)):
         _line_on_coset[p](ctx, arena, tab, specs[i][0], specs[i][1], sg, sg.lines + i * 2 * h2 * e)
-    ctx.enqueue_function[k_product_term[p]](arena.buf, Buf[16](sg.lines), Int32(len(num)), Int32(len(den)), Buf[2](tab.base + tab.c2p),
-                                            e2[0], e2[1], Buf[16](alpha), Int32(power), Buf[16](sg.r2), Int32(0 if first else 1),
+    ctx.enqueue_function[k_product_term[p]](arena.buf, Buf[E_BYTES](sg.lines), Int32(len(num)), Int32(len(den)), Buf[2](tab.base + tab.c2p),
+                                            e2[0], e2[1], Buf[E_BYTES](alpha), Int32(power), Buf[E_BYTES](sg.r2), Int32(0 if first else 1),
                                             grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
@@ -132,11 +132,11 @@ def small_grid_accumulator[p: Params](ctx: DeviceContext, arena: Arena, tab: Tab
                                       sg: SmallGridLayout, alpha: Int, power: Int, e2: F2, first: Bool) raises:
     """The grand-product term of accumulator k (product index pi): Z on the last row of every chain and
     N(e1, x2) against D(e1, x2)."""
-    small_grid_product[p](ctx, arena, tab, A.z2_at(pi), [(A.zval_at(k) + (p.h1() - 1) * p.e, p.h1() * p.e), (A.n_end_at(pi), 16)],
-                          [(A.d_end_at(pi), 16)], sg, alpha, power, e2, first)
+    small_grid_product[p](ctx, arena, tab, A.z2_at(pi), [(A.zval_at(k) + (p.h1() - 1) * p.e, p.h1() * p.e), (A.n_end_at(pi), p.e)],
+                          [(A.d_end_at(pi), p.e)], sg, alpha, power, e2, first)
 
 
-def k_gather_wire_lines[p: Params](base: Base, z2: Buf[16], wlines: Buf[16], dst: Buf[16], count: Int32):
+def k_gather_wire_lines[p: Params](base: Base, z2: Buf[E_BYTES], wlines: Buf[E_BYTES], dst: Buf[E_BYTES], count: Int32):
     """dst (6 count, h2, e): per wiring product g its Z2 line, the shift, n0, n1, d0, d1 as contiguous rows."""
     comptime h2 = p.h2()
     var t = global_idx.x
@@ -154,27 +154,27 @@ def k_gather_wire_lines[p: Params](base: Base, z2: Buf[16], wlines: Buf[16], dst
     dst.store(base, l * h2 + i, v)
 
 
-def k_wire_terms[p: Params](base: Base, lines: Buf[16], wires: Buf[1], c2p: Buf[2], e2a: UInt8, e2b: UInt8,
-                            alpha: Buf[16], dst: Buf[16], count: Int32, accumulate: Int32):
+def k_wire_terms[p: Params](base: Base, lines: Buf[E_BYTES], wires: Buf[1], c2p: Buf[2], e2a: UInt8, e2b: UInt8,
+                            alpha: Buf[E_BYTES], dst: Buf[E_BYTES], count: Int32, accumulate: Int32):
     """dst[t] (+)= sum over the wiring products g of alpha^family(g) (c_t - e2) (b d0 d1 - a n0 n1) at coset
     point t < 2 h2; lines (6 count, 2 h2, e) as k_gather_wire_lines lays them out, on the coset."""
     comptime n = 2 * p.h2()
     var t = global_idx.x
     if t >= n:
         return
-    var g_t = f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()
-    var total = SIMD[DType.float32, 16](0)
+    var g_t = to_f32(f_sub(ext_embed[E_LEVEL](c2p.load(base, t)), ext_embed[E_LEVEL](F2(e2a, e2b))))
+    var total = EF(0)
     for g in range(Int(count)):
-        var a = lines.load(base, (6 * g) * n + t).cast[DType.float32]()          # fp32 lanes, every product reduced
-        var b = lines.load(base, (6 * g + 1) * n + t).cast[DType.float32]()
-        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (6 * g + 2) * n + t).cast[DType.float32]()))
-        a = fp_reduce(fp_ext_mul[4](a, lines.load(base, (6 * g + 3) * n + t).cast[DType.float32]()))
-        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (6 * g + 4) * n + t).cast[DType.float32]()))
-        b = fp_reduce(fp_ext_mul[4](b, lines.load(base, (6 * g + 5) * n + t).cast[DType.float32]()))
+        var a = to_f32(lines.load(base, (6 * g) * n + t))          # fp32 lanes, every product reduced
+        var b = to_f32(lines.load(base, (6 * g + 1) * n + t))
+        a = fp_reduce(fp_ext_mul[E_LEVEL](a, to_f32(lines.load(base, (6 * g + 2) * n + t))))
+        a = fp_reduce(fp_ext_mul[E_LEVEL](a, to_f32(lines.load(base, (6 * g + 3) * n + t))))
+        b = fp_reduce(fp_ext_mul[E_LEVEL](b, to_f32(lines.load(base, (6 * g + 4) * n + t))))
+        b = fp_reduce(fp_ext_mul[E_LEVEL](b, to_f32(lines.load(base, (6 * g + 5) * n + t))))
         var power = u16(base, wires.at(g * WIRE + 4))
-        total = fp_reduce(total + fp_ext_mul[4](fp_ext_pow[4](alpha.load(base, 0), power), fp_reduce(fp_ext_mul[4](g_t, fp_reduce(b - a)))))
+        total = fp_reduce(total + fp_ext_mul[E_LEVEL](fp_ext_pow[E_LEVEL](alpha.load(base, 0), power), fp_reduce(fp_ext_mul[E_LEVEL](g_t, fp_reduce(b - a)))))
     if accumulate != 0:
-        total += dst.load(base, t).cast[DType.float32]()
+        total += to_f32(dst.load(base, t))
     dst.store(base, t, fp_canonical(total))
 
 
@@ -187,33 +187,33 @@ def small_grid_wiring[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLay
     comptime B = BACKEND.block
     comptime e = p.e
     var nl = 6 * count
-    ctx.enqueue_function[k_gather_wire_lines[p]](arena.buf, Buf[16](A.z2_at(pi0)), Buf[16](A.wlines), Buf[16](sg.scr), Int32(count),
+    ctx.enqueue_function[k_gather_wire_lines[p]](arena.buf, Buf[E_BYTES](A.z2_at(pi0)), Buf[E_BYTES](A.wlines), Buf[E_BYTES](sg.scr), Int32(count),
                                                  grid_dim=ceildiv(nl * h2, B), block_dim=B)
-    dft_axis[DftPlan(h2, h2), 4](ctx, arena, sg.scr, sg.coef, sg.scr, 8, nl, tab.base + tab.inv2)
-    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, sg.coef, sg.lines, sg.scr, 8, nl, tab.base + tab.cfwd2p)
-    ctx.enqueue_function[k_wire_terms[p]](arena.buf, Buf[16](sg.lines), Buf[1](wires), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
-                                          Buf[16](alpha), Buf[16](sg.r2), Int32(count), Int32(0 if first else 1),
+    dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, sg.scr, sg.coef, sg.scr, E_BYTES // 2, nl, tab.base + tab.inv2)
+    dft_axis[DftPlan(2 * h2, h2), E_DFT_V](ctx, arena, sg.coef, sg.lines, sg.scr, E_BYTES // 2, nl, tab.base + tab.cfwd2p)
+    ctx.enqueue_function[k_wire_terms[p]](arena.buf, Buf[E_BYTES](sg.lines), Buf[1](wires), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
+                                          Buf[E_BYTES](alpha), Buf[E_BYTES](sg.r2), Int32(count), Int32(0 if first else 1),
                                           grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
-def k_end_term[p: Params](base: Base, lines: Buf[16], two: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8, gate: Int32,
-                          alpha: Buf[16], power: Int32, chals: Buf[16], chal: Int32, coef: Int32, dst: Buf[16], accumulate: Int32):
+def k_end_term[p: Params](base: Base, lines: Buf[E_BYTES], two: Int32, c2p: Buf[2], e2a: UInt8, e2b: UInt8, gate: Int32,
+                          alpha: Buf[E_BYTES], power: Int32, chals: Buf[E_BYTES], chal: Int32, coef: Int32, dst: Buf[E_BYTES], accumulate: Int32):
     """dst[t] (+)= coef chal alpha^power [(c_t - e2)] A(c_t) [B(c_t)] at coset point t < 2 h2; A, B at lines."""
     comptime n = 2 * p.h2()
     var t = global_idx.x
     if t >= n:
         return
-    var kappa = fp_reduce(fp_ext_pow[4](alpha.load(base, 0), Int(power)) * Float32(coef))   # fp32 lanes, every product reduced
+    var kappa = fp_reduce(fp_ext_pow[E_LEVEL](alpha.load(base, 0), Int(power)) * Float32(coef))   # fp32 lanes, every product reduced
     if chal != 0:
-        kappa = fp_reduce(fp_ext_mul[4](kappa, chals.load(base, Int(chal) - 1).cast[DType.float32]()))
-    var v = lines.load(base, t).cast[DType.float32]()
+        kappa = fp_reduce(fp_ext_mul[E_LEVEL](kappa, to_f32(chals.load(base, Int(chal) - 1))))
+    var v = to_f32(lines.load(base, t))
     if two != 0:
-        v = fp_reduce(fp_ext_mul[4](v, lines.load(base, n + t).cast[DType.float32]()))
+        v = fp_reduce(fp_ext_mul[E_LEVEL](v, to_f32(lines.load(base, n + t))))
     if gate != 0:
-        v = fp_reduce(fp_ext_mul[4](v, f_sub(ext_embed[4](c2p.load(base, t)), ext_embed[4](F2(e2a, e2b))).cast[DType.float32]()))
-    var q = fp_ext_mul[4](kappa, v)
+        v = fp_reduce(fp_ext_mul[E_LEVEL](v, to_f32(f_sub(ext_embed[E_LEVEL](c2p.load(base, t)), ext_embed[E_LEVEL](F2(e2a, e2b))))))
+    var q = fp_ext_mul[E_LEVEL](kappa, v)
     if accumulate != 0:
-        q += dst.load(base, t).cast[DType.float32]()
+        q += to_f32(dst.load(base, t))
     dst.store(base, t, fp_canonical(q))
 
 
@@ -230,20 +230,20 @@ def small_grid_end[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout
     _line_on_coset[p](ctx, arena, tab, line_of + (ca - columns_w) * p.N(), h1 * p.e, sg, lines)
     if cb != NONE:
         _line_on_coset[p](ctx, arena, tab, line_of + (cb - columns_w) * p.N(), h1 * p.e, sg, lines + 2 * h2 * p.e)
-    ctx.enqueue_function[k_end_term[p]](arena.buf, Buf[16](lines), Int32(0 if cb == NONE else 1), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
-                                        Int32(ends[i * END + 8]), Buf[16](alpha), Int32(get_u16(ends, i * END + 4)), Buf[16](chals),
+    ctx.enqueue_function[k_end_term[p]](arena.buf, Buf[E_BYTES](lines), Int32(0 if cb == NONE else 1), Buf[2](tab.base + tab.c2p), e2[0], e2[1],
+                                        Int32(ends[i * END + 8]), Buf[E_BYTES](alpha), Int32(get_u16(ends, i * END + 4)), Buf[E_BYTES](chals),
                                         Int32(ends[i * END + 7]), Int32(ends[i * END + 6]),
-                                        Buf[16](sg.r2), Int32(0 if first else 1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
+                                        Buf[E_BYTES](sg.r2), Int32(0 if first else 1), grid_dim=ceildiv(2 * h2, B), block_dim=B)
 
 
-def k_q3_coset[p: Params](base: Base, r2: Buf[16], c2p: Buf[2], dst: Buf[16]):
+def k_q3_coset[p: Params](base: Base, r2: Buf[E_BYTES], c2p: Buf[2], dst: Buf[E_BYTES]):
     """Q3(c_t) = R2(c_t) / (c_t^h2 - 1); c_t^h2 = gamma2^h2 (-1)^t is never 1 off G2."""
     comptime h2 = p.h2()
     var t = global_idx.x
     if t >= 2 * h2:
         return
-    var d = f_sub(ext_embed[4](ext_pow[1](c2p.load(base, t), h2)), ext_one[4]())
-    dst.store(base, t, fp_canonical(fp_ext_mul[4](r2.load(base, t).cast[DType.float32](), ext_inv0[4](d).cast[DType.float32]())))
+    var d = f_sub(ext_embed[E_LEVEL](ext_pow[1](c2p.load(base, t), h2)), ext_one[E_LEVEL]())
+    dst.store(base, t, fp_canonical(fp_ext_mul[E_LEVEL](to_f32(r2.load(base, t)), to_f32(ext_inv0[E_LEVEL](d)))))
 
 
 def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLayout, sg: SmallGridLayout) raises:
@@ -252,27 +252,27 @@ def small_grid_values[p: Params](ctx: DeviceContext, arena: Arena, tab: TableLay
     comptime h2 = p.h2()
     comptime B = BACKEND.block
     var q3v = sg.lines
-    ctx.enqueue_function[k_q3_coset[p]](arena.buf, Buf[16](sg.r2), Buf[2](tab.base + tab.c2p), Buf[16](q3v),
+    ctx.enqueue_function[k_q3_coset[p]](arena.buf, Buf[E_BYTES](sg.r2), Buf[2](tab.base + tab.c2p), Buf[E_BYTES](q3v),
                                         grid_dim=ceildiv(2 * h2, B), block_dim=B)
-    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, q3v, sg.q3c, sg.scr, 8, 1, tab.base + tab.cinv2p)
-    dft_axis[DftPlan(2 * h2, 2 * h2), 4](ctx, arena, sg.q3c, sg.q3, sg.scr, 8, 1, tab.base + tab.gfwd2p)
+    dft_axis[DftPlan(2 * h2, 2 * h2), E_DFT_V](ctx, arena, q3v, sg.q3c, sg.scr, E_BYTES // 2, 1, tab.base + tab.cinv2p)
+    dft_axis[DftPlan(2 * h2, 2 * h2), E_DFT_V](ctx, arena, sg.q3c, sg.q3, sg.scr, E_BYTES // 2, 1, tab.base + tab.gfwd2p)
 
 
 # ---- host side ----
 
-def interp_cyclic(vals: Span[UInt8, _], off: Int, n: Int, w: F2, z: E, width: Int = 16) raises -> E:
+def interp_cyclic(vals: Span[UInt8, _], off: Int, n: Int, w: F2, z: E, width: Int = E_BYTES) raises -> E:
     """P(z) for the polynomial of degree < n with values vals[off + i] (`width` coordinates each) on the cyclic
     group <w> of order n, by the barycentric formula: (z^n - 1) / n * sum_i v_i w^i / (z - w^i). Raises when z
     is in the group."""
     var acc = E(0)
-    var wi = ext_one[4]()
-    var we = ext_embed[4](w)
+    var wi = ext_one[E_LEVEL]()
+    var we = ext_embed[E_LEVEL](w)
     for i in range(n):
         var v = E(0)
         for t in range(width):
             v[t] = vals[(off + i) * width + t]
-        acc = f_add(acc, ext_mul[4](ext_mul[4](v, wi), ext_inv[4](f_sub(z, wi))))
-        wi = ext_mul[4](wi, we)
+        acc = f_add(acc, ext_mul[E_LEVEL](ext_mul[E_LEVEL](v, wi), ext_inv[E_LEVEL](f_sub(z, wi))))
+        wi = ext_mul[E_LEVEL](wi, we)
     var n_inv = E(0)
     n_inv[0] = f_pow(SIMD[DType.uint8, 1](n % 127), 125)[0]
-    return ext_mul[4](ext_mul[4](f_sub(ext_pow[4](z, n), ext_one[4]()), n_inv), acc)
+    return ext_mul[E_LEVEL](ext_mul[E_LEVEL](f_sub(ext_pow[E_LEVEL](z, n), ext_one[E_LEVEL]()), n_inv), acc)

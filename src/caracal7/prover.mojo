@@ -23,7 +23,7 @@ from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_el
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
-from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len
+from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, TAIL_F4
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
 from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, value_bytes, tile_values
 from caracal7.relations.statement import Compiled
@@ -164,7 +164,7 @@ struct TailLayout(TrivialRegisterPassable):
         var L0 = lvl.L // lvl.cosets
         self.y = bump.alloc(lvl.rows * p.e)
         self.running = bump.alloc(lvl.rows * p.e)
-        self.etmp = bump.alloc(L0 * 32 * 4)
+        self.etmp = bump.alloc(L0 * TAIL_F4 * 4)
         self.code = bump.alloc(lvl.L * 8 * p.e)
         self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST)
         self.w_tilde = bump.alloc(lvl.length * p.e)

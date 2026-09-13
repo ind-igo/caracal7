@@ -1372,3 +1372,57 @@ on the warm prover (`bench/bench_ecdsa.mojo` and a per-kernel scratch bench):
 Not changed: the LDE (58 ms) and the RS encodes (43 and 38 ms) are already one launch over every column
 and scale with the cells; `k_values_to_trace` (5 ms) is a byte-wise transposition and next in line.
 Verified: the full test suite; the ECDSA round trip; `bench_ecdsa`.
+
+
+## E = F_(127^20) (2026-09-13)
+
+The soundness ledger put every csp case between 90.7 and 97.1 conditional bits at `e = 16`: the field terms,
+98% the proximity gap `L_1 + 3 sum L_i` over `127^16`, bind first, and no query count moves them. The
+extension is now `E = F4[v] / (v^5 - G5)`, twenty coordinates, the construction spec section 1 names.
+With it the query term binds, so `CLIENT.lambda_bits` went from 103 to 112 in the same change: four
+levels at 2^-112 next to field terms at about 2^-118 give 110.1 to 110.7 bits on all sixteen cases
+(`bench/bench_soundness.mojo`; the obligations P1-P5 of docs/soundness.md are untouched).
+
+- **Representation.** The GPU has power-of-two vectors only (a 20-lane SIMD is a parse error in a
+  kernel), so an E value is 32 register lanes with lanes 20..31 zero and 20 bytes in memory;
+  `Buf[E_BYTES]` splits every load and store into 16 + 4. F4 acts limb-wise (five 4-byte limbs), which
+  is what the encoder's packed alphabet and the GEMM's `D = e / 2` F2-lane view of E already assumed.
+- **Constants.** `v^5 = G5 = i + j`: a fifth root exists iff `G5^((127^4 - 1) / 5) != 1`; `j` alone fails
+  (it is a fifth power), `i + j` passes and costs four lanes per multiply. The q-Frobenius (`q = 127^4`)
+  sends `v` to `ZETA v` with `ZETA = G5^((q - 1) / 5)` in F4, so a conjugate is a limb scaling and the
+  inverse is the product of the four other conjugates over the norm in F4 (test_field checks the
+  constants, the Frobenius against `a^q`, and the product against a limb-wise reference).
+- **Products.** Five-limb schoolbook, output limb by limb: 25 F4 products and four `G5` multiplies, in
+  wide int32 F4 accumulators on the byte path and in `fp_mul4` on the float path. Lane bound with
+  canonical operands 2.2 M (was 2.1 M), with centered ones 0.55 M; `fp_reduce` keeps its 4 M rule.
+- **Metal's compiler.** Two intrinsics it lacks: `llvm.vector.insert` (SIMD.insert of a limb) and any
+  32-lane conversion (`cast` of a v32, a crash of the compiler service after retries, minutes per
+  kernel). Limbs are written with lane stores; every cast of a value that can be E-wide goes through
+  `wcast`, which converts 16 lanes at a time. Arithmetic on v32 float and byte lanes is fine.
+- **Descriptors.** The family entry's kappa grew from 16 to `e` bytes, so the fields after it moved:
+  `ENT_A .. ENT_BASIS` in ir.mojo replace the literal offsets in the writer, the reader, `k_fold_alpha`,
+  `k_residual`, `k_ingest` and the merge key. `HORNER_TRANSITIONS = 2 e`. A tail row is `8 e / 4 = 40`
+  F4 symbols for the RS encoder (`TAIL_F4`), the E-line DFTs run at `V = 2` (10 F2 lanes are not a
+  multiple of 4), and the level-1 opening GEMM has `points * e / 2` rows.
+- **The switch.** `E16` in field.mojo is a constant, not a build flag: `is_defined` stays a symbolic
+  expression inside types, so E widths derived from it do not unify. With `E16 = True` the quadratic
+  tower (`C3`, `C4`, the host power-basis multiply) is back for measurement; test_field runs both, the
+  prover builds under both.
+
+Measured on the M1 Pro, ECDSA `144 x 576`, alternating the two builds (the machine drifts):
+
+| | e = 16, lambda 103 | e = 20, lambda 103 | e = 20, lambda 112 |
+|---|---:|---:|---:|
+| proof bytes | 654,464 | 755,604 | 795,492 |
+| warm prove | 320-394 ms | 387-413 ms | 386-387 ms |
+| verify | 82-102 ms | 137-142 ms | 140-150 ms |
+| queries per level | 125/106/108/108 | same | 136/115/118/118 |
+| conditional IOP bits | 90.69 | 101.36 | 110.58 |
+
+Prover stages: residual 27 to 42 ms (the plane accumulators are 16 lanes with 10 live), encode Z 42 to
+48 (208 to 260 columns), the rest within drift. The verifier's host multiply lost the e = 16 power-basis
+path; it now runs the float-lane product (190 ms with the int32 MACs, 140 with float lanes). Next in
+line: a host convolution form for e = 20, the residual and open kernels on five `V4` limbs instead of
+padded planes, the tail encoder at 40 of 64 lanes per group, and the ECDSA Z tree leaf at 1,040 bytes
+(two Blake3 chunks). The Rust-track table in the README predates this change.
+Verified: `sh run_tests.sh` (23 files, every bench builds); `bench_ecdsa`; the ledger for all 16 cases.

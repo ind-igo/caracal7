@@ -15,7 +15,7 @@ point whose factors are r-free group too and the five with Par factors (q1, q2 d
 single. ponytail: widen the host E product when the client grid (M = 567) is measured.
 """
 
-from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one
+from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one, E_LEVEL
 from caracal7.core.params import Params
 from caracal7.pcs.open import host_table
 from caracal7.core.bytes import list_e
@@ -34,22 +34,22 @@ struct Unit(Copyable, Movable):
         """A single unit at odd index r."""
         self.r0 = r
         self.scalar = scalar
-        self.scalars = [ext_one[4]()]
-        self.f = List[E](length=2 * digits, fill=ext_one[4]())
+        self.scalars = [ext_one[E_LEVEL]()]
+        self.f = List[E](length=2 * digits, fill=ext_one[E_LEVEL]())
 
     def __init__(out self, var scalars: List[E], digits: Int):
         """A group at odd indices 0 .. len(scalars) - 1 with the given per-r scalars."""
         self.r0 = 0
-        self.scalar = ext_one[4]()
+        self.scalar = ext_one[E_LEVEL]()
         self.scalars = scalars^
-        self.f = List[E](length=2 * digits, fill=ext_one[4]())
+        self.f = List[E](length=2 * digits, fill=ext_one[E_LEVEL]())
 
     def geo(mut self, d0: Int, count: Int, base: E):
         """Digits d0 .. d0 + count - 1 carry (1, base^(2^k)): the product is base^(index)."""
         var pw = base
         for k in range(count):
             self.f[2 * (d0 + k) + 1] = pw
-            pw = ext_mul[4](pw, pw)
+            pw = ext_mul[E_LEVEL](pw, pw)
 
     def delta(mut self, d0: Int, count: Int, bit: Int):
         """Digits d0 .. d0 + count - 1 carry the indicator of `bit`."""
@@ -61,15 +61,15 @@ struct Unit(Copyable, Movable):
         self.f[2 * d + 1] = b
 
     def fold(mut self, d: Int, rho: E):
-        var one = ext_one[4]()
-        self.scalar = ext_mul[4](self.scalar, f_add(ext_mul[4](f_sub(one, rho), self.f[2 * d]), ext_mul[4](rho, self.f[2 * d + 1])))
+        var one = ext_one[E_LEVEL]()
+        self.scalar = ext_mul[E_LEVEL](self.scalar, f_add(ext_mul[E_LEVEL](f_sub(one, rho), self.f[2 * d]), ext_mul[E_LEVEL](rho, self.f[2 * d + 1])))
 
     def at(self, first: Int, idx: Int, count: Int) -> E:
         """The product over digits first .. first + count - 1 at their bits in idx, times the shared
         scalar (the unit at r0 + k is this times scalars[k])."""
         var w = self.scalar
         for k in range(count):
-            w = ext_mul[4](w, self.f[2 * (first + k) + ((idx >> k) & 1)])
+            w = ext_mul[E_LEVEL](w, self.f[2 * (first + k) + ((idx >> k) & 1)])
         return w
 
 
@@ -92,16 +92,16 @@ def query_units[p: Params](z1: E, z2: E, weight: E, rho1: UInt8, rho2: UInt8, mu
     comptime H2 = 1 << (p.a2 - 1)
     comptime D = p.a1 + p.a2
     var tab = host_table[p](z1, z2, rho1, rho2)
-    var one = ext_one[4]()
+    var one = ext_one[E_LEVEL]()
     var im = E(0)
     im[1] = 1
     var nim = _neg(im)
-    var z1inv = ext_inv0[4](z1)                  # 0 -> 0: every use of z^-1 multiplies a factor that is 0 when z is
-    var z2inv = ext_inv0[4](z2)
-    var z1a = ext_pow[4](z1, A1)
-    var z2a = ext_pow[4](z2, A2)
-    var z1h = ext_pow[4](z1, H1)
-    var z2h = ext_pow[4](z2, H2)
+    var z1inv = ext_inv0[E_LEVEL](z1)                  # 0 -> 0: every use of z^-1 multiplies a factor that is 0 when z is
+    var z2inv = ext_inv0[E_LEVEL](z2)
+    var z1a = ext_pow[E_LEVEL](z1, A1)
+    var z2a = ext_pow[E_LEVEL](z2, A2)
+    var z1h = ext_pow[E_LEVEL](z1, H1)
+    var z2h = ext_pow[E_LEVEL](z2, H2)
     comptime M = p.m1 * p.m2
     # per r: the scalar s and the r-dependent Par scalars; the factor bases q1, q2 depend on r too
     var sc = List[E](capacity=M)                # s
@@ -119,23 +119,23 @@ def query_units[p: Params](z1: E, z2: E, weight: E, rho1: UInt8, rho2: UInt8, mu
     for r in range(M):
         var r1 = r % p.m1
         var r2 = r // p.m1
-        var s = ext_mul[4](weight, ext_mul[4](list_e(tab, A1 + A2 + r1), list_e(tab, A1 + A2 + p.m1 + r2)))
+        var s = ext_mul[E_LEVEL](weight, ext_mul[E_LEVEL](list_e(tab, A1 + A2 + r1), list_e(tab, A1 + A2 + p.m1 + r2)))
         var r1v = _scal(rho1, r1)
         var r2v = _scal(rho2, r2)
         var k1 = f_mul(z1a, E(_scal(r1v, 125)))
         var k2 = f_mul(z2a, E(_scal(r2v, 125)))
         var q1 = f_mul(z1inv, E(_scal(r1v, 1 << (7 - p.a1))))
         var q2 = f_mul(z2inv, E(_scal(r2v, 1 << (7 - p.a2))))
-        var k1k2 = ext_mul[4](k1, k2)
-        var k1c = ext_mul[4](k1, f_sub(one, k2))
-        var e7 = ext_mul[4](ext_mul[4](k1, ext_pow[4](q1, H1)), k2)     # Par at x = (H1, low), low != 0
+        var k1k2 = ext_mul[E_LEVEL](k1, k2)
+        var k1c = ext_mul[E_LEVEL](k1, f_sub(one, k2))
+        var e7 = ext_mul[E_LEVEL](ext_mul[E_LEVEL](k1, ext_pow[E_LEVEL](q1, H1)), k2)     # Par at x = (H1, low), low != 0
         sc.append(s)
-        s_k1k2.append(ext_mul[4](s, k1k2))
-        s_k1c.append(ext_mul[4](s, k1c))
-        s_k2.append(ext_mul[4](s, k2))
-        s_e7.append(ext_mul[4](s, e7))
-        s_z2h.append(ext_mul[4](s, z2h))
-        s_z1h.append(ext_mul[4](s, z1h))
+        s_k1k2.append(ext_mul[E_LEVEL](s, k1k2))
+        s_k1c.append(ext_mul[E_LEVEL](s, k1c))
+        s_k2.append(ext_mul[E_LEVEL](s, k2))
+        s_e7.append(ext_mul[E_LEVEL](s, e7))
+        s_z2h.append(ext_mul[E_LEVEL](s, z2h))
+        s_z1h.append(ext_mul[E_LEVEL](s, z1h))
         n_s.append(_neg(s))
         n_k1c.append(_neg(s_k1c[r]))
         n_k2.append(_neg(s_k2[r]))
@@ -305,33 +305,33 @@ def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: Inlin
         var b = f4_frob(pt, j)
         var mu = E(0)
         for tau in range(4):
-            mu = f_add(mu, ext_mul[4](weights[tau], ext_embed[4](f4_frob(dual[tau], j))))
-        var be = ext_embed[4](b)
-        var bhi = ext_pow[4](be, 1 << p.a1)
-        var br = ext_pow[4](be, 1 << (D - 2))
-        var pr = ext_one[4]()
+            mu = f_add(mu, ext_mul[E_LEVEL](weights[tau], ext_embed[E_LEVEL](f4_frob(dual[tau], j))))
+        var be = ext_embed[E_LEVEL](b)
+        var bhi = ext_pow[E_LEVEL](be, 1 << p.a1)
+        var br = ext_pow[E_LEVEL](be, 1 << (D - 2))
+        var pr = ext_one[E_LEVEL]()
         var scalars = List[E](capacity=p.m1 * p.m2)
         for _ in range(p.m1 * p.m2):
-            scalars.append(ext_mul[4](mu, pr))
-            pr = ext_mul[4](pr, br)
+            scalars.append(ext_mul[E_LEVEL](mu, pr))
+            pr = ext_mul[E_LEVEL](pr, br)
         var u = Unit(scalars^, D)
         u.geo(0, p.a1, be)
-        u.pair(p.a1, ext_one[4](), ext_embed[4](f4_frob(iu, j)))
-        u.pair(p.a1 + 1, ext_one[4](), ext_embed[4](f4_frob(ju, j)))
+        u.pair(p.a1, ext_one[E_LEVEL](), ext_embed[E_LEVEL](f4_frob(iu, j)))
+        u.pair(p.a1 + 1, ext_one[E_LEVEL](), ext_embed[E_LEVEL](f4_frob(ju, j)))
         u.geo(p.a1 + 2, p.a2 - 2, bhi)
         out.append(u^)
 
 
 def row_units(pt: F4, weight: E, first: Int, digits: Int, m: Int, mut out: List[Unit]):
     """weight * pt^row as units, row over the digits from `first` then r (a tail level's rows)."""
-    var be = ext_embed[4](pt)
+    var be = ext_embed[E_LEVEL](pt)
     var u_digits = digits - first
-    var br = ext_pow[4](be, 1 << u_digits)
-    var pr = ext_one[4]()
+    var br = ext_pow[E_LEVEL](be, 1 << u_digits)
+    var pr = ext_one[E_LEVEL]()
     var scalars = List[E](capacity=m)
     for _ in range(m):
-        scalars.append(ext_mul[4](weight, pr))
-        pr = ext_mul[4](pr, br)
+        scalars.append(ext_mul[E_LEVEL](weight, pr))
+        pr = ext_mul[E_LEVEL](pr, br)
     var u = Unit(scalars^, digits)
     u.geo(first, u_digits, be)
     out.append(u^)
@@ -347,6 +347,6 @@ def clear_value(units: List[Unit], y: Span[UInt8, _], first: Int, digits: Int) -
             var w = u.at(first, idx, count)
             var s = E(0)                                 # sum_k scalars[k] y[idx, r0 + k], then times w
             for k in range(len(u.scalars)):
-                s = f_add(s, ext_mul[4](u.scalars[k], list_e(y, idx + (1 << count) * (u.r0 + k))))
-            acc = f_add(acc, ext_mul[4](w, s))
+                s = f_add(s, ext_mul[E_LEVEL](u.scalars[k], list_e(y, idx + (1 << count) * (u.r0 + k))))
+            acc = f_add(acc, ext_mul[E_LEVEL](w, s))
     return acc

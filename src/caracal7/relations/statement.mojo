@@ -13,7 +13,7 @@ ponytail: one lookup per LIMB6 column (16 Z columns each); a shared range lookup
 is measured. Groups are labels for `pad_trace`; a per-group live-row count is the frontend's.
 """
 
-from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow
+from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow, E_BYTES
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
@@ -343,8 +343,8 @@ struct Statement(Movable):
         if gate < GATE_NONE or gate > GATE_2 or len(terms) == 0:
             raise Error("family needs terms and a gate in {GATE_NONE, GATE_1, GATE_2}")
         for t in terms:
-            if t.basis < -1 or t.basis >= 16 or t.basis2 < -1 or t.basis2 >= 16:
-                raise Error("basis is a coordinate of E: -1 or [0, 16)")
+            if t.basis < -1 or t.basis >= E_BYTES or t.basis2 < -1 or t.basis2 >= E_BYTES:
+                raise Error("basis is a coordinate of E: -1 or [0, e)")
         self.order.append((0, len(self.fams)))
         self.fams.append(_Family(name, terms.copy(), gate))
 

@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
+from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
 from caracal7.core.params import CLIENT, Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import host_base, list_e, Buf
@@ -18,7 +18,7 @@ comptime b = CLIENT.grid(24, 24)      # both odd parts: m1 = m2 = 3
 
 def _e(seed: Int) -> E:
     var v = E(0)
-    for k in range(16):
+    for k in range(E_BYTES):
         v[k] = UInt8((seed * 31 + k * 17 + 5) % 127)
     return v
 
@@ -26,15 +26,15 @@ def _e(seed: Int) -> E:
 def _materialize(units: List[Unit], first: Int, digits: Int, m: Int) -> List[UInt8]:
     """The units as a vector over (digits from `first`, r)."""
     var count = digits - first
-    var out = List[UInt8](length=m * (1 << count) * 16, fill=0)
+    var out = List[UInt8](length=m * (1 << count) * E_BYTES, fill=0)
     for i in range(len(units)):
         for idx in range(1 << count):
             var w = units[i].at(first, idx, count)
             for k in range(len(units[i].scalars)):
                 var at = idx + (1 << count) * (units[i].r0 + k)
-                var s = f_add(list_e(out, at), ext_mul[4](w, units[i].scalars[k]))
-                for t in range(16):
-                    out[at * 16 + t] = s[t]
+                var s = f_add(list_e(out, at), ext_mul[E_LEVEL](w, units[i].scalars[k]))
+                for t in range(E_BYTES):
+                    out[at * E_BYTES + t] = s[t]
     return out^
 
 
@@ -46,7 +46,7 @@ def _check_query[pp: Params](z1: E, z2: E) raises:
     var tab = host_table[pp](z1, z2, d.rho1, d.rho2)
     var bad = 0
     for slot in range(pp.N()):
-        var want = ext_mul[4](_e(9), slot_weight[pp](slot, host_base(tab), Buf[16](0), 0, d.rho1, d.rho2))
+        var want = ext_mul[E_LEVEL](_e(9), slot_weight[pp](slot, host_base(tab), Buf[E_BYTES](0), 0, d.rho1, d.rho2))
         if list_e(w, slot) != want:
             bad += 1
     assert_equal(bad, 0)
@@ -111,11 +111,11 @@ def test_row_units_are_powers() raises:
     comptime D = q.a1 + q.a2
     row_units(pt, _e(5), 3, D, q.m1 * q.m2, units)
     var w = _materialize(units, 3, D, q.m1 * q.m2)
-    var pw = ext_embed[4](F4(1, 0, 0, 0))
-    var be = ext_embed[4](pt)
+    var pw = ext_embed[E_LEVEL](F4(1, 0, 0, 0))
+    var be = ext_embed[E_LEVEL](pt)
     for row in range(q.m1 * q.m2 * (1 << (D - 3))):
-        assert_true(list_e(w, row) == ext_mul[4](_e(5), pw))
-        pw = ext_mul[4](pw, be)
+        assert_true(list_e(w, row) == ext_mul[E_LEVEL](_e(5), pw))
+        pw = ext_mul[E_LEVEL](pw, be)
 
 
 def test_fold_matches_the_vector_fold() raises:
@@ -127,7 +127,7 @@ def test_fold_matches_the_vector_fold() raises:
     var r = List[UInt8]()
     for k in range(3):
         var rk = _e(40 + k)
-        for t in range(16):
+        for t in range(E_BYTES):
             r.append(rk[t])
     var folded = fold8_host(full, q.N() // 8, r)
     for i in range(len(units)):
@@ -138,13 +138,13 @@ def test_fold_matches_the_vector_fold() raises:
     assert_true(w == folded)
     # the clear check is the same sum against a vector
     var y = List[UInt8]()
-    for i in range(len(folded) // 16):
+    for i in range(len(folded) // E_BYTES):
         var v = _e(100 + i)
-        for t in range(16):
+        for t in range(E_BYTES):
             y.append(v[t])
     var lhs = E(0)
-    for i in range(len(y) // 16):
-        lhs = f_add(lhs, ext_mul[4](list_e(folded, i), list_e(y, i)))
+    for i in range(len(y) // E_BYTES):
+        lhs = f_add(lhs, ext_mul[E_LEVEL](list_e(folded, i), list_e(y, i)))
     assert_true(clear_value(units, y, 3, D) == lhs)
 
 

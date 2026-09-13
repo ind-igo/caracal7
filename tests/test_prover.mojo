@@ -5,19 +5,20 @@ from std.testing import assert_raises, assert_equal, assert_true, assert_false, 
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
+from caracal7.core.field import E_BYTES
 from caracal7.core.params import CLIENT, Params, Profile
 from caracal7.core.hash import Blake3
 from caracal7.proof import Shape, ProofReader, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from caracal7.verifier import verify
-from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS
+from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS
 from caracal7.core.bytes import set_u16
 from caracal7.relations.statement import restriction_line, chain_values
 from caracal7.workload import prove_workload, verify_workload
 from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime FLAT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)
 
 
@@ -26,7 +27,7 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
     assert_equal(len(s), 0)          # N = 2304 <= FLAT's tail_clear_max: y_2 is the clear vector
     var shape = synthetic_statement(53).compile[p]().take_shape()
     assert_equal(shape.clear_length, p.N())
-    assert_equal(shape.columns(), 53 + 32 + 48)
+    assert_equal(shape.columns(), 53 + 2 * E_BYTES + 3 * E_BYTES)
     # CLIENT folds while binary digits remain: 8 -> two folds -> 36 = 9 x 4 in the clear
     comptime client = CLIENT.grid(72, 32)
     var f = tail_schedule[client]()
@@ -52,7 +53,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].cosets, 4)
     assert_equal(s[2].rows, 72)
     assert_equal(s[3].rows, 9)
-    assert_true(s[0].queries >= 100 and s[0].queries <= 115)
+    assert_true(s[0].queries >= 110 and s[0].queries <= 125)
     var shape = synthetic_statement(357).compile[big]().take_shape()
     assert_equal(shape.clear_length, 9)
 
@@ -85,7 +86,7 @@ def test_layout_plans_the_arena() raises:
                 L.open.w_z, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
                 L.query.positions, L.query.stage, L.prefix, L.chal.stage1, L.chal.alpha, L.chal.z, L.chal.beta_gamma, L.chal.batch, L.chal.r]:
         assert_true(off < L.bytes and off % 256 == 0)
-    print("arena for 53 + 32 + 48 columns:", L.bytes // (1 << 20), "MiB")
+    print("arena for 53 + 5 e columns:", L.bytes // (1 << 20), "MiB")
 
 
 def test_derived_grids() raises:
@@ -98,7 +99,7 @@ def test_derived_grids() raises:
     comptime wide = CLIENT.grid(288, 128)
     assert_equal(wide.L(), 40320)                     # 9216 symbols: one coset of 2^7 x 315, rate 0.229
     assert_equal(wide.m_cosets, 1)
-    assert_equal(wide.queries(), 147)                # ceil(103 / log2(2 / 1.229))
+    assert_equal(wide.queries(), 160)                # ceil(112 / log2(2 / 1.229))
     comptime proxy = CLIENT.grid(2016, 576)
     assert_equal(proxy.N(), 1161216)
     var stopped = String("")
@@ -248,7 +249,7 @@ def test_point_list_and_derivation_table_are_artifact_inputs() raises:
     var short = shift_points(c.families)
     short.resize(len(short) - POINT, 0)
     var bad_fam = c.families.copy()
-    bad_fam[32] = UInt8(7)                        # entry 0 names element 6
+    bad_fam[ENT_CHAL] = UInt8(7)                  # entry 0 names element 6
     assert_equal(_rejected(short, standard_chals(), c.families, c.shape.accs), "opening points must include every read shift, restriction line, and accumulator boundary point")
     assert_equal(_rejected(shift_points(c.families), standard_chals(), bad_fam, c.shape.accs), "family entry names a challenge element past the derivation table")
     assert_equal(_rejected(shift_points(c.families), [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 5, 1], c.families, c.shape.accs), "challenge derivation row must add or multiply earlier elements")
@@ -410,7 +411,7 @@ def test_horner_descriptor_needs_its_transition_entries() raises:
     var base = (first - HORNER_TRANSITIONS) * ENTRY
     # (entry offset, byte, new value): col_a of entry 0; coef of entry 2 (the kernel reads only entry 0's weight
     # for every coordinate); chal of entry 3; shift of entry 4; basis2 of entry 5
-    for m in [(0, 16, 1), (2, 29, 2), (3, 32, 0), (4, 18, 4), (5, 34, 0)]:
+    for m in [(0, ENT_A, 1), (2, ENT_COEF, 2), (3, ENT_CHAL, 0), (4, ENT_A + 2, 4), (5, ENT_BASIS + 1, 0)]:
         var fam = c.families.copy()
         fam[base + m[0] * ENTRY + m[1]] = UInt8(m[2])
         with assert_raises(contains="transition entries"):

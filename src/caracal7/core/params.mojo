@@ -8,6 +8,8 @@ There is one profile, `CLIENT`; a second one appears with a second target (the V
 
 from std.math import ceildiv, log2
 
+from caracal7.core.field import E_BYTES
+
 comptime H4_ORDER = 161280          # largest smooth subgroup of F4*; every code domain is m cosets of a divisor
 comptime RATE_INV = 32              # rate rule of spec 9.5 for the tail levels: the smallest domain at rate <= 1/32 ...
 comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
@@ -52,11 +54,11 @@ def _axis(target: Int) -> Tuple[Int, Int]:
 
 @fieldwise_init
 struct Profile(TrivialRegisterPassable, Writable):
-    var e: Int              # extension degree; 16 (spec section 1)
+    var e: Int              # extension degree; E_BYTES = 20 (spec section 1)
     var leaf_bytes: Int     # 1,024, one Blake3 chunk
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
-    var lambda_bits: Int    # lambda' for the query count, 103 in the spec
+    var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
     var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv (the tail keeps RATE_INV)
 
     def grid(self, rows_per_chain: Int, chains: Int) -> Params:
@@ -73,16 +75,17 @@ struct Profile(TrivialRegisterPassable, Writable):
                       tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits)
 
 
-# The client-side target: 103-bit queries, three-digit tail folds, the level-1 domain at rate <= 1/4 (the query
-# formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode and Merkle
-# work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain (the
-# tensor verifier's clear check costs units x clear length).
-comptime CLIENT = Profile(e=16, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=103, rate_inv=4)
+# The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
+# at e = 20, docs/soundness.md; 103 until 2026-09-13), three-digit tail folds, the level-1 domain at rate <= 1/4
+# (the query formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode
+# and Merkle work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain
+# (the tensor verifier's clear check costs units x clear length).
+comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, rate_inv=4)
 
 
 @fieldwise_init
 struct Params(TrivialRegisterPassable, Writable):
-    var e: Int          # extension degree; 16 (spec section 1)
+    var e: Int          # extension degree; E_BYTES = 20 (spec section 1)
     var a1: Int         # h1 = 2^a1 * m1, 2 <= a1 <= 7 (spec 9.1)
     var m1: Int         # odd, m1 | 63
     var a2: Int
@@ -92,7 +95,7 @@ struct Params(TrivialRegisterPassable, Writable):
     var leaf_bytes: Int # 1,024, one Blake3 chunk
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
-    var lambda_bits: Int    # lambda' for the query count, 103 in the spec
+    var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
 
     # ---- derived ----
     def h1(self) -> Int:
@@ -127,8 +130,8 @@ struct Params(TrivialRegisterPassable, Writable):
     def check(self) raises:
         if self.L0 == 0:
             raise Error("grid needs the codeword split (n_cw > 1): no level-1 domain holds N / 4 symbols at the profile's rate")
-        if self.e != 16:
-            raise Error("e must be 16: field.mojo fixes E = F_(127^16)")
+        if self.e != E_BYTES:
+            raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

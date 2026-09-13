@@ -24,17 +24,16 @@ transforms radix stages:
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, V2, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul
+from caracal7.core.field import F2, E, V2, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul, E_LEVEL, E_BYTES, VH, e_planes, e_merge, ef_planes, ef_merge, to_f32, E_DFT_V
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
-from caracal7.relations.ir import ENTRY, NONE, NO_BASIS, ACC, KIND_HORNER, HORNER_TRANSITIONS, acc_kind
+from caracal7.relations.ir import ENTRY, ENT_A, ENT_B, ENT_MULT, ENT_COEF, ENT_FAMILY, ENT_CHAL, ENT_BASIS, NONE, NO_BASIS, ACC, KIND_HORNER, HORNER_TRANSITIONS, acc_kind
 from caracal7.core.bytes import Base, Buf, u16, get_u16
 from caracal7.core.arena import Arena
 from caracal7.core.dft import dft_axis, DftPlan
 from std.gpu import global_idx
 
-comptime V8 = SIMD[DType.float32, 8]
 
 
 def quotient_elems[p: Params]() -> Int:
@@ -46,25 +45,25 @@ def quotient_elems[p: Params]() -> Int:
 
 # ---- kernels ----
 
-def k_fold_alpha(base: Base, families: Buf[1], count: Int32, alpha: Buf[16], chals: Buf[16]):
+def k_fold_alpha(base: Base, families: Buf[1], count: Int32, alpha: Buf[E_BYTES], chals: Buf[E_BYTES]):
     """kappa = coef * alpha^family * chal * b_t, one thread per entry (see `kappa_of`)."""
     var gid = Int(global_idx.x)
     if gid >= Int(count):
         return
     var ent = families.offset(gid * ENTRY)
     var a = alpha.load(base, 0)
-    var fam = u16(base, ent.at(30))
-    var kappa = f_mul(ext_pow[4](a, fam), E(ent.load(base, 29)))
-    var chal = Int(ent.load(base, 32))
+    var fam = u16(base, ent.at(ENT_FAMILY))
+    var kappa = f_mul(ext_pow[E_LEVEL](a, fam), E(ent.load(base, ENT_COEF)))
+    var chal = Int(ent.load(base, ENT_CHAL))
     if chal != 0:
-        kappa = ext_mul[4](kappa, chals.load(base, chal - 1))
+        kappa = ext_mul[E_LEVEL](kappa, chals.load(base, chal - 1))
     for i in range(2):
-        var basis = Int(ent.load(base, 33 + i))
+        var basis = Int(ent.load(base, ENT_BASIS + i))
         if basis != NO_BASIS:
             var b = E(0)
             b[basis] = 1
-            kappa = ext_mul[4](kappa, b)
-    Buf[16](ent.at(0)).store(base, 0, kappa)
+            kappa = ext_mul[E_LEVEL](kappa, b)
+    Buf[E_BYTES](ent.at(0)).store(base, 0, kappa)
 
 
 def k_merge_kappa(base: Base, families: Buf[1], merge: Buf[1], idx_off: Int32, count_g: Int32, families_g: Buf[1]):
@@ -77,8 +76,8 @@ def k_merge_kappa(base: Base, families: Buf[1], merge: Buf[1], idx_off: Int32, c
     var kappa = E(0)
     for t in range(start, start + n):
         var i = u16(base, merge.at(Int(idx_off) + 2 * t))
-        kappa = f_add(kappa, Buf[16](families.at(i * ENTRY)).load(base, 0))
-    Buf[16](families_g.at(u * ENTRY)).store(base, 0, kappa)
+        kappa = f_add(kappa, Buf[E_BYTES](families.at(i * ENTRY)).load(base, 0))
+    Buf[E_BYTES](families_g.at(u * ENTRY)).store(base, 0, kappa)
 
 
 @always_inline
@@ -103,7 +102,7 @@ def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     var r = E(0)
-    comptime for l in range(8):
+    comptime for l in range(E_BYTES // 2):
         var a = lde.load(base, ((col + 2 * l) * G2 + j2) * G1 + j1)
         var b = lde.load(base, ((col + 2 * l + 1) * G2 + j2) * G1 + j1)
         r[2 * l] = f_sub(a[0], b[1])
@@ -111,7 +110,7 @@ def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E
     return r
 
 
-def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2], dst: Buf[16]):
+def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2], dst: Buf[E_BYTES]):
     """dst[point] = sum over entries of kappa X(point), one thread per column position and V rows
     (the rows 2 t apart share the entry descriptors and kappa, and have V loads in flight) with the 8
     kappa lanes per row accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
@@ -147,30 +146,30 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         return
     var g1f = fp_center(gate1.load(base, j1))
     var g2f = InlineArray[V2, V](fill=V2(0))
-    var re = InlineArray[V8, V](fill=V8(0))
-    var im = InlineArray[V8, V](fill=V8(0))
+    var re = InlineArray[VH, V](fill=VH(0))
+    var im = InlineArray[VH, V](fill=VH(0))
     comptime for t in range(V):
         g2f[t] = fp_center(gate2.load(base, j2 + 2 * t))
     # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
     # |v| <= 190; a term kappa v is below 48 K, 128 of them below 6.2 M, exact in fp32
     for k in range(Int(count)):
         var ent = fam.at(k * ENTRY)
-        var second = u16(base, ent + 22) != NONE
-        var mult = fam.load(base, k * ENTRY + 28)
-        var kap = Buf[16](ent).load(base, 0).deinterleave()
-        var kre = kap[0].cast[DType.float32]()
-        var kim = kap[1].cast[DType.float32]()
+        var second = u16(base, ent + ENT_B) != NONE
+        var mult = fam.load(base, k * ENTRY + ENT_MULT)
+        var kap = e_planes(Buf[E_BYTES](ent).load(base, 0))
+        var kre = to_f32(kap[0])
+        var kim = to_f32(kap[1])
         comptime for t in range(V):
-            var v = _read[p](base, lde, ent + 16, j1, j2 + 2 * t).cast[DType.float32]()
+            var v = to_f32(_read[p](base, lde, ent + ENT_A, j1, j2 + 2 * t))
             if second:
-                v = fp_mul_f2(v, _read[p](base, lde, ent + 22, j1, j2 + 2 * t).cast[DType.float32]())
+                v = fp_mul_f2(v, to_f32(_read[p](base, lde, ent + ENT_B, j1, j2 + 2 * t)))
             if mult == 1:
                 v = fp_mul_f2(v, g1f)
             elif mult == 2:
                 v = fp_mul_f2(v, g2f[t])
             v = fp_reduce(v)
-            var v0 = V8(v[0])
-            var v1 = V8(v[1])
+            var v0 = VH(v[0])
+            var v1 = VH(v[1])
             re[t] = kim.fma(-v1, kre.fma(v0, re[t]))
             im[t] = kim.fma(v0, kre.fma(v1, im[t]))
         if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
@@ -178,10 +177,10 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
                 re[t] = fp_reduce(re[t])
                 im[t] = fp_reduce(im[t])
     comptime for t in range(V):
-        dst.store(base, (j2 + 2 * t) * G1 + j1, fp_canonical(re[t]).interleave(fp_canonical(im[t])))
+        dst.store(base, (j2 + 2 * t) * G1 + j1, e_merge(fp_canonical(re[t]), fp_canonical(im[t])))
 
 
-def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[16]):
+def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1], accs: Buf[1], n_accs: Int32, dst: Buf[E_BYTES]):
     """dst[point] += gate1(j1) (kappa_A R(omega1 x) + kappa_B R(x)) for every Horner accumulator, one
     thread per point of the odd rows and the odd columns of the even rows (the rest is zero), with
     kappa_A = alpha^f and kappa_B = -alpha^f scale, the folded kappas of its basis-0 entries
@@ -205,7 +204,7 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
         j2 = 2 * ((gid - Q1) // p.h1())
         j1 = 2 * ((gid - Q1) % p.h1()) + 1
     var g = fp_center(gate1.load(base, j1))
-    var acc = dst.load(base, j2 * G1 + j1).cast[DType.float32]()
+    var acc = to_f32(dst.load(base, j2 * G1 + j1))
     var jn = j1 + 2
     if jn >= G1:
         jn -= G1
@@ -215,12 +214,12 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
             continue
         var col = u16(base, d.at(0))
         var first = u16(base, d.at(2))
-        var ka = Buf[16](families.at((first - HORNER_TRANSITIONS) * ENTRY)).load(base, 0).cast[DType.float32]()
-        var kb = Buf[16](families.at((first - HORNER_TRANSITIONS + 1) * ENTRY)).load(base, 0).cast[DType.float32]()
-        var v = fp_reduce(fp_ext_mul[4](ka, _z_read[p](base, lde, col, jn, j2).cast[DType.float32]())
-                          + fp_ext_mul[4](kb, _z_read[p](base, lde, col, j1, j2).cast[DType.float32]()))
-        var h = v.deinterleave()                        # times the gate, an F2 scalar, lane by lane
-        acc += (h[0] * g[0] - h[1] * g[1]).interleave(h[0] * g[1] + h[1] * g[0])
+        var ka = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS) * ENTRY)).load(base, 0))
+        var kb = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS + 1) * ENTRY)).load(base, 0))
+        var v = fp_reduce(fp_ext_mul[E_LEVEL](ka, to_f32(_z_read[p](base, lde, col, jn, j2)))
+                          + fp_ext_mul[E_LEVEL](kb, to_f32(_z_read[p](base, lde, col, j1, j2))))
+        var h = ef_planes(v)                            # times the gate, an F2 scalar, lane by lane
+        acc += ef_merge(h[0] * g[0] - h[1] * g[1], h[0] * g[1] + h[1] * g[0])
     dst.store(base, j2 * G1 + j1, fp_canonical(acc))
 
 
@@ -269,7 +268,7 @@ def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises 
         if not keep[i]:
             continue
         var key = String("")
-        for j in range(16, 29):
+        for j in range(ENT_A, ENT_COEF):
             key += String(Int(families[i * ENTRY + j])) + ","
         var u = row_of.get(key, -1)
         if u < 0:
@@ -314,24 +313,24 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
     transitions from `families` (all entries, kappa folded) and the `accs` descriptors."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
-    ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[16](alpha), Buf[16](chals),
+    ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families), Int32(count), Buf[E_BYTES](alpha), Buf[E_BYTES](chals),
                                        grid_dim=ceildiv(count, 64), block_dim=64)
     if merge >= 0 and count_g > 0:
         ctx.enqueue_function[k_merge_kappa](arena.buf, Buf[1](families), Buf[1](merge), Int32(count * 4), Int32(count_g), Buf[1](families_g),
                                             grid_dim=ceildiv(count_g, 64), block_dim=64)
     elif families_g != families:
-        ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[16](alpha), Buf[16](chals),
+        ctx.enqueue_function[k_fold_alpha](arena.buf, Buf[1](families_g), Int32(count_g), Buf[E_BYTES](alpha), Buf[E_BYTES](chals),
                                            grid_dim=ceildiv(count_g, 64), block_dim=64)
     comptime V = 2 if p.h2() % 2 == 0 else 1
     comptime T = (G1 * p.h2()) // V + (p.h1() * p.h2()) // V + p.h1() * p.h2()
     comptime kr = k_residual[p]
     ctx.enqueue_function[kr](arena.buf, Buf[2](lde_buf), Buf[1](families_g), Int32(count_g),
-                             Buf[2](tab.base + tab.gate1), Buf[2](tab.base + tab.gate2), Buf[16](dst),
+                             Buf[2](tab.base + tab.gate1), Buf[2](tab.base + tab.gate2), Buf[E_BYTES](dst),
                              grid_dim=ceildiv(T, BACKEND.block), block_dim=BACKEND.block)
     if n_accs > 0:
         comptime kh = k_horner[p]
         ctx.enqueue_function[kh](arena.buf, Buf[2](lde_buf), Buf[2](tab.base + tab.gate1),
-                                 Buf[1](families), Buf[1](accs), Int32(n_accs), Buf[16](dst),
+                                 Buf[1](families), Buf[1](accs), Int32(n_accs), Buf[E_BYTES](dst),
                                  grid_dim=ceildiv(G1 * p.h2() + p.h1() * p.h2(), BACKEND.block), block_dim=BACKEND.block)
 
 
@@ -339,7 +338,7 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
                         residual_buf: Int, tab: TableLayout, scratch: Int, trace_q: Int) raises:
     """residual -> A, B, Q2 coefficients -> their values on H -> 3 e coordinate columns as the
     trace of the quotient tree, which the level-1 encoder then treats like any witness column.
-    E-valued operands are the D = 8 lane view of the skeleton."""
+    E-valued operands are the D = e / 2 lane view of the skeleton."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime G1 = 2 * h1
@@ -356,29 +355,29 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     var v1 = t2 + h1 * h2 * e               # (3, k2, x1, e)
     var vals = v1 + 3 * N * e               # (3, x2, x1, e)
     # 1. Q1 on the coset from R over all of G1: q1m (t, j1)
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
+    launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
-        c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, G1)
+        c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * (e // 2), G1)
     # ponytail: step 2 stays a dense h1 x h1 GEMM (2 KB, 32 wide); put it on a plan like step 5 if it shows up
     # 2. axis 1: coset values t -> coefficients k1
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
+    launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
         a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,
-        c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * 8, h1)
+        c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * (e // 2), h1)
     # 3. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B, the h1 lines of E rows as 8 F2
     #    lanes, written transposed as (k2, k1, e); t1 is the scratch (dead after stage 3)
-    dft_axis[DftPlan(G2, G2), 4](ctx, arena, t1, q1coef, t1, 8, h1, tab.base + tab.ginv2p, dst_line=e, dst_j=h1 * e)
+    dft_axis[DftPlan(G2, G2), E_DFT_V](ctx, arena, t1, q1coef, t1, e // 2, h1, tab.base + tab.ginv2p, dst_line=e, dst_j=h1 * e)
     # 4. Q2 = S1 / (-2) on H1 x g2 H2: axis 1 from the even j1 of the odd j2 rows, q2m = 63 winv1
-    launch_gemm_f2[BACKEND, T, Strided, 8](ctx, arena, strided(
+    launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
-        c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * 8, h1)
+        c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * (e // 2), h1)
     # 5. axis 2: coset values t2 -> coefficients k2, the output twist g2^-k inside the plan's last stage;
     #    a row of t2 is 8 F2 lanes, written transposed as (k2, k1, e); t1 (dead) is the scratch
-    dft_axis[DftPlan(h2, h2), 4](ctx, arena, t2, q2coef, t1, 8, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
+    dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, t2, q2coef, t1, e // 2, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
     # 6, 7. values on H of A, B, Q2: axis 1 over the 3 h2 coefficient rows -> v1 (3, k2, x1, e), then
     #    axis 2 with a row of x1 as 8 h1 lanes -> vals (3, x2, x1, e). Scratch: vals, then q1c and t1
     #    (dead); the coefficients stay intact for the tests
-    dft_axis[DftPlan(h1, h1), 4](ctx, arena, q1coef, v1, vals, 8, 3 * h2, tab.base + tab.hfwd1)
-    dft_axis[DftPlan(h2, h2), 4](ctx, arena, v1, vals, q1c, 8 * h1, 3, tab.base + tab.hfwd2)
+    dft_axis[DftPlan(h1, h1), E_DFT_V](ctx, arena, q1coef, v1, vals, e // 2, 3 * h2, tab.base + tab.hfwd1)
+    dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, v1, vals, q1c, (e // 2) * h1, 3, tab.base + tab.hfwd2)
     # 8. coordinate columns as the quotient tree's trace
     comptime k8 = k_values_to_trace[p]
     ctx.enqueue_function[k8](arena.buf, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)

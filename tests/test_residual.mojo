@@ -6,7 +6,7 @@ on B and Q2, and the coordinate columns as values on H."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed
+from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL
 from caracal7.core.params import CLIENT
 from caracal7.core.tables import Domains, TableLayout, build_tables
 from caracal7.core.arena import Arena, Bump
@@ -121,8 +121,8 @@ struct Run:
         for k2 in range(h2 - 1, -1, -1):
             var inner = E(0)
             for k1 in range(h1 - 1, -1, -1):
-                inner = f_add(ext_mul[4](inner, z1), ext_embed[4](self.f2(self.coeff, ((c * h2 + k2) * h1 + k1) * 2)))
-            acc = f_add(ext_mul[4](acc, z2), inner)
+                inner = f_add(ext_mul[E_LEVEL](inner, z1), ext_embed[E_LEVEL](self.f2(self.coeff, ((c * h2 + k2) * h1 + k1) * 2)))
+            acc = f_add(ext_mul[E_LEVEL](acc, z2), inner)
         return acc
 
     def poly_at(self, off: Int, rows: Int, z1: E, z2: E) -> E:
@@ -131,8 +131,8 @@ struct Run:
         for k2 in range(rows - 1, -1, -1):
             var inner = E(0)
             for k1 in range(h1 - 1, -1, -1):
-                inner = f_add(ext_mul[4](inner, z1), self.e(self.scratch, off + (k2 * h1 + k1) * p.e))
-            acc = f_add(ext_mul[4](acc, z2), inner)
+                inner = f_add(ext_mul[E_LEVEL](inner, z1), self.e(self.scratch, off + (k2 * h1 + k1) * p.e))
+            acc = f_add(ext_mul[E_LEVEL](acc, z2), inner)
         return acc
 
     def gates(self) -> Tuple[F2, F2]:
@@ -170,10 +170,10 @@ def test_lde_matches_direct_evaluation() raises:
         for n in points:
             var j1 = n % G1
             var j2 = n // G1
-            var z1 = ext_embed[4](ext_pow[1](r.d.g1, j1))
-            var z2 = ext_embed[4](ext_pow[1](r.d.g2, j2))
+            var z1 = ext_embed[E_LEVEL](ext_pow[1](r.d.g1, j1))
+            var z2 = ext_embed[E_LEVEL](ext_pow[1](r.d.g2, j2))
             var want = r.col_at(c, z1, z2)
-            var got = ext_embed[4](r.f2(r.lde, ((c * G2 + j2) * G1 + j1) * 2))
+            var got = ext_embed[E_LEVEL](r.f2(r.lde, ((c * G2 + j2) * G1 + j1) * 2))
             assert_true(want == got, "lde mismatch")
 
 
@@ -200,13 +200,13 @@ def _check_on_g(r: Run) raises:
             var en = entry(r.fam, k)
             var a1 = (j1 + en.dj1_a) % G1
             var a2 = (j2 + en.dj2_a) % G2
-            reads.append(ext_embed[4](r.f2(r.lde, ((en.col_a * G2 + a2) * G1 + a1) * 2)))
+            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, ((en.col_a * G2 + a2) * G1 + a1) * 2)))
             var b1 = (j1 + en.dj1_b) % G1
             var b2 = (j2 + en.dj2_b) % G2
             var cb = 0 if en.col_b == NONE else en.col_b
-            reads.append(ext_embed[4](r.f2(r.lde, ((cb * G2 + b2) * G1 + b1) * 2)))
-        var z1 = ext_embed[4](ext_pow[1](r.d.g1, j1))
-        var z2 = ext_embed[4](ext_pow[1](r.d.g2, j2))
+            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, ((cb * G2 + b2) * G1 + b1) * 2)))
+        var z1 = ext_embed[E_LEVEL](ext_pow[1](r.d.g1, j1))
+        var z2 = ext_embed[E_LEVEL](ext_pow[1](r.d.g2, j2))
         var want = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)
         assert_true(want == r.e(r.res, (j2 * G1 + j1) * p.e), "residual mismatch on G")
 
@@ -224,13 +224,13 @@ def _check_deep(r: Run) raises:
     var reads = List[E]()
     for k in range(len(r.fam) // ENTRY):
         var en = entry(r.fam, k)
-        reads.append(r.col_at(en.col_a, ext_mul[4](z1, ext_embed[4](ext_pow[1](r.d.g1, en.dj1_a))),
-                              ext_mul[4](z2, ext_embed[4](ext_pow[1](r.d.g2, en.dj2_a)))))
+        reads.append(r.col_at(en.col_a, ext_mul[E_LEVEL](z1, ext_embed[E_LEVEL](ext_pow[1](r.d.g1, en.dj1_a))),
+                              ext_mul[E_LEVEL](z2, ext_embed[E_LEVEL](ext_pow[1](r.d.g2, en.dj2_a)))))
         if en.col_b == NONE:
             reads.append(E(0))
         else:
-            reads.append(r.col_at(en.col_b, ext_mul[4](z1, ext_embed[4](ext_pow[1](r.d.g1, en.dj1_b))),
-                                  ext_mul[4](z2, ext_embed[4](ext_pow[1](r.d.g2, en.dj2_b)))))
+            reads.append(r.col_at(en.col_b, ext_mul[E_LEVEL](z1, ext_embed[E_LEVEL](ext_pow[1](r.d.g1, en.dj1_b))),
+                                  ext_mul[E_LEVEL](z2, ext_embed[E_LEVEL](ext_pow[1](r.d.g2, en.dj2_b)))))
     var rz = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)
     var q1coef = 2 * h1 * G2 * p.e
     var q2coef = q1coef + G2 * h1 * p.e
@@ -239,9 +239,9 @@ def _check_deep(r: Run) raises:
     var q2 = r.poly_at(q2coef, h2, z1, z2)
     var one = E(0)
     one[0] = 1
-    var z1h = f_sub(ext_pow[4](z1, h1), one)
-    var z2h = ext_pow[4](z2, h2)
-    var rhs = f_add(ext_mul[4](f_add(a, ext_mul[4](z2h, b)), z1h), ext_mul[4](q2, f_sub(z2h, one)))
+    var z1h = f_sub(ext_pow[E_LEVEL](z1, h1), one)
+    var z2h = ext_pow[E_LEVEL](z2, h2)
+    var rhs = f_add(ext_mul[E_LEVEL](f_add(a, ext_mul[E_LEVEL](z2h, b)), z1h), ext_mul[E_LEVEL](q2, f_sub(z2h, one)))
     assert_true(rz == rhs, "DEEP identity fails at z")
     assert_true(rz != E(0), "R(z) is zero: the check is vacuous")
     # degree bounds: B has X2-degree <= h2 - 2, Q2 likewise (spec 8)
@@ -282,7 +282,7 @@ def test_quotient_trace_is_values_on_h() raises:
     for q in range(3):
         for x2 in rows:
             for x1 in cols:
-                var v = r.poly_at(srcs[q], h2, ext_embed[4](ext_pow[1](r.d.omega1, x1)), ext_embed[4](ext_pow[1](r.d.omega2, x2)))
+                var v = r.poly_at(srcs[q], h2, ext_embed[E_LEVEL](ext_pow[1](r.d.omega1, x1)), ext_embed[E_LEVEL](ext_pow[1](r.d.omega2, x2)))
                 for tau in range(p.e):
                     assert_equal(Int(r.stored[(q * p.e + tau) * N + x2 * h1 + x1]), Int(v[tau]))
 

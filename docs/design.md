@@ -15,7 +15,7 @@ Spec: `wiki/projects/caracal7/specs/caracal-prover.md` (main), `statement-layer.
 
 ```mojo
 struct Params:
-    comptime e: Int          # extension degree, 16 (section 1)
+    comptime e: Int          # extension degree, 20 (section 1; E_BYTES in field.mojo, 16 with the E16 switch)
     comptime a1: Int         # h1 = 2^a1 * m1, 2 <= a1 <= 7 (9.1)
     comptime m1: Int         # odd, m1 | 63
     comptime a2: Int
@@ -190,4 +190,4 @@ Materialized 2026-09-04 in `backend.mojo`: `Backend`, `tile_mac` (SIMD lanes, `m
 - Apple GPU in Mojo: shared-memory size, `barrier`, and whether Blake3 on device reaches the CPU rate. Learned from `rs_encode` and `merkle`.
 - The SIMD-lane tile op is the only path on the M1 client target, so it gets the full ladder of section 8. The MMA paths are written when an NVIDIA or M5 device is available to test on.
 - Whether `code` should be leaf-major from the encoder or transposed once (section 3).
-- The tower constants `c_2`, `c_3`, `c_4` for `e = 16`.
+- The tower constants `c_2`, `c_3`, `c_4` for `e = 16`; `G5 = i + j` and the fifth root of unity for `e = 20` (decisions.md 2026-09-13).

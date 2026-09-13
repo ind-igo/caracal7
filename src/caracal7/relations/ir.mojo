@@ -3,11 +3,11 @@ and the host evaluation of a family at a point. What the frontend (milestone 4) 
 verifier reads; the kernels in residual.mojo consume the same bytes.
 
 
-Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted): kappa E [0, 16);
-col_a, dj1_a, dj2_a [16, 22); col_b, dj1_b, dj2_b [22, 28), col_b = NONE for a linear entry;
-mult u8 [28] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [29]; family [30, 32);
-chal u8 [32] (0 none, else stage-1 element chal - 1: beta, delta, gamma sampled, then one per row of the
-derivation table, see standard_chals); basis, basis2 u8 [33, 35)
+Family entry (ENTRY = 48 bytes, every field u16 little-endian unless noted; F = ENT_A = e bytes): kappa E
+[0, e); col_a, dj1_a, dj2_a [F, F + 6); col_b, dj1_b, dj2_b [F + 6, F + 12), col_b = NONE for a linear
+entry; mult u8 [F + 12] (0 none, 1 the gate (X1 - e1), 2 the gate (X2 - e2)); coef F u8 [F + 13]; family
+[F + 14, F + 16); chal u8 [F + 16] (0 none, else stage-1 element chal - 1: beta, delta, gamma sampled, then
+one per row of the derivation table, see standard_chals); basis, basis2 u8 [F + 17, F + 19)
 (t < e: the factor b_t, the unit vector t of E; NO_BASIS none). Shifts are offsets on G in [0, 2 h_l):
 a read at (omega1^k x1, x2) is dj1 = 2k. kappa = coef * alpha^family * chal * b_t * b_t2, one entry
 per (family, read).
@@ -29,11 +29,19 @@ ponytail: collapsing shared reads into one kappa (statement-layer 5) is the comp
 real family list exists; the kernel does not care.
 """
 
-from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv
+from caracal7.core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv, E_LEVEL, E_BYTES
 from caracal7.core.bytes import get_u16, set_u16, list_e
 from caracal7.core.params import Params
 
 comptime ENTRY = 48
+comptime ENT_A = E_BYTES            # col_a, dj1_a, dj2_a (u16 each) after the e-byte kappa
+comptime ENT_B = E_BYTES + 6        # col_b, dj1_b, dj2_b
+comptime ENT_MULT = E_BYTES + 12
+comptime ENT_COEF = E_BYTES + 13
+comptime ENT_FAMILY = E_BYTES + 14
+comptime ENT_CHAL = E_BYTES + 16
+comptime ENT_BASIS = E_BYTES + 17   # basis, basis2
+comptime ENT_END = E_BYTES + 19     # the bytes an entry uses; the rest of ENTRY is zero
 comptime SAMPLED = 3    # stage-1 elements squeezed from the transcript: beta, delta, gamma
 comptime CHAL = 3       # derivation table row: op, a, b
 comptime CHAL_ADD = 0
@@ -44,7 +52,7 @@ comptime ACC_W_MAX = 8
 comptime KIND_PERM = 0
 comptime KIND_LOOKUP = 1
 comptime KIND_HORNER = 2    # the spec's {start, ingest, scale, end} record: R(next) = scale R + sum weight read (polynomial-mulmod 5)
-comptime HORNER_TRANSITIONS = 32   # linear entries Families.horner emits just before a descriptor's ingest range: 16 coordinates, two each
+comptime HORNER_TRANSITIONS = 2 * E_BYTES   # linear entries Families.horner emits just before a descriptor's ingest range: e coordinates, two each
 # TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
@@ -122,10 +130,10 @@ def point_coord(z: E, dj: Int, g: F2, h: Int) -> E:
     """One coordinate of an opening point: z g^dj, or the fixed 1 / e_l (host side; the kernel reads the
     power table)."""
     if dj == FIX_ONE:
-        return ext_one[4]()
+        return ext_one[E_LEVEL]()
     if dj == FIX_E:
-        return ext_embed[4](ext_pow[1](g, 2 * (h - 1)))
-    return ext_mul[4](z, ext_embed[4](ext_pow[1](g, dj)))
+        return ext_embed[E_LEVEL](ext_pow[1](g, 2 * (h - 1)))
+    return ext_mul[E_LEVEL](z, ext_embed[E_LEVEL](ext_pow[1](g, dj)))
 
 
 def point_index(pts: Span[UInt8, _], dj1: Int, dj2: Int) -> Int:
@@ -157,7 +165,7 @@ struct Families:
         e (2 + |num| + |den|) entries: Z = sum_t Z_t b_t and fp(c) = sum_j c_j b_j."""
         if len(num) > ACC_W_MAX or len(den) > ACC_W_MAX or len(num) == 0 or len(den) == 0:
             raise Error("accumulator record width")
-        for t in range(16):
+        for t in range(E_BYTES):
             self.add(family, 1, z_col + t, k1_a=1, mult=1, chal=3, basis=t)
             for j in range(len(den)):
                 self.add(family, 1, z_col + t, k1_a=1, col_b=den[j], mult=1, basis=t, basis2=j)
@@ -172,7 +180,7 @@ struct Families:
         beta fp(s)(omega1 x1): the transition (X1 - e1) (Z(next) D - Z N) is e (2 + 3 w) entries."""
         if len(f) != len(s) or len(f) == 0 or len(f) > ACC_W_MAX or table < 0 or table > 255:
             raise Error("lookup record width or table id")
-        for t in range(16):
+        for t in range(E_BYTES):
             self.add(family, 1, z_col + t, k1_a=1, mult=1, chal=5, basis=t)
             for j in range(len(s)):
                 self.add(family, 1, z_col + t, k1_a=1, col_b=s[j], mult=1, basis=t, basis2=j)
@@ -190,7 +198,7 @@ struct Families:
         residual read one definition."""
         if start < 0 or start > 1 or scale < -1 or scale > 254 or len(ingest) == 0 or len(ingest) > 65535:
             raise Error("horner accumulator: start in {0, 1}, scale an element index, at least one ingest term")
-        for t in range(16):
+        for t in range(E_BYTES):
             self.add(family, 1, z_col + t, k1_a=1, mult=1, basis=t)
             self.add(family, 126, z_col + t, mult=1, chal=scale + 1, basis=t)
         var first = self.count
@@ -249,24 +257,24 @@ struct Families:
             raise Error("axis-2 gated entries must be linear (spec 8 degree bound)")
         if chal < 0 or chal > 255:
             raise Error("chal is a u8: 0 or element index + 1")
-        if mult < 0 or mult > 2 or basis >= 16 or basis2 >= 16:
+        if mult < 0 or mult > 2 or basis >= E_BYTES or basis2 >= E_BYTES:
             raise Error("mult is 0, 1, or 2; basis is -1 or a coordinate of E")
         var e = List[UInt8](length=ENTRY, fill=0)
         for v in [col_a, 2 * k1_a, 2 * k2_a, NONE if col_b < 0 else col_b, 2 * k1_b, 2 * k2_b, family]:
             if v < 0 or v > 65535:
                 raise Error("family entry field out of range")
-        set_u16(e, 16, col_a)
-        set_u16(e, 18, 2 * k1_a)
-        set_u16(e, 20, 2 * k2_a)
-        set_u16(e, 22, NONE if col_b < 0 else col_b)
-        set_u16(e, 24, 2 * k1_b)
-        set_u16(e, 26, 2 * k2_b)
-        e[28] = UInt8(mult)
-        e[29] = UInt8(coef % 127)
-        set_u16(e, 30, family)
-        e[32] = UInt8(chal)
-        e[33] = UInt8(NO_BASIS if basis < 0 else basis)
-        e[34] = UInt8(NO_BASIS if basis2 < 0 else basis2)
+        set_u16(e, ENT_A, col_a)
+        set_u16(e, ENT_A + 2, 2 * k1_a)
+        set_u16(e, ENT_A + 4, 2 * k2_a)
+        set_u16(e, ENT_B, NONE if col_b < 0 else col_b)
+        set_u16(e, ENT_B + 2, 2 * k1_b)
+        set_u16(e, ENT_B + 4, 2 * k2_b)
+        e[ENT_MULT] = UInt8(mult)
+        e[ENT_COEF] = UInt8(coef % 127)
+        set_u16(e, ENT_FAMILY, family)
+        e[ENT_CHAL] = UInt8(chal)
+        e[ENT_BASIS] = UInt8(NO_BASIS if basis < 0 else basis)
+        e[ENT_BASIS + 1] = UInt8(NO_BASIS if basis2 < 0 else basis2)
         self.bytes.extend(e^)
         self.count += 1
 
@@ -316,19 +324,19 @@ def acc_family(accs: Span[UInt8, _], k: Int) -> Int:
 
 def entry(fam: Span[UInt8, _], k: Int) -> Entry:
     var o = k * ENTRY
-    return Entry(col_a=get_u16(fam, o + 16), dj1_a=get_u16(fam, o + 18), dj2_a=get_u16(fam, o + 20),
-                 col_b=get_u16(fam, o + 22), dj1_b=get_u16(fam, o + 24), dj2_b=get_u16(fam, o + 26),
-                 mult=Int(fam[o + 28]), coef=Int(fam[o + 29]), family=get_u16(fam, o + 30),
-                 chal=Int(fam[o + 32]), basis=Int(fam[o + 33]), basis2=Int(fam[o + 34]))
+    return Entry(col_a=get_u16(fam, o + ENT_A), dj1_a=get_u16(fam, o + ENT_A + 2), dj2_a=get_u16(fam, o + ENT_A + 4),
+                 col_b=get_u16(fam, o + ENT_B), dj1_b=get_u16(fam, o + ENT_B + 2), dj2_b=get_u16(fam, o + ENT_B + 4),
+                 mult=Int(fam[o + ENT_MULT]), coef=Int(fam[o + ENT_COEF]), family=get_u16(fam, o + ENT_FAMILY),
+                 chal=Int(fam[o + ENT_CHAL]), basis=Int(fam[o + ENT_BASIS]), basis2=Int(fam[o + ENT_BASIS + 1]))
 
 
 def derived_chals(mut chals: List[UInt8], table: Span[UInt8, _]):
     """Host side of accumulate.k_derive_chals: append one element per table row to the sampled ones."""
     for i in range(len(table) // CHAL):
-        var a = ext_one[4]() if Int(table[i * CHAL + 1]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 1]))
-        var b = ext_one[4]() if Int(table[i * CHAL + 2]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 2]))
-        var v = f_add(a, b) if Int(table[i * CHAL]) == CHAL_ADD else ext_mul[4](a, b)
-        for t in range(16):
+        var a = ext_one[E_LEVEL]() if Int(table[i * CHAL + 1]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 1]))
+        var b = ext_one[E_LEVEL]() if Int(table[i * CHAL + 2]) == CHAL_ONE else list_e(chals, Int(table[i * CHAL + 2]))
+        var v = f_add(a, b) if Int(table[i * CHAL]) == CHAL_ADD else ext_mul[E_LEVEL](a, b)
+        for t in range(E_BYTES):
             chals.append(v[t])
 
 
@@ -358,7 +366,7 @@ def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], 
     comptime h1 = p.h1()
     var first = get_u16(accs, k * ACC + 2)
     var count = get_u16(accs, k * ACC + 4)
-    var scale = ext_one[4]() if accs[k * ACC + 7] == 0 else list_e(chals, Int(accs[k * ACC + 7]) - 1)
+    var scale = ext_one[E_LEVEL]() if accs[k * ACC + 7] == 0 else list_e(chals, Int(accs[k * ACC + 7]) - 1)
     var r = E(0)
     r[0] = UInt8(acc_start(accs, k))
     for x1 in range(h1 - 1):
@@ -369,9 +377,9 @@ def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], 
             v[0] = cols[i * h1 + (x1 + en.dj1_a // 2) % h1]
             v = f_mul(v, E(UInt8(en.coef)))
             if en.chal != 0:
-                v = ext_mul[4](v, list_e(chals, en.chal - 1))
+                v = ext_mul[E_LEVEL](v, list_e(chals, en.chal - 1))
             s = f_add(s, v)
-        r = f_sub(ext_mul[4](scale, r), s)
+        r = f_sub(ext_mul[E_LEVEL](scale, r), s)
     return r
 
 
@@ -385,45 +393,45 @@ def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises
     var ob = list_e(chals, 3)
     var obd = list_e(chals, 4)
     var k = len(table) // w
-    var num = ext_one[4]()
-    var den = ext_one[4]()
+    var num = ext_one[E_LEVEL]()
+    var den = ext_one[E_LEVEL]()
     var has_break = False
     for j in range(k):
         var fp = E(0)
         for i in range(w):
             fp[i] = table[j * w + i]
-        var own = ext_mul[4](ob, f_add(delta, fp))
+        var own = ext_mul[E_LEVEL](ob, f_add(delta, fp))
         if own == E(0):
             raise Error("lookup table constant has a zero factor")
-        num = ext_mul[4](num, own)
+        num = ext_mul[E_LEVEL](num, own)
         if j + 1 < k:
             var fp1 = E(0)
             for i in range(w):
                 fp1[i] = table[(j + 1) * w + i]
-            var pair = f_add(f_add(obd, fp), ext_mul[4](beta, fp1))
+            var pair = f_add(f_add(obd, fp), ext_mul[E_LEVEL](beta, fp1))
             if pair == E(0):
                 raise Error("lookup table constant has a zero factor")
             if fp1 != fp:
                 has_break = True
-            den = ext_mul[4](den, pair)
+            den = ext_mul[E_LEVEL](den, pair)
     if not has_break:
         raise Error("lookup table needs two distinct entries")
-    return ext_mul[4](num, ext_inv[4](den))
+    return ext_mul[E_LEVEL](num, ext_inv[E_LEVEL](den))
 
 
 def kappa_of(en: Entry, alpha: E, chals: Span[UInt8, _]) -> E:
     """coef * alpha^family * chal * b_t; chals holds the stage-1 elements as e bytes each."""
-    var kappa = f_mul(ext_pow[4](alpha, en.family), E(UInt8(en.coef)))
+    var kappa = f_mul(ext_pow[E_LEVEL](alpha, en.family), E(UInt8(en.coef)))
     if en.chal != 0:
         var c = E(0)
-        for t in range(16):
-            c[t] = chals[(en.chal - 1) * 16 + t]
-        kappa = ext_mul[4](kappa, c)
+        for t in range(E_BYTES):
+            c[t] = chals[(en.chal - 1) * E_BYTES + t]
+        kappa = ext_mul[E_LEVEL](kappa, c)
     for t in [en.basis, en.basis2]:
         if t != NO_BASIS:
             var b = E(0)
             b[t] = 1
-            kappa = ext_mul[4](kappa, b)
+            kappa = ext_mul[E_LEVEL](kappa, b)
     return kappa
 
 
@@ -431,18 +439,18 @@ def residual_at(fam: Span[UInt8, _], alpha: E, chals: Span[UInt8, _], z1: E, z2:
     """R(z) from opened values: reads[2k], reads[2k + 1] are c_a and c_b of entry k at their shifted
     points. The verifier's step 5 and the tests share this."""
     var acc = E(0)
-    var g1 = f_sub(z1, ext_embed[4](e1))
-    var g2 = f_sub(z2, ext_embed[4](e2))
+    var g1 = f_sub(z1, ext_embed[E_LEVEL](e1))
+    var g2 = f_sub(z2, ext_embed[E_LEVEL](e2))
     for k in range(len(fam) // ENTRY):
         var en = entry(fam, k)
         var v = reads[2 * k]
         if en.col_b != NONE:
-            v = ext_mul[4](v, reads[2 * k + 1])
+            v = ext_mul[E_LEVEL](v, reads[2 * k + 1])
         if en.mult == 1:
-            v = ext_mul[4](v, g1)
+            v = ext_mul[E_LEVEL](v, g1)
         elif en.mult == 2:
-            v = ext_mul[4](v, g2)
-        acc = f_add(acc, ext_mul[4](kappa_of(en, alpha, chals), v))
+            v = ext_mul[E_LEVEL](v, g2)
+        acc = f_add(acc, ext_mul[E_LEVEL](kappa_of(en, alpha, chals), v))
     return acc
 
 
@@ -450,19 +458,19 @@ def _lagrange(n: Int, w: F2, z: E) raises -> List[E]:
     """L_i(z) for i < n on the cyclic group <w> of order n: (z^n - 1) / n * w^i / (z - w^i), or the
     indicator of i when z is w^i."""
     var out = List[E](capacity=n)
-    var wi = ext_one[4]()
-    var we = ext_embed[4](w)
+    var wi = ext_one[E_LEVEL]()
+    var we = ext_embed[E_LEVEL](w)
     var n_inv = E(0)
     n_inv[0] = f_pow(SIMD[DType.uint8, 1](n % 127), 125)[0]
-    var lead = ext_mul[4](f_sub(ext_pow[4](z, n), ext_one[4]()), n_inv)
+    var lead = ext_mul[E_LEVEL](f_sub(ext_pow[E_LEVEL](z, n), ext_one[E_LEVEL]()), n_inv)
     for i in range(n):
         var den = f_sub(z, wi)
         if den.reduce_or() == 0:
             out = List[E](length=n, fill=E(0))
-            out[i] = ext_one[4]()
+            out[i] = ext_one[E_LEVEL]()
             return out^
-        out.append(ext_mul[4](lead, ext_mul[4](wi, ext_inv[4](den))))
-        wi = ext_mul[4](wi, we)
+        out.append(ext_mul[E_LEVEL](lead, ext_mul[E_LEVEL](wi, ext_inv[E_LEVEL](den))))
+        wi = ext_mul[E_LEVEL](wi, we)
     return out^
 
 
@@ -472,7 +480,7 @@ def eval_values(vals: Span[UInt8, _], off: Int, m: Int, h1: Int, h2: Int, w1: F2
     (docs/public-columns.md). Barycentric per axis: h1 + h2 / m inversions, then one F x E product per value."""
     var period = h2 // m
     var l1 = _lagrange(h1, w1, x1)
-    var l2 = _lagrange(period, ext_pow[1](w2, m), ext_pow[4](x2, m))
+    var l2 = _lagrange(period, ext_pow[1](w2, m), ext_pow[E_LEVEL](x2, m))
     var acc = E(0)
     for t2 in range(period):
         var row = E(0)
@@ -480,7 +488,7 @@ def eval_values(vals: Span[UInt8, _], off: Int, m: Int, h1: Int, h2: Int, w1: F2
             var v = vals[off + t2 * h1 + t1]
             if v != 0:
                 row = f_add(row, f_mul(l1[t1], E(v)))
-        acc = f_add(acc, ext_mul[4](row, l2[t2]))
+        acc = f_add(acc, ext_mul[E_LEVEL](row, l2[t2]))
     return acc
 
 
@@ -488,7 +496,7 @@ def eval_line(coeffs: Span[UInt8, _], off: Int, count: Int, x1: E) -> E:
     """A restriction line (`count` F2 coefficients from `off`, degree < count) at x1, Horner."""
     var acc = E(0)
     for k in range(count - 1, -1, -1):
-        acc = f_add(ext_mul[4](acc, x1), ext_embed[4](F2(coeffs[off + 2 * k], coeffs[off + 2 * k + 1])))
+        acc = f_add(ext_mul[E_LEVEL](acc, x1), ext_embed[E_LEVEL](F2(coeffs[off + 2 * k], coeffs[off + 2 * k + 1])))
     return acc
 
 
