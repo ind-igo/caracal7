@@ -7,7 +7,8 @@ and implementation gaps in this note to be closed. A successful calculation or t
 establish a cryptographic security level.
 
 The benchmark metadata says `security_bits: 112`. In `core/params.mojo`, 112 is the per-level
-**query target**, with `E = F_(127^20)` (20 coordinates; `E16` in `core/field.mojo` rebuilds the old
+**query target**, met as 92 bits of queries plus 20 bits of grinding on every query seed (below), with
+`E = F_(127^20)` (20 coordinates; `E16` in `core/field.mojo` rebuilds the old
 16-coordinate tower for measurement). It is not the total soundness budget. Do not use the metadata
 as a verified claim. The upstream
 [eligibility rule](https://github.com/ethereum/csp-benchmarks/blob/main/CONTRIBUTING.md#benchmark-eligibility)
@@ -35,7 +36,9 @@ another argument. This is scoped to these workloads, not a generic IR security c
 Output:
 
 - `field_numerator NAME A` means the candidate error contribution `A / 127^e`.
-- `query_error` is the sum over **all committed levels**, including level 1.
+- `query_error_per_attempt` is the sum over **all committed levels**, including level 1, of the miss
+  probability of one transcript attempt; `query_error` divides it by `2^grind_bits`, the hashes one
+  attempt costs the prover (see Grinding below).
 - `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)` at the compiled `e`, rounded down to
   two decimals.
 - `projected_e16_...` and `projected_e20_...` change only the denominator to `127^16` or `127^20` at
@@ -72,7 +75,8 @@ proximity gap, particularly the first committed tail's large code domain. For EC
 `A_pcs_gap = 161280 + 3*(645120 + 43008 + 5376) = 2241792`; the full numerator is 2282533, which
 over `127^20` is about 2^-118.7. Increasing query counts cannot reduce that field term; the field
 did. At `e = 20` the query term binds (101 bits at the old target of 103 per level, since four levels
-sum), so the per-level target is 112 and the total sits at 110 to 111 bits. The remaining proof,
+sum), so the per-level target is 112, met as 92 bits of queries and 20 of grinding, and the total sits
+at 110 to 111 bits. The remaining proof,
 arithmetic, and Fiat-Shamir obligations are unchanged; the table does not by itself justify submitting.
 
 ## Claim and composition
@@ -131,6 +135,16 @@ proximity result; see Diamond and Gruen,
 [Proximity Gaps in Interleaved Codes](https://eprint.iacr.org/2024/1351), Theorems 3.1 and 3.6,
 Corollary 3.7, and the Ligerito construction. The last committed code is included even though its
 folded message is sent in the clear. There is no extra code or sumcheck after that clear message.
+
+**Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
+grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from
+block 1 on (`transcript.grind`, `HostTranscript.grind`). Finding it costs `2^grind_bits` hashes per
+level per attempt, so a prover that makes `W` transcript attempts pays `W 2^grind_bits` hashes; the
+ledger charges the query term per attempt divided by `2^grind_bits`, the usual grinding accounting
+(ethSTARK, section 6.2 of the Ligerito note), and sizes `s_i` from `lambda' - grind_bits`. This is a
+computational bound in the random-oracle model, not a statistical one: it is part of P5's claim, and
+the field terms are untouched by it. The search runs on device (smallest passing nonce, 3 ms at 20
+bits on the M1 Pro) and fails with probability `e^-16` per level, which the verifier then rejects.
 
 `A_pcs_batch` is conservatively the number of scalar claims batched before each three-round
 sumcheck: `4*s_previous+1` at the first tail level, `s_previous+1` subsequently. The factor four

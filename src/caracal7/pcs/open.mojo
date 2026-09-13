@@ -11,7 +11,7 @@ Mon(x) for a fixed slot (9.1). Every factor depends on the point and one digit o
 per-point table (z^x on each binary axis, L(r) on each odd axis; `table_entry`) is built first and a
 slot costs four E products from it. The verifier reads the same table from the host (`host_table`).
 
-`open` is one GEMM on backend.gemm_f2 with the 8 F2 lanes of every point as its rows, C[(point, lane),
+`open` is one GEMM on backend.gemm_f2 with the e / 2 F2 lanes of every point as its rows, C[(point, lane),
 column]; `fold` is k_fold, one thread per slot with the e / 2 F2 lanes of E in fp32 registers (the lane GEMM
 at M = 8 paid for its shared-memory staging, like the residual).
 """

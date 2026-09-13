@@ -46,6 +46,13 @@ trait Hash:
         """state <- absorb's result from the `n_chunks` part values at `cvs`, DIGEST bytes each."""
         ...
 
+    @staticmethod
+    def grind_probe(state: Base, ds: UInt8, nonce: UInt32) -> UInt32:
+        """The first u32 of squeeze block 0 after absorbing ds || LE64(nonce) into a copy of the state,
+        without touching memory: the nonce search's inner step (transcript.k_grind). Equals
+        absorb then squeeze(0) (test_transcript)."""
+        ...
+
 
 # ---------------------------------------------------------------------------------------------------
 # Blake3 (https://github.com/BLAKE3-team/BLAKE3-specs). Hash and keyed_hash modes, 32-byte output.
@@ -206,6 +213,16 @@ struct Blake3(Hash):
     @staticmethod
     def chunk(state: Base, ds: UInt8, src: Base, bytes: Int, k: Int, dst: Base):
         _store_cv(_chunk_cv(_load_words[8](state), _KEYED, 1, ds, src, bytes + 1, k), dst)
+
+    @staticmethod
+    def grind_probe(state: Base, ds: UInt8, nonce: UInt32) -> UInt32:
+        # absorb: one 9-byte block ds || nonce || 0^4 under the state as key (chunk 0, start, end, root)
+        var w = _W(0)
+        w[0] = UInt32(ds) | (nonce << 8)
+        w[1] = nonce >> 24
+        var cv = _compress(_load_words[8](state), w, 0, 9, _KEYED | _CHUNK_START | _CHUNK_END | _ROOT)
+        # squeeze block 0: LE64(0) under the new state
+        return _compress(cv, _W(0), 0, 8, _KEYED | _CHUNK_START | _CHUNK_END | _ROOT)[0]
 
     @staticmethod
     def merge(state: Base, n_chunks: Int, cvs: Base):

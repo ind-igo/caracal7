@@ -6,7 +6,8 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import CLIENT
 from caracal7.core.hash import Blake3
 from caracal7.core.arena import Arena, Bump
-from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W
+from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W, DS_GRIND, STATE_BYTES, grind_word, grind_ok
+from caracal7.core.bytes import host_base
 
 comptime p = CLIENT.grid(72, 32)
 comptime MSG = 85_120     # the Keccak openings: 84 chunks, one block of the tree absorb
@@ -88,6 +89,33 @@ def test_state_depends_on_separator() raises:
     var x = c.elements(4)
     var y = c.elements(4)
     assert_true(x != y)
+
+
+def test_one_chunk_absorb_is_its_chunk_value() raises:
+    """The search kernel absorbs the 8-byte nonce through Hash.chunk (no merge stack per thread): the same state as absorb."""
+    var state = List[UInt8](length=STATE_BYTES, fill=0)
+    for i in range(32):
+        state[i] = UInt8((i * 29 + 3) % 251)
+    var nonce = List[UInt8](length=8, fill=0)
+    nonce[0] = 7
+    nonce[3] = 250
+    var a = state.copy()
+    Blake3.absorb(host_base(a), DS_GRIND, host_base(nonce), 8)
+    var b = state.copy()
+    Blake3.chunk(host_base(b), DS_GRIND, host_base(nonce), 8, 0, host_base(b))
+    for i in range(32):
+        assert_equal(a[i], b[i])
+    var probe = Blake3.grind_probe(host_base(state), DS_GRIND, UInt32(7) | UInt32(250) << 24)
+    assert_equal(probe, grind_word[Blake3](host_base(a)))
+    # the grind word of a fresh nonce is uniform-ish: both zero and nonzero top bits occur over a few nonces
+    var zero = 0
+    for n in range(64):
+        var c = state.copy()
+        nonce[0] = UInt8(n)
+        Blake3.absorb(host_base(c), DS_GRIND, host_base(nonce), 8)
+        if grind_ok(grind_word[Blake3](host_base(c)), 1):
+            zero += 1
+    assert_true(zero > 8 and zero < 56, "grind word top bit is not balanced")
 
 
 def main() raises:

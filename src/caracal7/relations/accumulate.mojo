@@ -264,7 +264,7 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[E_BYTES], wires: Buf[1], sig
 def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1], chals: Buf[E_BYTES], zval: Buf[E_BYTES], count: Int32):
     """One thread per (accumulator, row), the Horner descriptors of the `count` at `accs` (other kinds skip):
     the sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the read cyclic inside
-    the chain (fields of ir.mojo; kappa at [0, 16) is not read, it is folded later), into the accumulator's
+    the chain (fields of ir.mojo; kappa at [0, e) is not read, it is folded later), into the accumulator's
     Z block, which k_horner_scan then scans in place."""
     comptime N = p.N()
     comptime h1 = p.h1()

@@ -19,7 +19,7 @@ from caracal7.core.field import F2, ext_pow
 from caracal7.core.arena import Arena, Bump
 from caracal7.core.tables import F2_ORDER, Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
 from caracal7.pcs.encode import EncLayout, encode, idft2
-from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions
+from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions, grind
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
@@ -138,6 +138,8 @@ struct QueryLayout(TrivialRegisterPassable):
     var partial: Int        # (ROUND_THREADS, 3, e) sumcheck partial sums
     var dom1: Int           # DOM_BYTES             the level-1 domain
     var stage: Int          # gathered rows and siblings of one multiproof, staged to the host in stream order
+    var found: Int          # u32                   the nonce found
+    var nonce: Int          # 8 bytes               the nonce as the proof stages it
 
     def __init__[p: Params](out self, mut bump: Bump, max_queries: Int, stage_bytes: Int):
         self.positions = bump.alloc(max_queries * 4)
@@ -146,6 +148,8 @@ struct QueryLayout(TrivialRegisterPassable):
         self.partial = bump.alloc(ROUND_THREADS * 3 * p.e)
         self.dom1 = bump.alloc(DOM_BYTES)
         self.stage = bump.alloc(stage_bytes)
+        self.found = bump.alloc(4)
+        self.nonce = bump.alloc(8)
 
 
 struct TailLayout(TrivialRegisterPassable):
@@ -563,6 +567,9 @@ struct Prover[p: Params, H: Hash]:
         and stage them. The stage region is reused: the copy out is enqueued before the next gather."""
         ref L = self.layout
         ref S = self.shape
+        if Self.p.grind_bits > 0:
+            grind[Self.p, Self.H](ctx, self.arena, T, L.query.found, L.query.nonce)
+            self.proof.stage(self.arena, L.query.nonce, 8)
         if i == 0:
             squeeze_positions[Self.p, Self.H](ctx, self.arena, T, L.query.positions, Self.p.queries(), Self.p.L())
             for C in [L.w, L.z, L.q]:

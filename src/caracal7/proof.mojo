@@ -64,7 +64,7 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
             raise Error("tail level does not fit the F4 domain")
         # queries at the exact rate rows / L, same formula as level 1
         var rate = Float64(rows) / Float64(L)
-        var queries = Int((Float64(p.lambda_bits) / _log2(2.0 / (1.0 + rate))).__ceil__())
+        var queries = Int((Float64(p.lambda_bits - p.grind_bits) / _log2(2.0 / (1.0 + rate))).__ceil__())
         levels.append(TailLevel(length=length, rows=rows, L=L, cosets=cosets, queries=queries))
         length = rows
         digits -= p.tail_digits
@@ -194,7 +194,7 @@ struct Shape(Writable):
                     raise Error("horner descriptor: ingest range inside the family table, start in {0, 1}, scale a stage-1 element")
                 if first < HORNER_TRANSITIONS:
                     raise Error("horner descriptor: the transition entries precede the ingest range")
-                for t in range(HORNER_TRANSITIONS):        # what merge_tables drops; the residual kernel reads only the first pair's weights and applies them to every coordinate, so all 32 must match Families.horner exactly
+                for t in range(HORNER_TRANSITIONS):        # what merge_tables drops; the residual kernel reads only the first pair's weights and applies them to every coordinate, so all 2 e must match Families.horner exactly
                     var en = entry(families, first - HORNER_TRANSITIONS + t)
                     var nxt = t % 2 == 0                   # even: R(omega1 x1) coef 1; odd: -scale R with the scale element
                     if (en.col_a != acc_z_col(accs, k) + t // 2 or en.col_b != NONE or en.mult != 1 or en.basis != t // 2 or en.basis2 != NO_BASIS
@@ -384,6 +384,8 @@ struct Shape(Writable):
         for i in range(len(self.tail)):
             n += digest + (self.trees() if i == 0 else 1) * 4 + 9 * p.e
         n += self.clear_length * p.e + (self.trees() if len(self.tail) == 0 else 1) * 4
+        if p.grind_bits > 0:
+            n += 8 * (len(self.tail) + 1)          # one nonce before every opened level's multiproof(s)
         return n
 
     def write_to(self, mut w: Some[Writer]):
@@ -398,7 +400,7 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     var bytes = List[UInt8]()
     append_u32(bytes, Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
-              p.lambda_bits, p.queries(), p.n_cw()]:
+              p.lambda_bits, p.grind_bits, p.queries(), p.n_cw()]:
         append_u32(bytes, v)
     append_u32(bytes, shape.columns_w)
     append_u32(bytes, shape.columns_z)

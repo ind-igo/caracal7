@@ -11,14 +11,14 @@ def test_small_grid() raises:
     assert_equal(p.N(), 2304)
     assert_equal(p.L(), 2304)
     assert_equal(p.leaf_columns_max(), 256)
-    # rate 2304 / (4 * 2304) = 1/4 on one coset of 2304; queries = ceil(112 / log2(2 / (1 + 1/4))) = 166
-    assert_equal(p.queries(), 166)
+    # rate 1/4 on one coset of 2304; queries = ceil((112 - 20) / log2(2 / (1 + 1/4))) = 136
+    assert_equal(p.queries(), 136)
 
 
 def test_query_formula_matches_spec_rows() raises:
     # Synthetic profiles exercise the rate and query formulas.
     var q = Params(e=E_BYTES, a1=7, m1=63, a2=5, m2=5, L0=161280, m_cosets=4, leaf_bytes=1024,
-                   tail_digits=3, tail_clear_max=2500, lambda_bits=103)
+                   tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0)
     assert_equal(q.N(), 8064 * 160)
     assert_equal(q.L(), 645120)
     assert_equal(q.rate(), 0.5)  # N / (4 L) = 1290240 / 2580480

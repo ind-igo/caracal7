@@ -1426,3 +1426,32 @@ line: a host convolution form for e = 20, the residual and open kernels on five 
 padded planes, the tail encoder at 40 of 64 lanes per group, and the ECDSA Z tree leaf at 1,040 bytes
 (two Blake3 chunks). The Rust-track table in the README predates this change.
 Verified: `sh run_tests.sh` (23 files, every bench builds); `bench_ecdsa`; the ledger for all 16 cases.
+
+
+## Grinding on the query seeds (2026-09-13)
+
+At e = 20 the query term is the larger of the two, and a query costs proof bytes where a bit of proof of
+work costs the prover 2^20 hashes, milliseconds on the GPU. `CLIENT.grind_bits = 20`: before every
+level's positions the prover absorbs an 8-byte nonce whose grind word (the first u32 of squeeze block 0)
+has 20 leading zeros, the positions come from block 1 on, and the per-level query target is
+`lambda_bits - grind_bits = 92`. ECDSA: 487 to 401 queries, proof 795,492 to about 705,000 bytes (the
+nonce moves the deduplicated paths a little), the ledger's conditional bits unchanged at 110.1 to 110.7
+(docs/soundness.md, Grinding). The nonce sits in the proof before each opened level's multiproofs, so
+`Shape.fixed_bytes` and the prefix carry it; `grind_bits = 0` removes it (the reference profile of the
+tests).
+
+The search (`transcript.k_grind`) took four tries to reach 3 ms per level:
+
+- Each thread walks nonces t, t + 32768, ... and probes with `Hash.grind_probe`: the two Blake3
+  compressions built from the state's key words and the nonce, nothing written. The first version
+  copied the transcript state per try and ran the generic absorb with its merge stack: same speed, so
+  that was not the cost, but the probe is the right shape and stays.
+- A plain load of `found` is hoisted out of the loop by the optimizer, so no thread ever saw it and
+  every search ran to its 16 x 2^20 limit (22 ms). An atomic read fixed that (9 ms); 32768 threads on
+  one atomic every few iterations was the rest, so one thread per block polls and broadcasts the value
+  through threadgroup memory (3 ms).
+- Blocks leave once every nonce below the one found has been tried (block-uniform, so the barriers
+  match), and the winner is the smallest passing nonce by `Atomic.min`: the proof is deterministic.
+
+Verified: test_transcript (the probe equals absorb then squeeze), test_prover (the tail test runs at
+CLIENT with grinding; the byte-offset walk skips the nonces), `bench_ecdsa`, the ledger for all 16 cases.

@@ -7,9 +7,12 @@ positions are u32 below `below`. The same `sample` runs in the device kernel and
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx
+from std.gpu import thread_idx, global_idx
+from std.atomic import Atomic
 from max.gpu.host import DeviceContext
 from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from layout import row_major, stack_allocation
 
 from caracal7.core.params import Params
 from caracal7.core.arena import Bump
@@ -26,12 +29,16 @@ comptime DS_OPENINGS: UInt8 = 4     # alpha_{c,p} -> beta (E^columns), gamma (E^
 comptime DS_TAIL_ROOT: UInt8 = 5    # Mat(y_l) root -> S_{l-1}; the batching scalars follow the multiproof(s)
 comptime DS_TAIL_ROUND: UInt8 = 6   # sumcheck message s_i -> r_i
 comptime DS_CLEAR: UInt8 = 7        # y_ell in the clear -> S_{ell-1}
+comptime DS_GRIND: UInt8 = 8        # the nonce of a query seed -> the grind word (block 0), then S from block 1 on
 
 comptime STATE_BYTES = 128          # [0, DIGEST) state, [64, 72) counter, [72, 72 + DIGEST) scratch
 comptime _COUNTER = 64
 comptime _SCRATCH = 72
 comptime MAX_CHUNKS = 1024          # ponytail: one block per absorb, 1 MiB; larger messages fall back to the serial thread
 comptime _CV_BYTES = 32             # per-chunk value slot, >= H.DIGEST
+comptime GRIND_THREADS = 32768      # nonce search: threads, each walking nonces t, t + GRIND_THREADS, ...
+comptime GRIND_POLL = 8             # iterations between polls of `found`
+comptime _NO_NONCE: UInt32 = 0xFFFFFFFF
 
 
 struct TranscriptLayout(TrivialRegisterPassable):
@@ -56,6 +63,21 @@ def _set_counter(state: Base, c: Int):
 def absorb_into[H: Hash](state: Base, ds: UInt8, src: Base, bytes: Int):
     H.absorb(state, ds, src, bytes)
     _set_counter(state, 0)
+
+
+def grind_word[H: Hash](state: Base) -> UInt32:
+    """The proof-of-work word after a nonce is absorbed: the first u32 of squeeze block 0; the counter moves
+    to 1 so the positions sampled next come from block 1 on."""
+    var scratch = state.unsafe_offset(_SCRATCH)
+    H.squeeze(state, 0, scratch)
+    _set_counter(state, 1)
+    return UInt32(u32(scratch, 0))
+
+
+@always_inline
+def grind_ok(word: UInt32, bits: Int) -> Bool:
+    """The top `bits` bits of the word are zero."""
+    return bits == 0 or (word >> UInt32(32 - bits)) == 0
 
 
 def sample[H: Hash](state: Base, dst: Base, count: Int, below: Int):
@@ -112,6 +134,48 @@ def k_sample[H: Hash](base: Base, state: Buf[1], dst: Buf[1], count: Int32, belo
     sample[H](state.ptr(base, 0), dst.ptr(base, 0), Int(count), Int(below))
 
 
+def k_grind_init(base: Base, found: Buf[4]):
+    put_u32(base, found.at(0), Int(_NO_NONCE))
+
+
+def k_grind[H: Hash](base: Base, state: Buf[1], bits: Int32, found: Buf[4]):
+    """Thread t tries the nonces t, t + GRIND_THREADS, ... with `H.grind_probe` (two compressions from the
+    state's key words, nothing written) until one passes `grind_ok` or a nonce has been found; the smallest
+    passing nonce wins (Atomic.min), so the proof is deterministic. Every GRIND_POLL iterations one thread
+    per block reads `found` atomically (a plain load is hoisted out of the loop; 32768 atomics per poll
+    were a third of the search) and the block leaves together once its nonces pass the one found, so the
+    result is the smallest passing nonce. 16 x 2^bits nonces in all: the search
+    fails with probability e^-16."""
+    var t = Int(global_idx.x)
+    var src = state.ptr(base, 0)
+    var limit = 16 << Int(bits)
+    var flag = stack_allocation[DType.uint32, address_space=AddressSpace.SHARED](row_major[1]())
+    var k = t
+    while k < limit:
+        if (k // GRIND_THREADS) % GRIND_POLL == 0:
+            if thread_idx.x == 0:
+                flag[0] = Atomic.fetch_add(found.ptr(base, 0).unsafe_bitcast[UInt32](), UInt32(0))
+            barrier()
+            var done = UInt32(k - Int(thread_idx.x)) > flag[0]   # block-uniform: every nonce below the one found is tried
+            barrier()
+            if done:
+                return
+        if grind_ok(H.grind_probe(src, DS_GRIND, UInt32(k)), Int(bits)):
+            Atomic.min(found.ptr(base, 0).unsafe_bitcast[UInt32](), UInt32(k))
+        k += GRIND_THREADS
+
+
+def k_grind_commit[H: Hash](base: Base, state: Buf[1], found: Buf[4], nonce: Buf[1]):
+    """Write the nonce found (8 bytes, little-endian u64) where the proof stages it, absorb it, and take
+    the grind word so the positions come from block 1 on. A failed search writes 0xFFFFFFFF, which the
+    verifier rejects."""
+    var n = u32(base, found.at(0))
+    put_u32(base, nonce.at(0), n)
+    put_u32(base, nonce.at(0) + 4, 0)
+    absorb_into[H](state.ptr(base, 0), DS_GRIND, nonce.ptr(base, 0), 8)
+    _ = grind_word[H](state.ptr(base, 0))
+
+
 def reset(ctx: DeviceContext, arena: Arena, t: TranscriptLayout) raises:
     """Zero the state: every proof starts from the same transcript as the verifier."""
     ctx.enqueue_function[k_reset](arena.buf, Buf[1](t.state), grid_dim=1, block_dim=1)
@@ -137,6 +201,15 @@ def squeeze_elements[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: Tr
                                       grid_dim=1, block_dim=1)
 
 
+def grind[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: TranscriptLayout, found: Int, nonce: Int) raises:
+    """Find and absorb the nonce of the next query seed (p.grind_bits bits of proof of work), the nonce
+    written to arena offset `nonce` for the proof."""
+    ctx.enqueue_function[k_grind_init](arena.buf, Buf[4](found), grid_dim=1, block_dim=1)
+    ctx.enqueue_function[k_grind[H]](arena.buf, Buf[1](t.state), Int32(p.grind_bits), Buf[4](found),
+                                     grid_dim=GRIND_THREADS // 256, block_dim=256)
+    ctx.enqueue_function[k_grind_commit[H]](arena.buf, Buf[1](t.state), Buf[4](found), Buf[1](nonce), grid_dim=1, block_dim=1)
+
+
 def squeeze_positions[p: Params, H: Hash](ctx: DeviceContext, arena: Arena, t: TranscriptLayout,
                                           dst: Int, count: Int, below: Int) raises:
     """Write `count` uniform positions below `below` (u32 each) to arena offset `dst`."""
@@ -158,6 +231,14 @@ struct HostTranscript[p: Params, H: Hash]:
         var out = List[UInt8](length=count * Self.p.e, fill=0)
         sample[Self.H](host_base(self.state), host_base(out), count * Self.p.e, 0)
         return out^
+
+    def grind(mut self, nonce: Span[UInt8, _], bits: Int) raises:
+        """Absorb a query seed's nonce and check its proof of work."""
+        if len(nonce) != 8:
+            raise Error("grinding nonce is 8 bytes")
+        self.absorb(DS_GRIND, nonce)
+        if not grind_ok(grind_word[Self.H](host_base(self.state)), bits):
+            raise Error("grinding check fails")
 
     def positions(mut self, count: Int, below: Int) -> List[Int]:
         var raw = List[UInt8](length=4 * count, fill=0)

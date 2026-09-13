@@ -13,8 +13,8 @@ transforms radix stages:
     lde        dft_axis per axis (three radix stages, dft.mojo): coefficients k -> the points of G
     residual   the one stage that is not a GEMM launch: k_residual, one thread per column position and
                two rows, gathers X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point)
-               and accumulates the 8 kappa lanes per row in registers (the GEMM skeleton's shared-memory
-               staging cost more than the gather at M = 8). The 2 e basis entries of a Horner transition
+               and accumulates the e / 2 kappa lanes per row in registers (the GEMM skeleton's shared-memory
+               staging cost more than the gather at M = e / 2). The 2 e basis entries of a Horner transition
                are not in the table it walks: k_horner, one thread per point after it, reads the e
                coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
     quotient   q1m over G1 -> Q1 on the coset; qinv1 (GEMM), then dft_axis over G2 -> the A, B
@@ -112,7 +112,7 @@ def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E
 
 def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, gate1: Buf[2], gate2: Buf[2], dst: Buf[E_BYTES]):
     """dst[point] = sum over entries of kappa X(point), one thread per column position and V rows
-    (the rows 2 t apart share the entry descriptors and kappa, and have V loads in flight) with the 8
+    (the rows 2 t apart share the entry descriptors and kappa, and have V loads in flight) with the e / 2
     kappa lanes per row accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
     is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane on fp32 lanes, 128
     terms between reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even
@@ -371,7 +371,7 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
         c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * (e // 2), h1)
     # 5. axis 2: coset values t2 -> coefficients k2, the output twist g2^-k inside the plan's last stage;
-    #    a row of t2 is 8 F2 lanes, written transposed as (k2, k1, e); t1 (dead) is the scratch
+    #    a row of t2 is e / 2 F2 lanes, written transposed as (k2, k1, e); t1 (dead) is the scratch
     dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, t2, q2coef, t1, e // 2, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
     # 6, 7. values on H of A, B, Q2: axis 1 over the 3 h2 coefficient rows -> v1 (3, k2, x1, e), then
     #    axis 2 with a row of x1 as 8 h1 lanes -> vals (3, x2, x1, e). Scratch: vals, then q1c and t1

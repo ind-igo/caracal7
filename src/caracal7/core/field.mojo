@@ -233,8 +233,8 @@ def fp_limb[m: Int](a: EF20) -> V4:
 @always_inline
 def fp_e_mul(a: EF20, b: EF20) -> EF20:
     """Five-limb schoolbook on float lanes, no reduction, output limb by limb (25 F4 products, |lane| <=
-    8 |x| |y| each, then v^5 = G5 on the wrapped sum). Lane bound 136 |x| |y| per lane: with canonical
-    operands (<= 126) every lane is below 2.2 M, with centered operands (<= 63) below 0.55 M; fp_reduce
+    8 |x| |y| each, then v^5 = G5 on the wrapped sum). Lane bound 88 |x| |y| per lane (fp_mul4 lanes 2, 3 carry 4 terms; review 2026-09-13): with
+    canonical operands (<= 126) every lane is below 1.4 M, with centered operands (<= 63) below 0.35 M; fp_reduce
     needs the sum of such products a caller accumulates to stay below 4 M for a centered result."""
     var r = EF20(0)
     comptime for t in range(E_LIMBS):

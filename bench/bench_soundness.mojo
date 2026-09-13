@@ -159,7 +159,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     var numerator = 0
     for term in result[0]:
         numerator += term[1]
-    print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits)
+    print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits, "grind_bits", p.grind_bits)
     print("columns W/Z/Q/public", s.columns_w, s.columns_z, s.columns_q, s.columns_p,
           "points", s.points, "entries", s.entries, "horner", s.accumulators(), "wiring_products", s.wiring_products())
     print("level 1: dimension/length/queries", p.N() // 4, p.L(), p.queries())
@@ -167,10 +167,11 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
         print("level", i + 2, "dimension/length/queries", s.tail[i].rows, s.tail[i].L, s.tail[i].queries)
     for term in result[0]:
         print("field_numerator", term[0], term[1])
-    print("query_error", result[1], "query_bits", bits(result[1]), "field_numerator_total", numerator)
-    print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + result[1]))
-    print("projected_e16_same_geometry_and_queries", bits(Float64(numerator) / field_order(16) + result[1]))
-    print("projected_e20_same_geometry_and_queries", bits(Float64(numerator) / field_order(20) + result[1]))
+    var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
+    print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
+    print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))
+    print("projected_e16_same_geometry_and_queries", bits(Float64(numerator) / field_order(16) + q_err))
+    print("projected_e20_same_geometry_and_queries", bits(Float64(numerator) / field_order(20) + q_err))
 
 
 def self_check() raises:
@@ -193,7 +194,7 @@ def self_check() raises:
     # A compiled two-family 4x4 statement, once clear and once with one committed tail.
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
     comptime for i in range(2):
-        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1,
+        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0,
                             leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3)
         var st = Statement()
         st.col("x", BIT)

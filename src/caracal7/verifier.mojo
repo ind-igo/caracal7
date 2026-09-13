@@ -448,6 +448,8 @@ struct Opened:
 def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript[p, H], shape: Shape, i: Int,
                                        root_w: List[UInt8], root_z: List[UInt8], root_q: List[UInt8], roots: List[List[UInt8]]) raises -> Opened:
     """Sample S on the level before committed level i (level 1 when i == 0) and check its multiproof(s)."""
+    if p.grind_bits > 0:
+        t.grind(r.take(8), p.grind_bits)
     if i == 0:
         var positions = t.positions(p.queries(), p.L())
         var row_w = 4 * shape.columns_w

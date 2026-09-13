@@ -15,7 +15,7 @@ from std.math import ceildiv
 from std.gpu import global_idx, thread_idx
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F4, E, E_WIDTH, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
+from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
 from caracal7.core.params import Params
 from caracal7.core.tables import RsTables, RsDomain
 from caracal7.pcs.encode import rs_encode_on, pack_index
@@ -201,7 +201,7 @@ def k_round_partial[threads: Int](base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BY
 
 
 def k_round_sum[threads: Int](base: Base, partial: Buf[E_BYTES], dst: Buf[E_BYTES]):
-    """48 threads, one per (evaluation b, byte l): the round message s = (s(0), s(1), s(2)) from the partial sums."""
+    """3 e threads, one per (evaluation b, byte l): the round message s = (s(0), s(1), s(2)) from the partial sums."""
     var i = Int(thread_idx.x)                        # one block
     if i >= 3 * E_BYTES:
         return

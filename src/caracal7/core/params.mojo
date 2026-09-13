@@ -59,6 +59,7 @@ struct Profile(TrivialRegisterPassable, Writable):
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
     var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
+    var grind_bits: Int     # proof-of-work bits on every query seed; the per-level query target is lambda_bits - grind_bits
     var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv (the tail keeps RATE_INV)
 
     def grid(self, rows_per_chain: Int, chains: Int) -> Params:
@@ -72,15 +73,16 @@ struct Profile(TrivialRegisterPassable, Writable):
         return Params(e=self.e, a1=ax1[0], m1=ax1[1], a2=ax2[0], m2=ax2[1],
                       L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
                       leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
-                      tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits)
+                      tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits, grind_bits=self.grind_bits)
 
 
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
 # at e = 20, docs/soundness.md; 103 until 2026-09-13), three-digit tail folds, the level-1 domain at rate <= 1/4
 # (the query formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode
 # and Merkle work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain
-# (the tensor verifier's clear check costs units x clear length).
-comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, rate_inv=4)
+# (the tensor verifier's clear check costs units x clear length), 20 bits of grinding on every query seed (the
+# prover spends 2^20 hashes per level, milliseconds on the GPU, and samples 92-bit queries; docs/soundness.md).
+comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20, rate_inv=4)
 
 
 @fieldwise_init
@@ -96,6 +98,7 @@ struct Params(TrivialRegisterPassable, Writable):
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
     var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
+    var grind_bits: Int     # proof-of-work bits on every query seed (transcript.grind); 0 disables the nonce
 
     # ---- derived ----
     def h1(self) -> Int:
@@ -120,8 +123,9 @@ struct Params(TrivialRegisterPassable, Writable):
         return Float64(self.N()) / Float64(4 * self.n_cw() * self.L())
 
     def queries(self) -> Int:
-        """|S| = ceil(lambda' / log2(2 / (1 + rate))), spec section 9."""
-        return Int(ceildiv(Float64(self.lambda_bits), log2(2.0 / (1.0 + self.rate()))))
+        """|S| = ceil((lambda' - grind_bits) / log2(2 / (1 + rate))), spec section 9 with the grinding bits taken off
+        the per-level target (each level's nonce costs the prover 2^grind_bits hashes per attempt)."""
+        return Int(ceildiv(Float64(self.lambda_bits - self.grind_bits), log2(2.0 / (1.0 + self.rate()))))
 
     def leaf_columns_max(self) -> Int:
         """Columns one tree can hold under the one-chunk leaf rule: leaf_bytes / (4 n_cw)."""
@@ -132,6 +136,8 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("grid needs the codeword split (n_cw > 1): no level-1 domain holds N / 4 symbols at the profile's rate")
         if self.e != E_BYTES:
             raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
+        if self.grind_bits < 0 or self.grind_bits > 26 or self.grind_bits >= self.lambda_bits:
+            raise Error("grind_bits in [0, 26] and below lambda_bits (the nonce search tries 16 x 2^grind_bits u32 nonces)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

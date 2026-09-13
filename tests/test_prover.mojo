@@ -18,7 +18,7 @@ from caracal7.workload import prove_workload, verify_workload
 from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
-comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
+comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, rate_inv=4)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it
 comptime p = FLAT.grid(72, 32)
 
 
@@ -53,7 +53,7 @@ def test_tail_schedule_folds_a_larger_grid() raises:
     assert_equal(s[1].cosets, 4)
     assert_equal(s[2].rows, 72)
     assert_equal(s[3].rows, 9)
-    assert_true(s[0].queries >= 110 and s[0].queries <= 125)
+    assert_true(s[0].queries >= 90 and s[0].queries <= 105)
     var shape = synthetic_statement(357).compile[big]().take_shape()
     assert_equal(shape.clear_length, 9)
 
@@ -99,7 +99,7 @@ def test_derived_grids() raises:
     comptime wide = CLIENT.grid(288, 128)
     assert_equal(wide.L(), 40320)                     # 9216 symbols: one coset of 2^7 x 315, rate 0.229
     assert_equal(wide.m_cosets, 1)
-    assert_equal(wide.queries(), 160)                # ceil(112 / log2(2 / 1.229))
+    assert_equal(wide.queries(), 131)                # ceil((112 - 20) / log2(2 / 1.229))
     comptime proxy = CLIENT.grid(2016, 576)
     assert_equal(proxy.N(), 1161216)
     var stopped = String("")
@@ -377,6 +377,8 @@ def test_prove_and_verify_with_tail() raises:
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, tensor form)")
     # a flipped byte in the first level's sumcheck messages: after its root and the three level-1 multiproofs
     var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + 2 * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
+    if big.grind_bits > 0:
+        pos += 8                                  # the level-1 query seed's nonce
     for _ in range(3):
         var n = Int(proof[pos]) | Int(proof[pos + 1]) << 8 | Int(proof[pos + 2]) << 16 | Int(proof[pos + 3]) << 24
         pos += 4 + n
@@ -397,6 +399,8 @@ def test_prove_and_verify_with_tail() raises:
         _ = reader.take(9 * big.e)
         if i + 1 < len(shape.tail):
             _ = reader.take(32)
+            if big.grind_bits > 0:
+                _ = reader.take(8)
             _ = reader.prefixed()
     regions.append((reader.pos, shape.clear_length * big.e))
     _reject_noncanonical[big](proof, shape, c.families, regions)
