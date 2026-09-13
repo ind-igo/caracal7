@@ -41,7 +41,8 @@ factor. MUL ops take chains in order; add ops take lanes in order, a chain per m
 the circuit (so the static public data can derive the per-chain columns and the factor list; the statement
 pins them) then the public values, VALUE bytes each, below 2^FOLDED."""
 
-from std.memory import unsafe_memcpy, unsafe_memset_zero
+from std.memory import unsafe_memcpy
+from max.algorithm import parallelize
 from caracal7.core.params import Params
 from caracal7.relations.ir import FIX_E, CHAL_MUL
 from caracal7.relations.statement import Statement, Layout, Term, BIT
@@ -767,7 +768,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
     """Every op from its values on its chain and lane; the other chains idle. On chain `cheat` (if any) the
     idle row's slot 3 holds a pile of two and the product ripple starts from carry 1, so r = a b + 1 there
     satisfies every family and only the zero row catches it. Each chain is written into a (columns, h1)
-    buffer that fits the cache, then copied into the column-major trace."""
+    buffer that fits the cache, then copied into the column-major trace; the chains run in parallel."""
     comptime h1 = p.h1()
     comptime N = p.N()
     var at = _place(ops)
@@ -809,20 +810,32 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         cy.extend(_cols(layout, "y" + String(k), False))
     var fold1 = _fold_cols(layout, "r", "h", "o", "z")
     var fold2 = _fold_cols(layout, "o", "g", "f", "v")
-    var chain = List[UInt8](length=columns * h1, fill=0)
-    for x2 in range(p.h2()):
+    var errors = List[String](length=p.h2(), fill=String(""))
+
+    @parameter
+    def one_chain(x2: Int):
+        """Chain x2 into its own buffer, then into its rows of the trace; an error is kept for the caller."""
         var live = mul_at[x2] >= 0
         if not live and len(adds[x2]) == 0 and x2 != cheat:
-            continue
-        unsafe_memset_zero(chain.unsafe_ptr(), columns * h1)
-        for j in adds[x2]:
-            _add_lane[p](chain, lanes[at[j][1]], vals[j], ops[j], mbits[ops[j].mod])
-        if live or x2 == cheat:
-            _mul_chain[p](chain, x2 == cheat, vals[mul_at[x2] if live else 0], live, ca, cb, cr, cc, cy)
-            _fold_chain[p](chain, fold1)
-            _fold_chain[p](chain, fold2)
+            return
+        var chain = List[UInt8](length=columns * h1, fill=0)
+        try:
+            for j in adds[x2]:
+                _add_lane[p](chain, lanes[at[j][1]], vals[j], ops[j], mbits[ops[j].mod])
+            if live or x2 == cheat:
+                _mul_chain[p](chain, x2 == cheat, vals[mul_at[x2] if live else 0], live, ca, cb, cr, cc, cy)
+                _fold_chain[p](chain, fold1)
+                _fold_chain[p](chain, fold2)
+        except e:
+            errors[x2] = String(e)
+            return
         for c in range(columns):
             unsafe_memcpy(dest=trace.unsafe_ptr().unsafe_offset(c * N + x2 * h1), src=chain.unsafe_ptr().unsafe_offset(c * h1), count=h1)
+
+    parallelize[one_chain](p.h2())
+    for x2 in range(p.h2()):
+        if errors[x2].byte_length() > 0:
+            raise Error(errors[x2])
     return trace^
 
 
