@@ -4,15 +4,16 @@ Run with `uv run mojo run --Werror -I src bench/bench_soundness.mojo`.
 No GPU work, proofs, or cached shape counts. Exit zero means the calculation ran, not certification.
 """
 
-from std.math import log2, max, abs
+from std.math import log2, max, abs, sqrt, ceil
 from std.testing import assert_equal, assert_true, assert_raises
 
 from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params, REGIME_UNIQUE, REGIME_CAPACITY, query_count
+from caracal7.core.params import CLIENT, Params, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
 from caracal7.core.bytes import get_u16
 from caracal7.relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
 from caracal7.relations.statement import Compiled, Statement, Term, BIT
 from caracal7.workload import Workload
+from caracal7.proof import Shape
 from caracal7.workloads.sha256 import Sha256
 from caracal7.workloads.keccak import Keccak
 from caracal7.workloads.poseidon import Poseidon
@@ -51,16 +52,32 @@ def horner_degree(rows: Int, scale: Int, ingest: Int, start: Int) -> Int:
 
 
 def query_error(length: Int, dimension: Int, queries: Int, regime: Int = REGIME_UNIQUE, eta_inv: Int = 16) raises -> Float64:
-    """The miss probability of `queries` draws: per query (1 + rate) / 2 in the unique regime (proven),
-    rate + eta under the capacity conjecture (unproven; the field terms are not re-derived for it)."""
+    """The miss probability of `queries` draws at the regime's per-query miss (params.miss_probability)."""
     if dimension <= 0 or dimension >= length or queries <= 0:
         raise Error("query bound needs 0 < dimension < length and positive queries")
-    var rate = Float64(dimension) / Float64(length)
-    var miss = (1.0 + rate) / 2.0 if regime == REGIME_UNIQUE else rate + 1.0 / Float64(eta_inv)
+    var miss = miss_probability(Float64(dimension) / Float64(length), regime, eta_inv)
     var error = 1.0
     for _ in range(queries):
         error *= miss
     return error
+
+
+def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int) raises -> Int:
+    """The correlated-agreement error numerator of one code (error = numerator / |E|): `length` at the
+    unique-decoding radius (BCIKS20 1.2 / 1.7); at the Johnson radius BCHKS25 Theorem 1.5, radius
+    1 - sqrt(rho) - eta with m = max(ceil(sqrt(rho) / (2 eta)), 3):
+    (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho), rounded up.
+    The capacity conjecture has no proven numerator; the ledger keeps `length` there as a placeholder."""
+    if regime != REGIME_JOHNSON:
+        return length
+    var rho = Float64(dimension) / Float64(length)
+    var eta = 1.0 / Float64(eta_inv)
+    var gamma = 1.0 - sqrt(rho) - eta
+    if gamma <= 0.0:
+        raise Error("Johnson radius needs sqrt(rate) + eta < 1")
+    var m = max(ceil(sqrt(rho) / (2.0 * eta)), 3.0) + 0.5
+    var a = (2.0 * m * m * m * m * m + 3.0 * m * gamma * rho) / (3.0 * rho * sqrt(rho)) * Float64(length) + m / sqrt(rho)
+    return Int(ceil(a))
 
 
 def field_order(e: Int) -> Float64:
@@ -127,13 +144,13 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     for i in range(len(s.restrictions) // RES):
         restrictions += max(p.h1(), get_u16(s.restrictions, i * RES + 4)) - 1
 
-    var gap = p.L()                    # level 1: uniform E^columns fold, block alphabet
+    var gap = gap_numerator(p.L(), p.N() // 4, p.regime, p.eta_inv)      # level 1: uniform E^columns fold, block alphabet
     var batch = 0
     var queries = query_error(p.L(), p.N() // 4, p.queries(), p.regime, p.eta_inv)
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
-        gap += 3 * level.L             # later folds: tensor randomness in three E elements
+        gap += 3 * gap_numerator(level.L, level.rows, p.regime, p.eta_inv)   # later folds: tensor randomness in three E elements
         batch += (4 if i == 0 else 1) * previous_queries + 1
         queries += query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
         previous_queries = level.queries
@@ -155,6 +172,22 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     return (terms^, queries)
 
 
+def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int) raises:
+    var per_level = p.lambda_bits - p.grind_bits
+    var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
+    var queries = String(q1)
+    var error = query_error(p.L(), p.N() // 4, q1, regime, p.eta_inv)
+    var gap = gap_numerator(p.L(), p.N() // 4, regime, p.eta_inv)
+    for i in range(len(s.tail)):
+        var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)
+        queries += "/" + String(q)
+        error += query_error(s.tail[i].L, s.tail[i].rows, q, regime, p.eta_inv)
+        gap += 3 * gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv)
+    var q_err = error / Float64(1 << p.grind_bits)
+    print(name, "eta_inv", p.eta_inv, "queries_per_level", queries, "query_bits", bits(q_err), "pcs_gap", gap,
+          "conditional_iop_bits", bits(Float64(numerator_no_gap + gap) / field_order(p.e) + q_err))
+
+
 def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     var c = w.statement[p]().compile[p]()
     ref s = c.shape
@@ -168,18 +201,16 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     print("level 1: dimension/length/queries", p.N() // 4, p.L(), p.queries())
     for i in range(len(s.tail)):
         print("level", i + 2, "dimension/length/queries", s.tail[i].rows, s.tail[i].L, s.tail[i].queries)
-    # the capacity conjecture (unproven; the field terms are not re-derived for it): the queries each level
-    # would need at the same per-level target, and the query error of the compiled queries under it
-    var per_level = p.lambda_bits - p.grind_bits
-    var cap_queries = String(query_count(per_level, p.rate(), REGIME_CAPACITY, p.eta_inv))
-    var cap_error = query_error(p.L(), p.N() // 4, p.queries(), REGIME_CAPACITY, p.eta_inv)
-    for i in range(len(s.tail)):
-        cap_queries += "/" + String(query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), REGIME_CAPACITY, p.eta_inv))
-        cap_error += query_error(s.tail[i].L, s.tail[i].rows, s.tail[i].queries, REGIME_CAPACITY, p.eta_inv)
-    print("capacity_conjecture eta_inv", p.eta_inv, "queries_per_level", cap_queries,
-          "query_bits_at_compiled_queries", bits(cap_error / Float64(1 << p.grind_bits)))
+    var numerator_no_gap = 0
     for term in result[0]:
         print("field_numerator", term[0], term[1])
+        if term[0] != "pcs_gap":
+            numerator_no_gap += term[1]
+    # projections of the other regimes at the same geometry: the queries each level would need at the same
+    # per-level target, the query error at those queries, and (Johnson only) the pcs_gap numerator of
+    # BCHKS25 1.5 in place of the unique one, so the last number is the ledger the switch would compile
+    projection[p](s, "capacity_conjecture", REGIME_CAPACITY, numerator_no_gap)
+    projection[p](s, "johnson_bchks25_1.5", REGIME_JOHNSON, numerator_no_gap)
     var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
     print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
     print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))

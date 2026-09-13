@@ -1476,3 +1476,14 @@ makes the Ligerito fold a single vector, so every column is opened at every poin
 distinct read shifts in a circuit; and merging ECDSA's thirteen Horner accumulators is a circuit change
 (eight are per-lane plain fingerprints the wiring reads one coordinate at a time), worth about 120 Z
 columns or 85 KB of the 705 KB proof if the wiring can take tuple fingerprints.
+
+## The Johnson regime is charged from BCHKS25 Theorem 1.5 (2026-09-14)
+
+`REGIME_JOHNSON` sizes queries at radius `1 - sqrt(rate) - eta` and the ledger charges its correlated
+agreement error from Ben-Sasson, Carmon, Haböck, Kopparty, Saraf, "On Proximity Gaps of Reed-Solomon
+Codes" (STOC 2026, ePrint 2025/2055), Theorem 1.5: a count linear in the code length with an `eta^-5`
+constant, on any domain and any field. BCIKS20 Theorem 1.2 charged `n^2` with an `eta^-7` constant, which
+cost about 33 bits at our sizes and was why the Johnson regime looked worse than unique decoding. With the
+new term the whole ECDSA ledger projects to 101 bits at e = 20 with half the queries. The ledger prints the
+projection for every case; `CLIENT` stays at `REGIME_UNIQUE` because the batched (affine-space) and
+mutual forms and the list-regime level 1 argument are not yet written down for caracal7 (docs/soundness.md).

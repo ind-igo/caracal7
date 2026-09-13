@@ -6,7 +6,7 @@ by `domain_for` at the profile's `rate_inv` with the fewest cosets (the tail lev
 The grid belongs to the statement, the profile to the target.
 There is one profile, `CLIENT`; a second one appears with a second target (the VM), not with a second grid."""
 
-from std.math import ceildiv, log2
+from std.math import ceildiv, log2, sqrt
 
 from caracal7.core.field import E_BYTES
 
@@ -15,12 +15,22 @@ comptime RATE_INV = 32              # rate rule of spec 9.5 for the tail levels:
 comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
 comptime REGIME_UNIQUE = 0          # proximity radius (1 - rate) / 2: proven (BCIKS20 1.2 / 1.7, the ledger's regime)
 comptime REGIME_CAPACITY = 1        # radius 1 - rate - eta: the up-to-capacity conjecture, unproven (docs/soundness.md)
+comptime REGIME_JOHNSON = 2         # radius 1 - sqrt(rate) - eta: BCHKS25 Theorem 1.5 (pairs; the batched and mutual forms are open, docs/soundness.md)
+
+
+def miss_probability(rate: Float64, regime: Int, eta_inv: Int) -> Float64:
+    """The per-query miss probability of the regime: (1 + rate) / 2 at the unique-decoding radius, rate + eta
+    under the capacity conjecture, sqrt(rate) + eta at the Johnson radius (spec section 12)."""
+    if regime == REGIME_UNIQUE:
+        return (1.0 + rate) / 2.0
+    if regime == REGIME_JOHNSON:
+        return sqrt(rate) + 1.0 / Float64(eta_inv)
+    return rate + 1.0 / Float64(eta_inv)
 
 
 def query_count(lambda_bits: Int, rate: Float64, regime: Int, eta_inv: Int) -> Int:
-    """|S| = ceil(lambda' / -log2(miss)) with the per-query miss probability of the regime: (1 + rate) / 2 in
-    the unique-decoding regime, rate + 1 / eta_inv under the capacity conjecture (spec section 12)."""
-    var miss = (1.0 + rate) / 2.0 if regime == REGIME_UNIQUE else rate + 1.0 / Float64(eta_inv)
+    """|S| = ceil(lambda' / -log2(miss)) at the regime's per-query miss probability (miss_probability)."""
+    var miss = miss_probability(rate, regime, eta_inv)
     return Int(ceildiv(Float64(lambda_bits), -log2(miss)))
 
 
@@ -153,8 +163,8 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
         if self.grind_bits < 0 or self.grind_bits > 26 or self.grind_bits >= self.lambda_bits:
             raise Error("grind_bits in [0, 26] and below lambda_bits (u32 nonces: 2^grind_bits tries on average)")
-        if (self.regime != REGIME_UNIQUE and self.regime != REGIME_CAPACITY) or self.eta_inv < 2:
-            raise Error("regime is REGIME_UNIQUE or REGIME_CAPACITY; eta_inv >= 2")
+        if self.regime < REGIME_UNIQUE or self.regime > REGIME_JOHNSON or self.eta_inv < 2:
+            raise Error("regime is REGIME_UNIQUE, REGIME_CAPACITY or REGIME_JOHNSON; eta_inv >= 2")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

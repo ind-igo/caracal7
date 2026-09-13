@@ -39,11 +39,22 @@ Output:
 - `query_error_per_attempt` is the sum over **all committed levels**, including level 1, of the miss
   probability of one transcript attempt; `query_error` divides it by `2^grind_bits`, the hashes one
   attempt costs the prover (see Grinding below).
-- `capacity_conjecture ...` is a projection under the up-to-capacity conjecture (radius `1 - rate - eta`,
-  per-query miss `rate + eta`): the queries each level would need at the same per-level target, and the
-  query bits the compiled queries would carry. `Profile.regime = REGIME_CAPACITY` compiles that regime;
-  `CLIENT` stays at `REGIME_UNIQUE`. The conjecture is unproven and the field terms are not re-derived
-  for it (they carry an `eta` dependence there, spec section 12); nothing in this note certifies it.
+- `capacity_conjecture ...` and `johnson_bchks25_1.5 ...` are projections of the other two regimes at the
+  same geometry: the queries each level would need at the same per-level target, the query bits at those
+  queries, the `pcs_gap` numerator of that regime, and the `conditional_iop_bits` the switch would compile.
+  `Profile.regime` selects the regime; `CLIENT` stays at `REGIME_UNIQUE`.
+  - `REGIME_CAPACITY` (radius `1 - rate - eta`, miss `rate + eta`) is the unproven up-to-capacity
+    conjecture. It has no proven field term; the projection keeps the unique `pcs_gap` as a placeholder,
+    so its `conditional_iop_bits` is the query term only. Nothing in this note certifies it.
+  - `REGIME_JOHNSON` (radius `1 - sqrt(rate) - eta`, miss `sqrt(rate) + eta`) charges the correlated
+    agreement error of BCHKS25 Theorem 1.5 ([[raw/papers/proximity-gaps-rs-codes]], any domain, any field):
+    `a / |E|` per code with `m = max(ceil(sqrt(rho) / (2 eta)), 3)` and
+    `a = (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho)`, linear in `n`
+    where BCIKS20 1.2 had `n^2`. The theorem is stated for pairs (lines); the ledger applies it in the
+    same places as the unique term (level 1 uniform fold, three tensor elements per tail level). The
+    affine-space (batched columns) form, the mutual form (Haböck 2025, cited there), and the list-regime
+    rewrite of the level 1 close case (spec 12.2) are open obligations before this regime is proven for
+    caracal7. The constant grows as `rho^-1.5`, so the low-rate tail levels dominate the term.
 - `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)` at the compiled `e`, rounded down to
   two decimals.
 - `projected_e16_...` and `projected_e20_...` change only the denominator to `127^16` or `127^20` at
@@ -140,6 +151,12 @@ proximity result; see Diamond and Gruen,
 [Proximity Gaps in Interleaved Codes](https://eprint.iacr.org/2024/1351), Theorems 3.1 and 3.6,
 Corollary 3.7, and the Ligerito construction. The last committed code is included even though its
 folded message is sent in the clear. There is no extra code or sumcheck after that clear message.
+
+**Johnson projection (e = 20, eta = 1/16, 2026-09-14).** ECDSA: 74/39/45/45 queries (203 against 401) at
+101.45 conditional bits; SHA-256 2048: 76/39/45/45/45 at 101.52; Poseidon 12: 88/42/44/45/45 at 103.07;
+the small cases 105 to 107. The field term caps the regime near 101 bits because the tail levels sit at
+rates near 1/60, where the `rho^-1.5` constant is large; holding 112 would take e = 22, a higher tail
+rate rule for this regime, or a per-level `eta`. Not adopted: the three obligations above are open.
 
 **Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
 grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from

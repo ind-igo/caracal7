@@ -1,6 +1,6 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from caracal7.core.field import E_BYTES
-from caracal7.core.params import Params, CLIENT, REGIME_UNIQUE
+from caracal7.core.params import Params, CLIENT, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
 
 
 def test_small_grid() raises:
@@ -25,6 +25,16 @@ def test_query_formula_matches_spec_rows() raises:
     q.m2 = 3
     # N = 8064 * 96 = 774144; rate = 0.3
     assert_true(q.queries() > 104)
+
+
+def test_regime_miss_probabilities() raises:
+    # rate 1/4, eta 1/16: unique 5/8, Johnson 1/2 + 1/16, capacity 1/4 + 1/16
+    assert_equal(miss_probability(0.25, REGIME_UNIQUE, 16), 0.625)
+    assert_equal(miss_probability(0.25, REGIME_JOHNSON, 16), 0.5625)
+    assert_equal(miss_probability(0.25, REGIME_CAPACITY, 16), 0.3125)
+    assert_equal(query_count(92, 0.25, REGIME_UNIQUE, 16), 136)
+    assert_equal(query_count(92, 0.25, REGIME_JOHNSON, 16), 111)
+    assert_equal(query_count(92, 0.25, REGIME_CAPACITY, 16), 55)
 
 
 def test_check_rejects_bad_profiles() raises:
