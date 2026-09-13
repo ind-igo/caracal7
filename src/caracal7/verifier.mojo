@@ -22,7 +22,7 @@ from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
 from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
-from caracal7.core.bytes import get_u16, list_e
+from caracal7.core.bytes import get_u16, list_e, check_field_bytes
 
 
 def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8],
@@ -61,21 +61,21 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
         root_z = r.take(H.DIGEST)
         t.absorb(DS_TREE_Z, root_z)
         if shape.products() > 0:
-            z2v = r.take(shape.products() * p.h2() * p.e)
+            z2v = r.field_bytes(shape.products() * p.h2() * p.e)
             t.absorb(DS_TREE_Z, z2v)
     var alpha = list_e(t.elements(1), 0)
     var root_q = r.take(H.DIGEST)
     t.absorb(DS_TREE_Q, root_q)
     var q3 = List[UInt8]()
     if shape.accumulators() > 0:
-        q3 = r.take(2 * p.h2() * p.e)
+        q3 = r.field_bytes(2 * p.h2() * p.e)
         t.absorb(DS_TREE_Q, q3)
     var z = t.elements(2)
     var z1 = list_e(z, 0)
     var z2 = list_e(z, 1)
 
     # openings -> beta per column, gamma per point
-    var openings = r.take(shape.points * shape.columns() * p.e)
+    var openings = r.field_bytes(shape.points * shape.columns() * p.e)
     t.absorb(DS_OPENINGS, openings)
     var beta_gamma = t.elements(shape.columns() + shape.points)
     var d = Domains.__init__[p]()
@@ -125,6 +125,7 @@ def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inpu
             raise Error("family table names a challenge element past the shape's derivation table")
     if len(public) != shape.public_bytes[p]():
         raise Error("public data has the wrong size")
+    check_field_bytes(public)
 
 
 def _one() -> E:
@@ -376,7 +377,7 @@ struct _Tail[p: Params]:
         else:
             for q in range(count):
                 row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q), self.folded, D, M, self.units)
-        var rounds = r.take(9 * e)
+        var rounds = r.field_bytes(9 * e)
         var r_l = List[UInt8]()
         for dgt in range(3):
             if f_add(list_e(rounds, 3 * dgt), list_e(rounds, 3 * dgt + 1)) != claim:
@@ -404,7 +405,7 @@ struct _Tail[p: Params]:
         comptime D = Self.p.a1 + Self.p.a2
         if shape.clear_length != self.y_len:
             raise Error("shape.clear_length does not match the tail schedule")
-        var y = r.take(shape.clear_length * Self.p.e)
+        var y = r.field_bytes(shape.clear_length * Self.p.e)
         t.absorb(DS_CLEAR, y)
         var last = _open_previous[Self.p, H](r, t, shape, len(shape.tail), root_w, root_z, root_q, self.roots)
         r.done()

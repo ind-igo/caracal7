@@ -12,7 +12,7 @@ from max.gpu.host import DeviceContext
 from caracal7.core.params import Params
 from caracal7.core.hash import Hash
 from caracal7.core.backend import BACKEND
-from caracal7.core.bytes import Base, Buf, u32, put_u32, host_base
+from caracal7.core.bytes import Base, Buf, u32, put_u32, host_base, check_field_bytes
 from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
@@ -177,7 +177,8 @@ def distinct_sorted(positions: List[Int]) -> List[Int]:
 def check_multiproof[H: Hash](root: Span[UInt8, _], leaves: Int, row_bytes: Int, positions: List[Int],
                               mut proof: List[UInt8]) raises -> List[UInt8]:
     """Host side. Recomputes the root from the multiproof (without its u32 header); raises on mismatch.
-    Returns the opened rows in ascending distinct position order."""
+    Returns canonical F127 row coordinates in ascending distinct position order.
+    Only rows are field bytes; roots and sibling digests may contain any byte."""
     var known = distinct_sorted(positions)
     var m = len(known)
     if len(proof) < m * row_bytes:
@@ -226,4 +227,5 @@ def check_multiproof[H: Hash](root: Span[UInt8, _], leaves: Int, row_bytes: Int,
         raise Error("multiproof has trailing bytes")
     if Span(digests) != root:
         raise Error("multiproof root mismatch")
+    check_field_bytes(rows)
     return rows^

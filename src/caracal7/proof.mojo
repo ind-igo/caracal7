@@ -15,6 +15,8 @@ Order, every integer little-endian, every field element e bytes:
 
 Multiproofs are length-prefixed because the sibling frontier depends on the sampled positions.
 Everything else has a size fixed by `Shape`, so the verifier can check the total length up front.
+Field coordinates must be canonical bytes below 127, including authenticated codeword rows.
+Roots, sibling hashes, length words, and raw public inputs are opaque bytes.
 """
 
 from std.math import log2
@@ -27,7 +29,7 @@ from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE,
 from caracal7.core.hash import Hash
 from caracal7.core.tables import F2_ORDER, Domains, f2_primitive
 from caracal7.core.field import ext_mul, ext_pow
-from caracal7.core.bytes import append_u32, get_u16, host_base
+from caracal7.core.bytes import append_u32, get_u16, host_base, check_field_bytes
 
 comptime VERSION: UInt32 = 1
 
@@ -562,6 +564,7 @@ struct ProofReader:
         return v
 
     def take(mut self, n: Int) raises -> List[UInt8]:
+        """Opaque bytes; use field_bytes for coordinates that will enter field arithmetic."""
         if self.pos + n > len(self.bytes):
             raise Error("proof truncated")
         var out = List[UInt8](capacity=n)
@@ -569,6 +572,12 @@ struct ProofReader:
             out.append(self.bytes[self.pos + i])
         self.pos += n
         return out^
+
+    def field_bytes(mut self, n: Int) raises -> List[UInt8]:
+        """Read n bytes of canonical field coordinates; hashes and raw inputs use take/prefixed."""
+        var bytes = self.take(n)
+        check_field_bytes(bytes)
+        return bytes^
 
     def prefixed(mut self) raises -> List[UInt8]:
         var n = self.u32()

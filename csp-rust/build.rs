@@ -1,5 +1,6 @@
 //! Builds the caracal7 C API (`cli/ffi.mojo`) as a shared library with the repo's Mojo toolchain and
-//! links it. `CARACAL7_REPO` names the caracal7-prover checkout; the default is the parent directory.
+//! links it (the library carries the rpath to the Mojo runtime in the repo venv). `CARACAL7_REPO` names
+//! the caracal7-prover checkout; the default is the parent directory.
 
 use std::{env, path::PathBuf, process::Command};
 
@@ -22,17 +23,9 @@ fn main() {
         .status()
         .expect("uv run mojo build");
     assert!(status.success(), "mojo build of cli/ffi.mojo failed");
-    // The Mojo runtime dylibs the library links against live in the repo's venv.
-    let rt = Command::new("uv")
-        .args(["run", "python", "-c", "import modular, os; print(os.path.join(os.path.dirname(modular.__file__), 'lib'))"])
-        .current_dir(&repo)
-        .output()
-        .expect("uv run python");
-    let rt = String::from_utf8(rt.stdout).unwrap().trim().to_string();
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=dylib=caracal7");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", out.display());
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{rt}");
     println!("cargo:rerun-if-changed={}", repo.join("cli/ffi.mojo").display());
     println!("cargo:rerun-if-changed={}", repo.join("src").display());
     println!("cargo:rerun-if-env-changed=CARACAL7_REPO");

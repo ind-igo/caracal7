@@ -28,6 +28,8 @@ pub struct Session {
     handle: isize,
     target: Target,
     size: usize,
+    /// The prover behind the handle mutates its arena on every call: one thread at a time.
+    _single_thread: std::marker::PhantomData<*mut ()>,
 }
 
 impl Drop for Session {
@@ -73,7 +75,7 @@ pub fn prepare(target: Target, size: usize) -> Session {
     let data = input_bytes(target, size);
     let handle = unsafe { c7_open(runtime(), target as isize, size as isize, data.as_ptr()) };
     assert!(handle > 0, "caracal7: c7_open failed for {target:?} {size}");
-    Session { handle, target, size }
+    Session { handle, target, size, _single_thread: std::marker::PhantomData }
 }
 
 pub fn prove(s: &Session) -> Vec<u8> {
@@ -91,12 +93,16 @@ pub fn verify(s: &Session, proof: &Vec<u8>) {
 
 /// Committed witness cells: the circuit size the benchmark reports.
 pub fn cells(s: &Session) -> usize {
-    unsafe { c7_cells(s.handle, s.target as isize, s.size as isize) as usize }
+    let n = unsafe { c7_cells(s.handle, s.target as isize, s.size as isize) };
+    assert!(n >= 0, "caracal7: c7_cells failed");
+    n as usize
 }
 
 /// The per-grid tables built before any input is seen.
 pub fn preprocessing_size(s: &Session) -> usize {
-    unsafe { c7_preprocessing_bytes(s.handle, s.target as isize, s.size as isize) as usize }
+    let n = unsafe { c7_preprocessing_bytes(s.handle, s.target as isize, s.size as isize) };
+    assert!(n >= 0, "caracal7: c7_preprocessing_bytes failed");
+    n as usize
 }
 
 pub fn proof_size(proof: &Vec<u8>) -> usize {

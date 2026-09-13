@@ -105,8 +105,15 @@ def append_u32(mut l: List[UInt8], v: Int):
         l.append(UInt8((v >> (8 * i)) & 255))
 
 
+def check_field_bytes(bytes: Span[UInt8, _]) raises:
+    """Validate F127 coordinates once at a host trust boundary, before field arithmetic."""
+    for b in bytes:
+        if b >= 127:
+            raise Error("noncanonical field byte (expected < 127)")
+
+
 def list_e(l: Span[UInt8, _], i: Int) -> E:
-    """Element i of a (.., e) byte span."""
+    """Element i of a (.., e) byte span; coordinates must already be canonical (< 127)."""
     var v = E(0)
     for t in range(16):
         v[t] = l[i * 16 + t]

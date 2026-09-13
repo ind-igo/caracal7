@@ -100,5 +100,27 @@ def test_tree_and_multiproof() raises:
         _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, proof)
 
 
+def test_authenticated_rows_must_be_canonical() raises:
+    # Recommit each malformed row, so rejection cannot be explained by a broken Merkle root.
+    # Exercise level-1 F4 coordinates and a tail row of eight E elements, with opaque sibling bytes.
+    for width in [4, 8 * p.e]:
+        for offset in [0, width - 1]:
+            for byte in [126, 127, 128, 255]:
+                var row = List[UInt8](length=width, fill=126)
+                row[offset] = UInt8(byte)
+                var leaf = List[UInt8](length=32, fill=0)
+                var sibling = List[UInt8](length=32, fill=255)
+                var root = List[UInt8](length=32, fill=0)
+                Blake3.leaf(host_base(row), width, host_base(leaf))
+                Blake3.node(host_base(leaf), host_base(sibling), host_base(root))
+                var proof = row.copy()
+                proof.extend(sibling.copy())
+                if byte == 126:
+                    assert_equal(check_multiproof[Blake3](root, 2, width, [0], proof), row)
+                else:
+                    with assert_raises(contains="noncanonical field byte"):
+                        _ = check_multiproof[Blake3](root, 2, width, [0], proof)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

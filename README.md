@@ -39,6 +39,10 @@ Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later b
 
 ## csp-benchmarks results
 
+The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track the conditional
+security budget. The reported `security_bits: 103` is a query target, not a verified total;
+the note records the current bounds and outstanding proof and verifier obligations.
+
 Recorded for reference; the harness and its caveats are in `docs/csp.md`. Method: the csp-benchmarks
 orchestrator (`BENCH_INPUT_PROFILE=full`, hyperfine 10 runs) against `caracal7/`, so every time is a
 whole cold process through the shell wrapper (the warm in-process prover is 2 to 4 times faster; see

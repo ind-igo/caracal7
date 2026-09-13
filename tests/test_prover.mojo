@@ -7,7 +7,7 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.params import CLIENT, Params, Profile
 from caracal7.core.hash import Blake3
-from caracal7.proof import Shape, tail_schedule
+from caracal7.proof import Shape, ProofReader, tail_schedule
 from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from caracal7.verifier import verify
 from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS
@@ -109,6 +109,42 @@ def test_derived_grids() raises:
     assert_true(stopped.startswith("grid needs the codeword split"))
 
 
+def test_reader_field_bytes() raises:
+    var canonical = List[UInt8]()
+    for b in range(127):
+        canonical.append(UInt8(b))
+    var r = ProofReader(canonical.copy())
+    assert_equal(r.field_bytes(127), canonical)
+    assert_equal(len(r.field_bytes(0)), 0)
+    r.done()
+    with assert_raises(contains="truncated"):
+        _ = r.field_bytes(1)
+    for b in range(127, 256):
+        var bytes = List[UInt8](length=16, fill=0)
+        bytes[15] = UInt8(b)
+        var bad = ProofReader(bytes^)
+        with assert_raises(contains="noncanonical field byte"):
+            _ = bad.field_bytes(16)
+    # Raw length words and payloads are not field elements: length 255, then 255 opaque bytes.
+    var raw: List[UInt8] = [255, 0, 0, 0]
+    raw.extend(List[UInt8](length=255, fill=255))
+    r = ProofReader(raw^)
+    assert_equal(r.prefixed(), List[UInt8](length=255, fill=255))
+    r.done()
+
+
+def _reject_noncanonical[p: Params](proof: List[UInt8], shape: Shape, mut families: List[UInt8],
+                                    regions: List[Tuple[Int, Int]]) raises:
+    """Every direct field region rejects both edge coordinates before algebra/transcript failures."""
+    for region in regions:
+        for offset in [region[0], region[0] + region[1] - 1]:
+            for byte in [127, 128, 255]:
+                var bad = proof.copy()
+                bad[offset] = UInt8(byte)
+                with assert_raises(contains="noncanonical field byte"):
+                    _ = verify[p, Blake3](bad^, shape, List[UInt8](), families)
+
+
 def test_prove_and_verify() raises:
     """The reference profile has no committed tail level, so the level-1 stages are the whole proof:
     it verifies end to end, and one flipped byte in each region fails the check that owns it."""
@@ -147,6 +183,9 @@ def test_prove_and_verify() raises:
         except e:
             stopped = String(e)
         assert_true(stopped.startswith(tamper[1]), stopped)
+    _reject_noncanonical[p](proof, shape, c.families,
+        [(z2_bytes, shape.products() * p.h2() * p.e), (q3_bytes, 2 * p.h2() * p.e),
+         (openings, shape.points * shape.columns() * p.e), (clear, shape.clear_length * p.e)])
 
 
 def test_prove_and_verify_without_accumulators() raises:
@@ -305,6 +344,10 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     var short = public.copy()
     _ = short.pop()
     assert_equal(_public_case(ctx, proof, shape, c.families, short), "public data has the wrong size")
+    for offset in [0, len(block), len(public) - 1]:
+        var noncanonical = public.copy()
+        noncanonical[offset] = 127
+        assert_equal(_public_case(ctx, proof, shape, c.families, noncanonical), "noncanonical field byte (expected < 127)")
     var stopped = String("")
     try:
         var bad_pub = List[UInt8](length=2, fill=0)
@@ -344,6 +387,18 @@ def test_prove_and_verify_with_tail() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "sumcheck fails at a tail level")
+    # The first sumcheck is at pos; walk all later roots/frontiers to locate every round and the clear vector.
+    var reader = ProofReader(proof.copy())
+    reader.pos = pos
+    var regions = List[Tuple[Int, Int]]()
+    for i in range(len(shape.tail)):
+        regions.append((reader.pos, 9 * big.e))
+        _ = reader.take(9 * big.e)
+        if i + 1 < len(shape.tail):
+            _ = reader.take(32)
+            _ = reader.prefixed()
+    regions.append((reader.pos, shape.clear_length * big.e))
+    _reject_noncanonical[big](proof, shape, c.families, regions)
 
 
 
