@@ -137,7 +137,7 @@ struct Params(TrivialRegisterPassable, Writable):
         if self.e != E_BYTES:
             raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
         if self.grind_bits < 0 or self.grind_bits > 26 or self.grind_bits >= self.lambda_bits:
-            raise Error("grind_bits in [0, 26] and below lambda_bits (the nonce search tries 16 x 2^grind_bits u32 nonces)")
+            raise Error("grind_bits in [0, 26] and below lambda_bits (u32 nonces: 2^grind_bits tries on average)")
         if self.a1 < 2 or self.a1 > 7 or self.a2 < 2 or self.a2 > 7:
             raise Error("2 <= a_l <= 7")
         if 63 % self.m1 != 0 or 63 % self.m2 != 0:

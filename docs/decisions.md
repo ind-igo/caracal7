@@ -1447,11 +1447,13 @@ The search (`transcript.k_grind`) took four tries to reach 3 ms per level:
   copied the transcript state per try and ran the generic absorb with its merge stack: same speed, so
   that was not the cost, but the probe is the right shape and stays.
 - A plain load of `found` is hoisted out of the loop by the optimizer, so no thread ever saw it and
-  every search ran to its 16 x 2^20 limit (22 ms). An atomic read fixed that (9 ms); 32768 threads on
+  every search ran to its then 16 x 2^20 limit (22 ms). An atomic read fixed that (9 ms); 32768 threads on
   one atomic every few iterations was the rest, so one thread per block polls and broadcasts the value
   through threadgroup memory (3 ms).
 - Blocks leave once every nonce below the one found has been tried (block-uniform, so the barriers
   match), and the winner is the smallest passing nonce by `Atomic.min`: the proof is deterministic.
+  There is no try limit (Codex: a limit below the thread count left blocks partial at the barriers, and
+  an exhausted search staged an invalid nonce); the search ends with probability 1.
 
 Verified: test_transcript (the probe equals absorb then squeeze), test_prover (the tail test runs at
 CLIENT with grinding; the byte-offset walk skips the nonces), `bench_ecdsa`, the ledger for all 16 cases.

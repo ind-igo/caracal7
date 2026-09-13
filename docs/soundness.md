@@ -144,7 +144,7 @@ ledger charges the query term per attempt divided by `2^grind_bits`, the usual g
 (ethSTARK, section 6.2 of the Ligerito note), and sizes `s_i` from `lambda' - grind_bits`. This is a
 computational bound in the random-oracle model, not a statistical one: it is part of P5's claim, and
 the field terms are untouched by it. The search runs on device (smallest passing nonce, 3 ms at 20
-bits on the M1 Pro) and fails with probability `e^-16` per level, which the verifier then rejects.
+bits on the M1 Pro) and ends with probability 1.
 
 `A_pcs_batch` is conservatively the number of scalar claims batched before each three-round
 sumcheck: `4*s_previous+1` at the first tail level, `s_previous+1` subsequently. The factor four

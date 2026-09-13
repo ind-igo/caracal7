@@ -140,18 +140,18 @@ def k_grind_init(base: Base, found: Buf[4]):
 
 def k_grind[H: Hash](base: Base, state: Buf[1], bits: Int32, found: Buf[4]):
     """Thread t tries the nonces t, t + GRIND_THREADS, ... with `H.grind_probe` (two compressions from the
-    state's key words, nothing written) until one passes `grind_ok` or a nonce has been found; the smallest
-    passing nonce wins (Atomic.min), so the proof is deterministic. Every GRIND_POLL iterations one thread
-    per block reads `found` atomically (a plain load is hoisted out of the loop; 32768 atomics per poll
-    were a third of the search) and the block leaves together once its nonces pass the one found, so the
-    result is the smallest passing nonce. 16 x 2^bits nonces in all: the search
-    fails with probability e^-16."""
+    state's key words, nothing written) until a nonce has been found; the smallest passing nonce wins
+    (Atomic.min), so the proof is deterministic. Every GRIND_POLL iterations one thread per block reads
+    `found` atomically (a plain load is hoisted out of the loop; 32768 atomics per poll were a third of
+    the search) and the block leaves together once its nonces pass the one found, so every thread of a
+    block meets every barrier. No try limit: the search ends with probability 1 after 2^bits tries on
+    average (Codex 2026-09-13: a limit below the thread count left blocks partial at the barriers, and
+    an exhausted search staged an invalid nonce)."""
     var t = Int(global_idx.x)
     var src = state.ptr(base, 0)
-    var limit = 16 << Int(bits)
     var flag = stack_allocation[DType.uint32, address_space=AddressSpace.SHARED](row_major[1]())
     var k = t
-    while k < limit:
+    while True:
         if (k // GRIND_THREADS) % GRIND_POLL == 0:
             if thread_idx.x == 0:
                 flag[0] = Atomic.fetch_add(found.ptr(base, 0).unsafe_bitcast[UInt32](), UInt32(0))
@@ -167,8 +167,7 @@ def k_grind[H: Hash](base: Base, state: Buf[1], bits: Int32, found: Buf[4]):
 
 def k_grind_commit[H: Hash](base: Base, state: Buf[1], found: Buf[4], nonce: Buf[1]):
     """Write the nonce found (8 bytes, little-endian u64) where the proof stages it, absorb it, and take
-    the grind word so the positions come from block 1 on. A failed search writes 0xFFFFFFFF, which the
-    verifier rejects."""
+    the grind word so the positions come from block 1 on."""
     var n = u32(base, found.at(0))
     put_u32(base, nonce.at(0), n)
     put_u32(base, nonce.at(0) + 4, 0)
