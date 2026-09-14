@@ -292,7 +292,8 @@ proof reads the line theorem as a black box. Lemma 6.3 averages `Pr_z[Delta(u~ +
 over the lines of `U` parallel to a direction `u'`; some line beats `epsilon`, so the line theorem
 gives `Delta(u', C) <= delta` for every direction. The proof of 1.7 then takes a farthest point `u*`
 of `U`, its list `v_1*..v_L*` of codewords at that distance, and the sets `U_i` of points of `U`
-agreeing with `v_i*` on the agreement set `D_i'`; every `u` lies in some `U_i` by the line theorem
+whose restriction to the agreement set `D_i'` is a codeword restriction (some codeword, not `v_i*`;
+the line theorem supplies separate codewords for `u*` and `u`); every `u` lies in some `U_i` by the line theorem
 on the line through `u*` and `u`, so pigeonhole puts more than `|U| / q` points in one `U_i`, which
 is an affine subspace and therefore all of `U`. The only facts used are the line theorem itself and
 the list size `L < q`. Substituting BCHKS25 Theorem 1.5 for Theorem 1.4 therefore gives: for an
