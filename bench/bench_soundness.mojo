@@ -178,12 +178,12 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
 
 def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int, section4: Bool = False) raises:
     """`section4` charges BCHKS25 Theorems 4.2 / 4.6 as written: the doubled m, and the factor M = words - 1
-    per code (level 1 batches columns + points words; a tail challenge folds a pair, M = 1)."""
+    per code (level 1 batches the columns, `_level1_symbol`; a tail challenge folds a pair, M = 1)."""
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
     var error = query_error(p.L(), p.N() // 4, q1, regime, p.eta_inv)
-    var m1 = (s.columns() + s.points - 1) if section4 else 1
+    var m1 = (s.columns() - 1) if section4 else 1
     var gap = m1 * gap_numerator(p.L(), p.N() // 4, regime, p.eta_inv, section4)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)

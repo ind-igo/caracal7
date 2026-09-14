@@ -230,7 +230,7 @@ publicly available; an ingest attempt is needed.** Second, Theorem 4.6 uses
 `m = max(ceil(sqrt(rho) / (2 eta)), 3)` that `gap_numerator` computes. The displayed bound (PDF page 29) is
 `|E| <= M * a` with `a` the Theorem 1.5 expression evaluated at that doubled `m`. Charging the
 Theorem 1.5 numerator for a mutual claim therefore understates it by 4.6 bits at level 1 (`m` 4 to
-8) and 4.5 bits at the tail rate 1/8 (`m` 3 to 6), before the factor `M`.
+8) and 4.5 bits at the tail rate 1/8 (`m` 3 to 6, the ceiling of 5.66), before the factor `M`.
 
 What is missing is therefore the mutual form for the codes the tail actually folds - the first batch
 is four coordinates over `F4`, later levels are `E` - and the numerator to charge for it. Closing it
@@ -244,8 +244,8 @@ not a rewording away from the list regime.
 count. Spec 12.1 derives the unique regime's `(1 + rate)/2` from a case split that uses uniqueness: at
 radius `t = floor((d-1)/2)` there is at most one `X̃` with block distance `Δ(X, G X̃) <= t`, the close
 case compares `G y` against that one `X̃ β`, and `1 - (t+1)/L <= (1 + rate)/2` bounds both branches. At
-`gamma = 1 - sqrt(rho) - eta` the close case yields a list, of size about `1 / (2 eta sqrt(rho))` by
-the Johnson list bound (equivalently the `m` of Theorem 1.5), and the split does not hold as written.
+`gamma = 1 - sqrt(rho) - eta` the close case yields a list, of size at most about `1 / (2 eta sqrt(rho))` by
+the Johnson list bound (16 at level 1; this is not the `m` of Theorem 1.5, which is 4 there), and the split does not hold as written.
 
 Spec 12.2 sketches what replaces it, and it is a sketch. The extractor picks one list element instead
 of the unique `X̃`, and mutual correlated agreement (J2) is what decomposes a list element of the
@@ -276,15 +276,36 @@ of it equals `W_q β` since `2t < d`", has no list-regime version at all. Closin
 the ledger as a named field term, and a derivation that the far case is the only query event left.
 
 **What section 4 as written would compile (2026-09-14).** The `johnson_bchks25_4.2_4.6` projection
-charges Theorems 4.2 and 4.6 with no further lemma: `M * a` at the doubled `m`, with `M` the level-1
-batch width `columns + points - 1` (567 for ECDSA) and `M = 1` for each pair-folding tail challenge.
-ECDSA compiles 95.96 bits against 107.65; the CSP hash cases 97.83 to 103.46 against 107.65 to 110.19.
-The level-1 term dominates so completely that the tail rate no longer matters (95.93 to 95.96 across
-the sweep). 9.1 of the 11.7 ECDSA bits are `log2(M)`; the rest is the doubled `m`. So the value of J1
-is the dimension-free affine form: with it the ledger keeps the Theorem 1.5 numerator and the doubled
-`m` is the only proven cost (about 103 bits); without it the honest Johnson claim for this geometry is
-about 96 bits, and the alternatives are a smaller `eta` (the level-1 `m` grows, `(m + 1/2)^5` with it,
-so this is not free either), a larger `e`, or the unique regime at 401 queries.
+charges Theorems 4.2 and 4.6 exactly as stated, in place of the pairs form: `M * a` at the doubled `m`,
+with `M = columns - 1` at level 1 (555 for ECDSA; `_level1_symbol` batches the columns only, the
+`gamma` weights are opening claims, not RS words) and `M = 1` for each pair-folding tail challenge.
+This is a number, not a proof: it does not turn the uniform `beta` into a curve, and it supplies none
+of the transfer, Bind, or query arguments of J1 to J3. ECDSA compiles 95.99 bits against 107.65; the
+CSP hash cases 97.9 to 103.7 against 107.65 to 110.19. The level-1 term dominates so completely that
+the tail rate no longer matters. Of the 11.7 ECDSA bits, 4.28 come from the doubled `m` (107.65 to
+103.37) and 7.4 from the factor `M`. The levers if this were the final charge: a larger `eta` (smaller
+`m`, more queries), a larger `e`, or the unique regime at 401 queries. A smaller `eta` only grows `m`.
+
+**J1, the reduction (2026-09-14).** BCIKS20 proves Theorem 1.7 (affine spaces of any dimension,
+same error as the line, up to the Johnson radius) from its line theorem in section 6.3, and the
+proof reads the line theorem as a black box. Lemma 6.3 averages `Pr_z[Delta(u~ + z u', C) <= delta]`
+over the lines of `U` parallel to a direction `u'`; some line beats `epsilon`, so the line theorem
+gives `Delta(u', C) <= delta` for every direction. The proof of 1.7 then takes a farthest point `u*`
+of `U`, its list `v_1*..v_L*` of codewords at that distance, and the sets `U_i` of points of `U`
+agreeing with `v_i*` on the agreement set `D_i'`; every `u` lies in some `U_i` by the line theorem
+on the line through `u*` and `u`, so pigeonhole puts more than `|U| / q` points in one `U_i`, which
+is an affine subspace and therefore all of `U`. The only facts used are the line theorem itself and
+the list size `L < q`. Substituting BCHKS25 Theorem 1.5 for Theorem 1.4 therefore gives: for an
+affine `U` of any dimension and `gamma < 1 - sqrt(rho)`, if `Pr_{u in U}[Delta(u, C) <= gamma] > a / q`
+with `a` the Theorem 1.5 numerator at `gamma`, then `U` has correlated agreement on a joint set of
+density `1 - gamma`. Two checks: the proof applies the line theorem at `delta* <= gamma`, and `a`
+falls as `gamma` falls (`eta` grows), so `a(gamma) / q` bounds it; and the Guruswami-Sudan list size
+at radius `1 - sqrt(rho) - eta` is far below `q = 127^20`. This is our derivation, not a statement in
+either paper, and it needs an independent read, but it is a two-page check rather than a research
+problem. With it, level 1 keeps the pairs numerator and needs neither the factor `M` nor the doubled
+`m`, which belong to the curve form we do not use. What J1 still does not cover is the same as
+before: the transfer to the four-coordinate `E tensor F4` alphabet (spec 12.1, the P1 row), and the
+mutual property (J2) wherever two agreement sets have to coincide.
 
 **Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
 grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from
@@ -355,7 +376,7 @@ ledger instead of silently using a formula that omits table or zero-denominator 
 | P3 | Integer/curve/hash constraints faithfully express the workloads | `workloads/sha256`, `keccak`, `poseidon`, `mulmod`, `ecdsa`. Check carries, selectors, canonical values, idle rows, hints, and the nonzero-polynomial argument for Horner/wiring; degree counting alone cannot establish it |
 | P4 | The tail is the analyzed scalar tensor-fold protocol | `_Tail.level`, `_Tail.clear`, `pcs/tensor`, `pcs/tail`. Review row basis, mixed digits, four-coordinate first batch, last clear check, and per-round adaptivity |
 | P5 | Cryptographic compilation preserves the required concrete security | `core/hash`, `core/transcript`, `proof.prefix_bytes`. Establish the exact Fiat-Shamir/hash model and losses, including a separate quantum claim if desired |
-| J1 | The batched-column fold admits the Theorem 1.5 numerator with no dimension factor | `gap_numerator` charges one `a` per code. BCHKS25 Theorem 1.5 is the pairs form; Theorem 4.2 covers curves at `M * a` with `m` doubled (4.6 bits at level 1 plus `log2(M)`), and section 4.1 charges a further factor for multilinear combinations. Either fold level 1 with powers of one sampled `z` and charge Theorem 4.2's scaling, or prove the affine-space form |
+| J1 | The batched-column fold admits the Theorem 1.5 numerator with no dimension factor | `gap_numerator` charges one `a` per code. BCHKS25 states only the pairs form (1.5) and curves at `M * a` with `m` doubled (4.2). **Reduction found:** BCIKS20 section 6.3 derives the affine-space form from the line form as a black box plus list size `< q`; with Theorem 1.5 in place of 1.4 the dimension-free numerator follows (paragraph "J1, the reduction"). Needs an independent read; the `E tensor F4` transfer (P1) and the mutual property (J2) stay separate |
 | J2 | Mutual (list) correlated agreement holds at the Johnson radius for the codes the tail folds | BCHKS25 Theorem 4.6 states it for RS curves, proof attributed to Haböck 2025 (personal communication, not ingested); its bound is `M * a` with `m` doubled, 4.5 to 4.6 bits per code above what is charged. Diamond and Gruen Theorems 3.1, 3.6 and Corollary 3.7 hold only for `e <= floor((d-1)/2)`. Pin Hab25, add the doubled-`m` numerator to `gap_numerator`, extend the interleaved/tensor step past the unique radius |
 | J3 | The level-1 close case binds one list element, so `sqrt(rate) + eta` is the right per-query event | Vault spec 12.2 is a sketch. The out-of-domain Bind allowance (quadratic in the list size) is not a ledger term; 12.1's Galois descent and `n_cw > 1` split need list-regime proofs; `verifier._residual`, `_small_grid`, `_boundaries` and `_restrictions` must bind the chosen element |
 | I1 | Every adversarial field coordinate obeys the arithmetic contract | **Implemented:** `bytes.check_field_bytes` rejects coordinates >=127. `ProofReader.field_bytes` covers Z2, Q3, openings, every sumcheck, and the clear vector; `pcs.merkle.check_multiproof` checks authenticated W/Z/Q/tail rows; `_check_statement` checks derived public field data |
