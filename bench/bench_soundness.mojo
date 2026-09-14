@@ -62,11 +62,13 @@ def query_error(length: Int, dimension: Int, queries: Int, regime: Int = REGIME_
     return error
 
 
-def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int) raises -> Int:
+def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int, section4: Bool = False) raises -> Int:
     """The correlated-agreement error numerator of one code (error = numerator / |E|): `length` at the
     unique-decoding radius (BCIKS20 1.2 / 1.7); at the Johnson radius BCHKS25 Theorem 1.5, radius
     1 - sqrt(rho) - eta with m = max(ceil(sqrt(rho) / (2 eta)), 3):
     (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho), rounded up.
+    `section4` uses the m of Theorems 4.2 (curves) and 4.6 (mutual), max(ceil(sqrt(rho) / eta), 3);
+    those theorems also carry a factor M (words minus one), which the caller multiplies (soundness.md J1, J2).
     The capacity conjecture has no proven numerator; the ledger keeps `length` there as a placeholder."""
     if regime != REGIME_JOHNSON:
         return length
@@ -76,6 +78,8 @@ def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int) raises
     if gamma <= 0.0:
         raise Error("Johnson radius needs sqrt(rate) + eta < 1")
     var m = max(ceil(sqrt(rho) / (2.0 * eta)), 3.0) + 0.5
+    if section4:
+        m = max(ceil(sqrt(rho) / eta), 3.0) + 0.5
     var a = (2.0 * m * m * m * m * m + 3.0 * m * gamma * rho) / (3.0 * rho * sqrt(rho)) * Float64(length) + m / sqrt(rho)
     return Int(ceil(a))
 
@@ -172,17 +176,20 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     return (terms^, queries)
 
 
-def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int) raises:
+def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int, section4: Bool = False) raises:
+    """`section4` charges BCHKS25 Theorems 4.2 / 4.6 as written: the doubled m, and the factor M = words - 1
+    per code (level 1 batches columns + points words; a tail challenge folds a pair, M = 1)."""
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
     var error = query_error(p.L(), p.N() // 4, q1, regime, p.eta_inv)
-    var gap = gap_numerator(p.L(), p.N() // 4, regime, p.eta_inv)
+    var m1 = (s.columns() + s.points - 1) if section4 else 1
+    var gap = m1 * gap_numerator(p.L(), p.N() // 4, regime, p.eta_inv, section4)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)
         queries += "/" + String(q)
         error += query_error(s.tail[i].L, s.tail[i].rows, q, regime, p.eta_inv)
-        gap += 3 * gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv)
+        gap += 3 * gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv, section4)
     var q_err = error / Float64(1 << p.grind_bits)
     print(name, "eta_inv", p.eta_inv, "queries_per_level", queries, "query_bits", bits(q_err), "pcs_gap", gap,
           "conditional_iop_bits", bits(Float64(numerator_no_gap + gap) / field_order(p.e) + q_err))
@@ -211,6 +218,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     # BCHKS25 1.5 in place of the unique one, so the last number is the ledger the switch would compile
     projection[p](s, "capacity_conjecture", REGIME_CAPACITY, numerator_no_gap)
     projection[p](s, "johnson_bchks25_1.5", REGIME_JOHNSON, numerator_no_gap)
+    projection[p](s, "johnson_bchks25_4.2_4.6", REGIME_JOHNSON, numerator_no_gap, section4=True)
     var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
     print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
     print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))

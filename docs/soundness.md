@@ -44,7 +44,9 @@ Output:
 - `capacity_conjecture ...` and `johnson_bchks25_1.5 ...` are projections of the other two regimes at the
   same geometry: the queries each level would need at the same per-level target, the query bits at those
   queries, the `pcs_gap` numerator of that regime, and the `conditional_iop_bits` the switch would compile.
-  `Profile.regime` selects the regime; `CLIENT` stays at `REGIME_UNIQUE`.
+  `johnson_bchks25_4.2_4.6 ...` is the Johnson regime charged as BCHKS25 section 4 states it (J1, J2
+  below): the doubled `m` and the factor `M = words - 1` per code. `Profile.regime` selects the regime;
+  `CLIENT` compiles `REGIME_JOHNSON` since 2026-09-14.
   - `REGIME_CAPACITY` (radius `1 - rate - eta`, miss `rate + eta`) is the unproven up-to-capacity
     conjecture. It has no proven field term; the projection keeps the unique `pcs_gap` as a placeholder,
     so its `conditional_iop_bits` is the query term only. Nothing in this note certifies it.
@@ -272,6 +274,17 @@ had the adversarial review 12.1 had. Step (c)'s `n_cw > 1` split, which uses "an
 of it equals `W_q β` since `2t < d`", has no list-regime version at all. Closing J3 means a rewritten
 12.1 over the `E ⊗ F4` alphabet including that split, a stated Bind lemma with its numerator added to
 the ledger as a named field term, and a derivation that the far case is the only query event left.
+
+**What section 4 as written would compile (2026-09-14).** The `johnson_bchks25_4.2_4.6` projection
+charges Theorems 4.2 and 4.6 with no further lemma: `M * a` at the doubled `m`, with `M` the level-1
+batch width `columns + points - 1` (567 for ECDSA) and `M = 1` for each pair-folding tail challenge.
+ECDSA compiles 95.96 bits against 107.65; the CSP hash cases 97.83 to 103.46 against 107.65 to 110.19.
+The level-1 term dominates so completely that the tail rate no longer matters (95.93 to 95.96 across
+the sweep). 9.1 of the 11.7 ECDSA bits are `log2(M)`; the rest is the doubled `m`. So the value of J1
+is the dimension-free affine form: with it the ledger keeps the Theorem 1.5 numerator and the doubled
+`m` is the only proven cost (about 103 bits); without it the honest Johnson claim for this geometry is
+about 96 bits, and the alternatives are a smaller `eta` (the level-1 `m` grows, `(m + 1/2)^5` with it,
+so this is not free either), a larger `e`, or the unique regime at 401 queries.
 
 **Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
 grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from
