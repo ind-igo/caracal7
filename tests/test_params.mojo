@@ -18,7 +18,7 @@ def test_small_grid() raises:
 def test_query_formula_matches_spec_rows() raises:
     # Synthetic profiles exercise the rate and query formulas.
     var q = Params(e=E_BYTES, a1=7, m1=63, a2=5, m2=5, L0=161280, m_cosets=4, leaf_bytes=1024,
-                   tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32)
+                   tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32, codewords=1)
     assert_equal(q.N(), 8064 * 160)
     assert_equal(q.L(), 645120)
     assert_equal(q.rate(), 0.5)  # N / (4 L) = 1290240 / 2580480

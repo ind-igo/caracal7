@@ -52,7 +52,7 @@ def test_openings_and_fold() raises:
     var ctx = DeviceContext()
     var c = synthetic_statement().compile[p]()
     var shape = synthetic_statement().compile[p]().take_shape()
-    var prover = Prover[p, Blake3](ctx, synthetic_statement().compile[p]().take_shape(), c.families.copy())
+    var prover = Prover[p, Blake3](ctx, synthetic_statement().compile[p]().take_shape(), c.families.copy(), keep=True)   # reads scratch after the proof
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1))
     _ = prover.prove(ctx, List[UInt8]())
     ref L = prover.layout

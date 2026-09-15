@@ -11,6 +11,7 @@ Every kernel here is rung 1: one thread per output, no shared memory. The host h
 are the verifier's side of the same formulas.
 """
 
+from std.bit import log2_floor
 from std.math import ceildiv
 from std.gpu import global_idx, thread_idx
 from max.gpu.host import DeviceContext
@@ -18,7 +19,7 @@ from max.gpu.host import DeviceContext
 from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
 from caracal7.core.params import Params
 from caracal7.core.tables import RsTables, RsDomain
-from caracal7.pcs.encode import rs_encode_on, pack_index
+from caracal7.pcs.encode import rs_encode_on, pack_index, split_index
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u32, list_e
 from caracal7.core.arena import Arena
@@ -101,8 +102,8 @@ def table_len(exponents: Int) -> Int:
 
 @always_inline
 def power_table_len[p: Params]() -> Int:
-    """Entries per query of the level-1 power table, the largest one (i < N / 4); the tail levels reuse it."""
-    return table_len(p.N() // 4)
+    """Entries per query of the level-1 power table, the largest one (i' < K); the tail levels reuse it."""
+    return table_len(p.K())
 
 
 def k_power_table(base: Base, pts: Buf[4], count: Int32, tab: Int32, ptab: Buf[4]):
@@ -118,7 +119,8 @@ def k_power_table(base: Base, pts: Buf[4], count: Int32, tab: Int32, ptab: Buf[4
 
 def k_materialize_level1[p: Params](base: Base, running: Buf[E_BYTES], batch: Buf[E_BYTES], ptab: Buf[4],
                                     count: Int32, w_tilde: Buf[E_BYTES]):
-    """w~[slot] = batch_0 running[slot] + sum_{q, tau} batch_{1 + 4 q + tau} coord_tau(b_j pt_q^i), (i, j) = pack_index(slot)."""
+    """w~[slot] = batch_0 running[slot] + sum_{q, tau} batch_{1 + 4 (q n_cw + cw) + tau} coord_tau(b_j pt_q^i'),
+    (i, j) = pack_index(slot), (i', cw) = split_index(i): the slot's codeword answers to its own four weights."""
     comptime N = p.N()
     comptime TAB = power_table_len[p]()
     var slot = global_idx.x
@@ -128,33 +130,68 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[E_BYTES], batch: Bu
     var i: Int
     var j: Int
     i, j = pack_index[p](slot)
+    var ip: Int
+    var cw: Int
+    ip, cw = split_index[p](i)
     var bj = F4(0)
     bj[j] = 1
-    var lo = i % POW_LO
-    var hi = POW_LO + i // POW_LO
+    var lo = ip % POW_LO
+    var hi = POW_LO + ip // POW_LO
     for q in range(Int(count)):                     # 4 count products of canonical values, below 16 K each
         var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
         var m = to_f32(ext_mul[2](bj, pw))
         comptime for tau in range(4):
-            w = to_f32(batch.load(base, 1 + 4 * q + tau)).fma(EF(m[tau]), w)
+            w = to_f32(batch.load(base, 1 + 4 * (q * p.n_cw() + cw) + tau)).fma(EF(m[tau]), w)
         if q % 128 == 127:                          # 512 terms: 512 * 126^2 + 190 < 2^24, no cancellation here
             w = fp_reduce(w)
     w_tilde.store(base, slot, fp_canonical(w))
 
 
+@always_inline
+def tail_split(row: Int, bd: Int, low: Int) -> Tuple[Int, Int]:
+    """A tail row (bd binary digits, then the odd digit) -> (row', cw): the codeword is the top bd - low binary
+    digits, row' the low digits with the odd digit above them (spec 9.1, the level-1 rule on tail rows)."""
+    var b = row & ((1 << bd) - 1)
+    var r = row >> bd
+    return ((b & ((1 << low) - 1)) | (r << low), b >> low)
+
+
+@always_inline
+def tail_join(rp: Int, cw: Int, bd: Int, low: Int) -> Int:
+    """The inverse of tail_split."""
+    return ((rp & ((1 << low) - 1)) | (cw << low)) | ((rp >> low) << bd)
+
+
+def k_tail_pack(base: Base, y: Buf[1], dst: Buf[1], rows: Int32, row_bytes: Int32, n_cw: Int32, bd: Int32, low: Int32):
+    """dst[row', cw] = y[row]: the level's rows regrouped by codeword for the RS passes (n_cw > 1)."""
+    var gid = Int(global_idx.x)
+    var RB = Int(row_bytes)
+    if gid >= Int(rows) * RB:
+        return
+    var row = gid // RB
+    var rp: Int
+    var cw: Int
+    rp, cw = tail_split(row, Int(bd), Int(low))
+    dst.store(base, (rp * Int(n_cw) + cw) * RB + gid % RB, y.load(base, gid))
+
+
 def k_materialize_tail(base: Base, running: Buf[E_BYTES], batch: Buf[E_BYTES], ptab: Buf[4], tab: Int32,
-                       count: Int32, rows: Int32, w_tilde: Buf[E_BYTES]):
-    """w~[row] = batch_0 running[row] + sum_q batch_{1 + q} pt_q^row, the power from the table."""
-    var row = global_idx.x
+                       count: Int32, rows: Int32, w_tilde: Buf[E_BYTES], n_cw: Int32, bd: Int32, low: Int32):
+    """w~[row] = batch_0 running[row] + sum_q batch_{1 + q n_cw + cw} pt_q^row', (row', cw) = tail_split(row),
+    the power from the table."""
+    var row = Int(global_idx.x)
     if row >= Int(rows):
         return
     var TAB = Int(tab)
-    var lo = row % POW_LO
-    var hi = POW_LO + row // POW_LO
+    var rp: Int
+    var cw: Int
+    rp, cw = tail_split(row, Int(bd), Int(low))
+    var lo = rp % POW_LO
+    var hi = POW_LO + rp // POW_LO
     var w = ext_mul[E_LEVEL](batch.load(base, 0), running.load(base, row))
     for q in range(Int(count)):
         var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
-        w = f_add(w, e_mul_f4(batch.load(base, 1 + q), pw))
+        w = f_add(w, e_mul_f4(batch.load(base, 1 + q * Int(n_cw) + cw), pw))
     w_tilde.store(base, row, w)
 
 
@@ -234,9 +271,19 @@ comptime TAIL_F4 = 8 * (E_BYTES // 4)   # F4 symbols per tail row: 8 E values, E
 
 
 def tail_encode(ctx: DeviceContext, arena: Arena,
-                y: Int, rows: Int, L0: Int, m: Int, etmp: Int, code: Int, rs: RsTables) raises:
-    """Mat(y) (rows, 8, e) -> code (m L0, 8, e): the RS encoder on TAIL_F4 F4 columns, no inverse."""
-    rs_encode_on(ctx, arena, y, etmp, code, TAIL_F4, rows, L0, m, rs)
+                y: Int, rows: Int, L0: Int, m: Int, etmp: Int, code: Int, rs: RsTables,
+                n_cw: Int = 1, bd: Int = 0, packed: Int = 0) raises:
+    """Mat(y) (rows, 8, e) -> code (m L0, n_cw, 8, e): the RS encoder on TAIL_F4 n_cw F4 columns of rows / n_cw
+    symbols, no inverse. With a split the rows are first regrouped by codeword into `packed` (rows * 8 e bytes
+    of scratch), `bd` the binary digits of a row."""
+    var src = y
+    if n_cw > 1:
+        var low = bd - log2_floor(n_cw)
+        var total = rows * 8 * E_BYTES
+        ctx.enqueue_function[k_tail_pack](arena.buf, Buf[1](y), Buf[1](packed), Int32(rows), Int32(8 * E_BYTES),
+                                          Int32(n_cw), Int32(bd), Int32(low), grid_dim=_grid(total), block_dim=BACKEND.block)
+        src = packed
+    rs_encode_on(ctx, arena, src, etmp, code, TAIL_F4 * n_cw, rows // n_cw, L0, m, rs)
 
 
 def points(ctx: DeviceContext, arena: Arena, positions: Int, count: Int, dom: Int, L0: Int, pts: Int) raises:
@@ -250,9 +297,11 @@ def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, 
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
-                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int) raises:
-    """`ptab` is (count, power_table_len) F4 of scratch, the level-1 size; every level fills its own table."""
-    var tab = power_table_len[p]() if level1 else table_len(length)
+                                running: Int, batch: Int, pts: Int, count: Int, length: Int, w_tilde: Int, ptab: Int,
+                                n_cw: Int = 1, bd: Int = 0) raises:
+    """`ptab` is (count, power_table_len) F4 of scratch, the level-1 size; every level fills its own table.
+    A tail level passes the opened level's codeword count and the binary digits of its rows."""
+    var tab = power_table_len[p]() if level1 else table_len(length // n_cw)     # exponents below the codeword's rows
     if tab > power_table_len[p]():
         raise Error("tail_materialize: the power table holds N / 4 exponents")
     ctx.enqueue_function[k_power_table](arena.buf, Buf[4](pts), Int32(count), Int32(tab), Buf[4](ptab),
@@ -263,6 +312,7 @@ def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
     else:
         ctx.enqueue_function[k_materialize_tail](arena.buf, Buf[E_BYTES](running), Buf[E_BYTES](batch), Buf[4](ptab), Int32(tab),
                                                  Int32(count), Int32(length), Buf[E_BYTES](w_tilde),
+                                                 Int32(n_cw), Int32(bd), Int32(bd - log2_floor(n_cw)),
                                                  grid_dim=_grid(length), block_dim=BACKEND.block)
 
 
@@ -294,12 +344,13 @@ def host_r3(r: Span[UInt8, _]) -> InlineArray[E, 3]:
     return out^
 
 
-def tail_encode_at(y: Span[UInt8, _], rows: Int, pt: F4) -> E:
-    """Enc(y)(pt) over E: sum_row y[row] pt^row."""
+def tail_encode_at(y: Span[UInt8, _], rows: Int, pt: F4, cw: Int = 0, n_cw: Int = 1, bd: Int = 0) -> E:
+    """Enc(y)(pt) of codeword cw over E: sum_row' y[tail_join(row', cw)] pt^row'."""
+    var low = bd - log2_floor(n_cw)
     var acc = E(0)
     var pw = F4(1, 0, 0, 0)
-    for row in range(rows):
-        acc = f_add(acc, e_mul_f4(list_e(y, row), pw))
+    for rp in range(rows // n_cw):
+        acc = f_add(acc, e_mul_f4(list_e(y, tail_join(rp, cw, bd, low)), pw))
         pw = ext_mul[2](pw, pt)
     return acc
 

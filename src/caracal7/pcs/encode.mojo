@@ -10,9 +10,9 @@ Buffers (bytes; shapes slowest ... fastest):
                                       the coefficients after the m1-point DFT on the y1 digit
     coeff   (column, k2, k1, 2)       F2 monomial coefficients
     stored  (column, slot)            F, Frobenius-real slots (t, x1', x2, r)
-    packed  (i, column, 4)            F4, coordinate basis (1, i, j, ij)
-    etmp    (lin, t1, column, 4)      F4, RS intermediate; lin = d5*63 + d7*9 + d9
-    code    (s, column, 4)            F4, leaf-major, leaf s is the point g^s
+    packed  (i', column, cw, 4)       F4, coordinate basis (1, i, j, ij); cw the codeword (split_index), i' its index
+    etmp    (lin, t1, column, cw, 4)  F4, RS intermediate; lin = d5*63 + d7*9 + d9
+    code    (s, column, cw, 4)        F4, leaf-major, leaf s is the point g^s; the RS passes see columns x n_cw columns
 
 From `packed` on the column index is fastest: a SIMD group of threads handles one (i, t1) for 32
 consecutive columns, so every load and store of the RS passes is contiguous (ladder step 2), and
@@ -42,11 +42,13 @@ from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
+from std.bit import log2_floor
+
 from caracal7.core.field import F2, F4, V2, V4, f_add, f_mul
 from caracal7.core.field import fp_reduce, fp_center, fp_canonical, fp_mul2, fp_mul4, fp_const_mul
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, RsTables, two_adic, rs_factors
-from caracal7.core.arena import Bump
+from caracal7.core.arena import Bump, ST_LOAD, ST_END
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
 from caracal7.core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
@@ -67,15 +69,18 @@ struct EncLayout(TrivialRegisterPassable):
     var etmp: Int
     var code: Int
 
-    def __init__[p: Params](out self, mut bump: Bump, columns: Int):
+    def __init__[p: Params](out self, mut bump: Bump, columns: Int, trace_from: Int = ST_LOAD, trace_to: Int = ST_END,
+                            stage: Int = ST_LOAD, coeff_to: Int = ST_END):
+        """The trace lives [trace_from, trace_to], the encoder's scratch at `stage` (the commit), the
+        coefficients until `coeff_to` (the LDE reads them); stored, code stay for the openings and queries."""
         self.columns = columns
-        self.trace = bump.alloc(columns * p.N())
-        self.ctmp = bump.alloc(columns * p.N() * 2)
-        self.coeff = bump.alloc(columns * p.N() * 2)
-        self.stored = bump.alloc(columns * p.N())
-        self.packed = bump.alloc(columns * p.N())
-        self.etmp = bump.alloc(columns * p.L0 * 4)
-        self.code = bump.alloc(p.L() * columns * 4)
+        self.trace = bump.alloc(columns * p.N(), trace_from, trace_to)
+        self.ctmp = bump.alloc(columns * p.N() * 2, stage, stage)
+        self.coeff = bump.alloc(columns * p.N() * 2, stage, coeff_to)
+        self.stored = bump.alloc(columns * p.N(), stage)
+        self.packed = bump.alloc(columns * p.N(), stage, stage)
+        self.etmp = bump.alloc(columns * p.n_cw() * p.L0 * 4, stage, stage)
+        self.code = bump.alloc(p.L() * columns * p.n_cw() * 4, stage)
 
 
 # ---- idft2: inverse 2D DFT over F2, three radix stages per axis (dft.mojo) ----
@@ -171,7 +176,26 @@ def pack_index[p: Params](slot: Int) -> Tuple[Int, Int]:
     return (t + 2 * (x1p + H1 * ((x2 >> 2) + (1 << (p.a2 - 2)) * r)), x2 & 3)
 
 
+@always_inline
+def split_index[p: Params](i: Int) -> Tuple[Int, Int]:
+    """Packed index i -> (i', cw): the codeword is the top log2 n_cw binary digits of i, i' the rest with the
+    odd digit above them (spec 9.1); i' < K = N / (4 n_cw)."""
+    comptime LOW = p.a1 + p.a2 - 2 - log2_floor(p.n_cw())
+    var b = i & ((1 << (p.a1 + p.a2 - 2)) - 1)
+    var r = i >> (p.a1 + p.a2 - 2)
+    return ((b & ((1 << LOW) - 1)) | (r << LOW), b >> LOW)
+
+
+@always_inline
+def join_index[p: Params](ip: Int, cw: Int) -> Int:
+    """The inverse of split_index."""
+    comptime LOW = p.a1 + p.a2 - 2 - log2_floor(p.n_cw())
+    var b = (ip & ((1 << LOW) - 1)) | (cw << LOW)
+    return b | ((ip >> LOW) << (p.a1 + p.a2 - 2))
+
+
 def k_pack[p: Params](base: Base, stored: Buf[1], packed: Buf[4], columns: Int32):
+    """packed[i', column, cw] = the four slots of packed index i = join(i', cw) of the column."""
     comptime N = p.N()
     var gid = Int(global_idx.x)
     if gid >= Int(columns) * (N // 4):
@@ -181,7 +205,10 @@ def k_pack[p: Params](base: Base, stored: Buf[1], packed: Buf[4], columns: Int32
     var v = F4(0)
     comptime for j in range(4):
         v[j] = stored.load(base, c * N + pack_slot[p](i, j))
-    packed.store(base, gid, v)
+    var ip: Int
+    var cw: Int
+    ip, cw = split_index[p](i)
+    packed.store(base, (ip * Int(columns) + c) * p.n_cw() + cw, v)
 
 
 # ---- rs_encode ----
@@ -635,7 +662,7 @@ def pack[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout) raises:
 def rs_encode[p: Params, mask: Int = 31](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: TableLayout) raises:
     """Level 1: packed -> code on the profile's domain. `mask` selects passes for the bench only:
     1 gather, 16 the 2-adic stages, 2 a first odd stage alone, 4 the last odd stages (fused pair or single)."""
-    rs_encode_on[mask](ctx, arena, e.packed, e.etmp, e.code, e.columns, p.N() // 4, p.L0, p.m_cosets, tab.rs)
+    rs_encode_on[mask](ctx, arena, e.packed, e.etmp, e.code, e.columns * p.n_cw(), p.K(), p.L0, p.m_cosets, tab.rs)
 
 
 def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,

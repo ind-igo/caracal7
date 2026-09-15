@@ -16,7 +16,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 from std.memory import unsafe_memcpy
 from caracal7.core.params import Params
 from caracal7.core.field import F2, ext_pow
-from caracal7.core.arena import Arena, Bump
+from caracal7.core.arena import Arena, Bump, ST_LOAD, ST_SORT, ST_W, ST_ACC, ST_Z, ST_SG, ST_LDE, ST_RES, ST_QUO, ST_Q, ST_OPEN, ST_FOLD, ST_RUN0, ST_TAIL, ST_END
 from caracal7.core.tables import F2_ORDER, Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
 from caracal7.pcs.encode import EncLayout, encode, idft2
 from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions, grind
@@ -44,9 +44,9 @@ struct CommitLayout(TrivialRegisterPassable):
     var tree: Int           # (node, 32), level 0 first, tree_nodes(L0) nodes
     var row: Int            # bytes per codeword row: 4 n_cw per column
 
-    def __init__[p: Params, H: Hash](out self, mut bump: Bump, columns: Int):
-        self.enc = EncLayout.__init__[p](bump, columns)
-        self.tree = bump.alloc(tree_nodes(p.L()) * H.DIGEST)
+    def __init__[p: Params, H: Hash](out self, mut bump: Bump, columns: Int, trace_from: Int, trace_to: Int, stage: Int, coeff_to: Int):
+        self.enc = EncLayout.__init__[p](bump, columns, trace_from, trace_to, stage, coeff_to)
+        self.tree = bump.alloc(tree_nodes(p.L()) * H.DIGEST, stage)
         self.row = 4 * p.n_cw() * columns
 
 
@@ -57,9 +57,9 @@ struct SortLayout(TrivialRegisterPassable):
     var cursor: Int         # (max K, u32)
 
     def __init__[p: Params](out self, mut bump: Bump, lookups: Int, max_rows: Int):
-        self.idx = bump.alloc(lookups * p.N() * 4)
-        self.bins = bump.alloc((max_rows + 1) * 4)
-        self.cursor = bump.alloc(max_rows * 4)
+        self.idx = bump.alloc(lookups * p.N() * 4)           # loaded once, must survive repeated proves
+        self.bins = bump.alloc((max_rows + 1) * 4, ST_SORT, ST_SORT)
+        self.cursor = bump.alloc(max_rows * 4, ST_SORT, ST_SORT)
 
 
 struct LdeLayout(TrivialRegisterPassable):
@@ -76,12 +76,12 @@ struct LdeLayout(TrivialRegisterPassable):
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
         self.block = 4 * N * 2
-        self.pub_vals = bump.alloc(shape.columns_p * N)
-        self.pub_coeff = bump.alloc(shape.columns_p * N * 2)
-        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * self.block)
-        self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * self.block)
-        self.residual = bump.alloc(4 * N * p.e)
-        self.quotient = bump.alloc(quotient_elems[p]() * p.e)
+        self.pub_vals = bump.alloc(shape.columns_p * N, ST_LOAD, ST_LOAD)
+        self.pub_coeff = bump.alloc(shape.columns_p * N * 2)   # loaded once, must survive repeated proves
+        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * self.block, ST_LOAD, ST_LDE)   # load_public's scratch too
+        self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * self.block, ST_LDE, ST_RES)
+        self.residual = bump.alloc(4 * N * p.e, ST_RES, ST_QUO)
+        self.quotient = bump.alloc(quotient_elems[p]() * p.e, ST_QUO, ST_QUO)
 
     def lde_at(self, column: Int) -> Int:
         return self.lde + column * self.block
@@ -99,12 +99,12 @@ struct OpenLayout(TrivialRegisterPassable):
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
         var widest = max(shape.columns_w, max(shape.columns_z, shape.columns_q))
-        self.w_tab = bump.alloc(shape.points * table_len[p]() * p.e)
-        self.w_z = bump.alloc(shape.points * N * p.e)
-        self.openings = bump.alloc(shape.points * shape.columns() * p.e)
-        self.open_partial = bump.alloc(shape.points * open_splits[p]() * widest * p.e)
-        self.fold_y = bump.alloc(N * p.e)
-        self.running0 = bump.alloc(N * p.e)
+        self.w_tab = bump.alloc(shape.points * table_len[p]() * p.e, ST_OPEN, ST_OPEN)
+        self.w_z = bump.alloc(shape.points * N * p.e, ST_OPEN, ST_RUN0)
+        self.openings = bump.alloc(shape.points * shape.columns() * p.e, ST_OPEN)
+        self.open_partial = bump.alloc(shape.points * open_splits[p]() * widest * p.e, ST_OPEN, ST_OPEN)
+        self.fold_y = bump.alloc(N * p.e, ST_FOLD, ST_TAIL)             # tail level 0 folds it (or it is the clear vector)
+        self.running0 = bump.alloc(N * p.e, ST_RUN0, ST_TAIL)
 
 
 struct ChalLayout(TrivialRegisterPassable):
@@ -164,18 +164,19 @@ struct TailLayout(TrivialRegisterPassable):
     var rs: RsTables    # this level's RS domain tables
     var dom: Int        # DOM_BYTES          this level's domain (tail.domain_bytes)
 
-    def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel):
+    def __init__[p: Params, H: Hash](out self, mut bump: Bump, lvl: TailLevel, i: Int):
         var L0 = lvl.L // lvl.cosets
-        self.y = bump.alloc(lvl.rows * p.e)
-        self.running = bump.alloc(lvl.rows * p.e)
-        self.etmp = bump.alloc(L0 * TAIL_F4 * 4)
-        self.code = bump.alloc(lvl.L * 8 * p.e)
-        self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST)
-        self.w_tilde = bump.alloc(lvl.length * p.e)
-        self.rounds = bump.alloc(9 * p.e)
-        self.rs = RsTables(bump.alloc(0), L0, lvl.cosets, lvl.rows)
-        _ = bump.alloc(self.rs.bytes)
-        self.dom = bump.alloc(DOM_BYTES)
+        var st = ST_TAIL + i                                # this level's stage; the next level (or the last open) reads its code
+        self.y = bump.alloc(lvl.rows * p.e, st)
+        self.running = bump.alloc(lvl.rows * p.e, st)
+        self.etmp = bump.alloc(L0 * TAIL_F4 * lvl.codewords * 4, st, st)
+        self.code = bump.alloc(lvl.L * 8 * p.e * lvl.codewords, st, st + 1)
+        self.tree = bump.alloc(tree_nodes(lvl.L) * H.DIGEST, st, st + 1)
+        self.w_tilde = bump.alloc(lvl.length * p.e, st, st)  # also the encoder's packed scratch of a split level (free until materialize)
+        self.rounds = bump.alloc(9 * p.e, st)
+        self.rs = RsTables(bump.alloc(0, ST_LOAD, st), L0, lvl.cosets, lvl.rows // lvl.codewords)   # uploaded at setup
+        _ = bump.alloc(self.rs.bytes, ST_LOAD, st)
+        self.dom = bump.alloc(DOM_BYTES)                    # uploaded at setup, read by the next level
 
 
 struct ProverLayout:
@@ -203,14 +204,25 @@ struct ProverLayout:
     var tail: List[TailLayout]
     var bytes: Int
 
-    def __init__[p: Params, H: Hash](out self, shape: Shape) raises:
+    def __init__[p: Params, H: Hash](out self, shape: Shape, keep: Bool = False) raises:
+        """Two passes over one construction: the first records every region's stage lifetime, `Bump.plan`
+        packs regions whose lifetimes never meet onto the same bytes, the second hands out the packed
+        offsets. `keep` skips the packing so every region survives the proof (tests read scratch after it)."""
         var bump = Bump()
+        self = Self.__init__[p, H](bump, shape)
+        if not keep:
+            bump.plan()
+            self = Self.__init__[p, H](bump, shape)
+
+    def __init__[p: Params, H: Hash](out self, mut bump: Bump, shape: Shape) raises:
+        """One construction pass; every alloc's stage lifetime is recorded (or replayed) by `bump`."""
         self.tables = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(self.tables.bytes)
         self.transcript = TranscriptLayout(bump)
-        self.w = CommitLayout.__init__[p, H](bump, shape.columns_w)
-        self.z = CommitLayout.__init__[p, H](bump, shape.columns_z)
-        self.q = CommitLayout.__init__[p, H](bump, shape.columns_q)
+        # W's trace is loaded once and must survive repeated proves; the LDE reads W's and Z's coefficients; Q's trace is the quotient
+        self.w = CommitLayout.__init__[p, H](bump, shape.columns_w, ST_LOAD, ST_END, ST_W, ST_LDE)
+        self.z = CommitLayout.__init__[p, H](bump, shape.columns_z, ST_ACC, ST_Z, ST_Z, ST_LDE)
+        self.q = CommitLayout.__init__[p, H](bump, shape.columns_q, ST_QUO, ST_Q, ST_Q, ST_Q)
         self.families = bump.alloc(shape.entries * ENTRY)
         self.families_g = bump.alloc(shape.entries * ENTRY)
         self.merge = bump.alloc(shape.entries * 6)
@@ -229,7 +241,7 @@ struct ProverLayout:
         var max_queries = p.queries()
         var max_v = 4 * p.n_cw() * p.queries()
         for lvl in shape.tail:
-            stage = max(stage, multiproof_region[H](8 * p.e, lvl.L, lvl.queries))
+            stage = max(stage, multiproof_region[H](8 * p.e * lvl.codewords, lvl.L, lvl.queries))
             max_queries = max(max_queries, lvl.queries)
             max_v = max(max_v, lvl.queries)
         self.chal = ChalLayout.__init__[p](bump, shape, max_v)
@@ -237,7 +249,7 @@ struct ProverLayout:
         self.prefix = bump.alloc(PREFIX_MAX)
         self.tail = List[TailLayout]()
         for i in range(len(shape.tail)):
-            self.tail.append(TailLayout.__init__[p, H](bump, shape.tail[i]))
+            self.tail.append(TailLayout.__init__[p, H](bump, shape.tail[i], i))
         self.bytes = bump.used
 
 
@@ -256,19 +268,20 @@ struct Prover[p: Params, H: Hash]:
     var proof: ProofWriter          # host staging pool, sized once from the shape
     var trace_host: HostBuffer[DType.uint8]   # trace staging for load_trace, allocated once
 
-    def __init__(out self, ctx: DeviceContext, var c: Compiled) raises:
+    def __init__(out self, ctx: DeviceContext, var c: Compiled, keep: Bool = False) raises:
         """From a compiled statement: its shape and family table travel together."""
         var families = c.families.copy()
-        self = Self(ctx, c^.take_shape(), families^)
+        self = Self(ctx, c^.take_shape(), families^, keep)
 
-    def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8]) raises:
+    def __init__(out self, ctx: DeviceContext, var shape: Shape, var families: List[UInt8], keep: Bool = False) raises:
+        """`keep` builds the arena with no region sharing (ProverLayout.keep)."""
         if len(families) != shape.entries * ENTRY:
             raise Error("family table does not match shape.entries")
         if shape.accumulators() > 0 and 2 * Self.p.h2() == F2_ORDER:
             raise Error("the small grid needs a coset of G2 inside F2*: accumulators need h2 < 8064")
         self.shape = shape^
         self.families = families^
-        self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape)
+        self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape, keep)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
         self.kappa = f2_primitive()
@@ -298,7 +311,7 @@ struct Prover[p: Params, H: Hash]:
         for i in range(len(S.tail)):
             var lvl = S.tail[i]
             var dom = RsDomain(lvl.L // lvl.cosets, lvl.cosets)
-            self.arena.upload(ctx, L.tail[i].rs.base, build_rs_tables(ctx, L.tail[i].rs, dom, lvl.rows))
+            self.arena.upload(ctx, L.tail[i].rs.base, build_rs_tables(ctx, L.tail[i].rs, dom, lvl.rows // lvl.codewords))
             _upload(ctx, self.arena, L.tail[i].dom, domain_bytes(dom))
 
     def _mark(mut self, ctx: DeviceContext, name: String) raises:
@@ -529,9 +542,11 @@ struct Prover[p: Params, H: Hash]:
         var lvl = S.tail[i]
         var tl = L.tail[i]
         var tag = String(i)
-        tail_encode(ctx, self.arena, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs)
+        comptime D = Self.p.a1 + Self.p.a2
+        tail_encode(ctx, self.arena, y, lvl.rows, lvl.L // lvl.cosets, lvl.cosets, tl.etmp, tl.code, tl.rs,
+                    lvl.codewords, D - Self.p.tail_digits * (i + 1), tl.w_tilde)
         self._mark(ctx, "tail encode " + tag)
-        merkle[Self.p, Self.H](ctx, self.arena, tl.code, 8 * e, lvl.L, tl.tree)
+        merkle[Self.p, Self.H](ctx, self.arena, tl.code, 8 * e * lvl.codewords, lvl.L, tl.tree)
         self._mark(ctx, "tail merkle " + tag)
         absorb[Self.p, Self.H](ctx, self.arena, T, DS_TAIL_ROOT, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
         self.proof.stage(self.arena, root_offset[Self.H](tl.tree, lvl.L), Self.H.DIGEST)
@@ -544,7 +559,8 @@ struct Prover[p: Params, H: Hash]:
         # the expected symbols v are the verifier's to compute from the opened rows (spec 9.3); nothing is sent
         squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.chal.batch, self._v_count(i) + 1)   # batching scalars
         self._mark(ctx, "transcript batch " + tag)
-        tail_materialize[Self.p](ctx, self.arena, i == 0, running, L.chal.batch, L.query.pts, count, y_len, tl.w_tilde, L.query.ptab)
+        tail_materialize[Self.p](ctx, self.arena, i == 0, running, L.chal.batch, L.query.pts, count, y_len, tl.w_tilde, L.query.ptab,
+                                 1 if i == 0 else S.tail[i - 1].codewords, D - Self.p.tail_digits * i)
         self._mark(ctx, "materialize " + tag)
         for d in range(3):
             tail_round(ctx, self.arena, tl.w_tilde, y, y_len, d, L.chal.r, L.query.partial, tl.rounds + d * 3 * e)
@@ -560,7 +576,7 @@ struct Prover[p: Params, H: Hash]:
         return Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
 
     def _v_count(self, i: Int) -> Int:
-        return 4 * Self.p.n_cw() * Self.p.queries() if i == 0 else self.shape.tail[i - 1].queries
+        return 4 * Self.p.n_cw() * Self.p.queries() if i == 0 else self.shape.tail[i - 1].codewords * self.shape.tail[i - 1].queries
 
     def _open_previous(mut self, ctx: DeviceContext, i: Int, T: TranscriptLayout) raises:
         """Sample S on the level before tail level i (level 1 when i == 0), gather its multiproof(s),
@@ -581,7 +597,7 @@ struct Prover[p: Params, H: Hash]:
         else:
             var lvl = S.tail[i - 1]
             squeeze_positions[Self.p, Self.H](ctx, self.arena, T, L.query.positions, lvl.queries, lvl.L)
-            var bound = query_gather[Self.p, Self.H](ctx, self.arena, L.tail[i - 1].code, 8 * Self.p.e, lvl.L, L.tail[i - 1].tree,
+            var bound = query_gather[Self.p, Self.H](ctx, self.arena, L.tail[i - 1].code, 8 * Self.p.e * lvl.codewords, lvl.L, L.tail[i - 1].tree,
                                                      L.query.positions, lvl.queries, L.query.stage)
             self.proof.stage(self.arena, L.query.stage, bound, multiproof=True)
 
@@ -595,7 +611,7 @@ def proof_pool_bytes[p: Params, H: Hash](shape: Shape) -> Int:
         n += multiproof_region[H](4 * p.n_cw() * shape.columns_z, p.L(), p.queries())
     n += multiproof_region[H](4 * p.n_cw() * shape.columns_q, p.L(), p.queries())
     for lvl in shape.tail:
-        n += multiproof_region[H](8 * p.e, lvl.L, lvl.queries)
+        n += multiproof_region[H](8 * p.e * lvl.codewords, lvl.L, lvl.queries)
     return n
 
 

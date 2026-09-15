@@ -15,6 +15,8 @@ point whose factors are r-free group too and the five with Par factors (q1, q2 d
 single. ponytail: widen the host E product when the client grid (M = 567) is measured.
 """
 
+from std.bit import log2_floor
+
 from caracal7.core.field import F4, E, f_add, f_sub, f_mul, f_pow, ext_mul, ext_pow, ext_inv0, ext_embed, ext_one, E_LEVEL
 from caracal7.core.params import Params
 from caracal7.pcs.open import host_table
@@ -293,12 +295,14 @@ def f4_dual() raises -> InlineArray[F4, 4]:
     return out^
 
 
-def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: InlineArray[F4, 4], mut out: List[Unit]):
-    """sum_tau weights[tau] g_{pt,tau} as units: g_{pt,tau}[slot(i, j)] = coord_tau(b_j pt^i) (tail.mojo),
-    i over (t, x1', x2 >> 2, r) and j the two low bits of x2, so per conjugate sigma the product is
-    sigma(pt)^(t + 2 x1' + 2^a1 (x2 >> 2)) sigma(b_j) sigma(pt)^(2^(D - 2) r) with weight
-    mu = sum_tau weights[tau] sigma(lambda_tau)."""
+def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: InlineArray[F4, 4], cw: Int, mut out: List[Unit]):
+    """sum_tau weights[tau] g_{pt,cw,tau} as units: g_{pt,cw,tau}[slot(i, j)] = coord_tau(b_j pt^i') on the slots
+    of codeword cw and 0 elsewhere (tail.mojo), i over (t, x1', x2 >> 2, r), j the two low bits of x2 and
+    (i', cw) = split_index(i): per conjugate sigma the product is sigma(pt)^(i' mod 2^LOW) sigma(b_j)
+    sigma(pt)^(2^LOW r) times the indicator of cw on the top log2 n_cw binary digits, with weight
+    mu = sum_tau weights[tau] sigma(lambda_tau). Packed bit k < a1 is unit digit k, bit a1 + m is digit a1 + 2 + m."""
     comptime D = p.a1 + p.a2
+    comptime LOW = D - 2 - log2_floor(p.n_cw())
     var iu = F4(0, 1, 0, 0)
     var ju = F4(0, 0, 1, 0)
     for j in range(4):
@@ -307,33 +311,42 @@ def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: Inlin
         for tau in range(4):
             mu = f_add(mu, ext_mul[E_LEVEL](weights[tau], ext_embed[E_LEVEL](f4_frob(dual[tau], j))))
         var be = ext_embed[E_LEVEL](b)
-        var bhi = ext_pow[E_LEVEL](be, 1 << p.a1)
-        var br = ext_pow[E_LEVEL](be, 1 << (D - 2))
+        var br = ext_pow[E_LEVEL](be, 1 << LOW)
         var pr = ext_one[E_LEVEL]()
         var scalars = List[E](capacity=p.m1 * p.m2)
         for _ in range(p.m1 * p.m2):
             scalars.append(ext_mul[E_LEVEL](mu, pr))
             pr = ext_mul[E_LEVEL](pr, br)
         var u = Unit(scalars^, D)
-        u.geo(0, p.a1, be)
+        var pw = be
+        for k in range(D - 2):
+            var d = k if k < p.a1 else k + 2
+            if k < LOW:
+                u.pair(d, ext_one[E_LEVEL](), pw)
+            else:
+                u.delta(d, 1, (cw >> (k - LOW)) & 1)
+            pw = ext_mul[E_LEVEL](pw, pw)
         u.pair(p.a1, ext_one[E_LEVEL](), ext_embed[E_LEVEL](f4_frob(iu, j)))
         u.pair(p.a1 + 1, ext_one[E_LEVEL](), ext_embed[E_LEVEL](f4_frob(ju, j)))
-        u.geo(p.a1 + 2, p.a2 - 2, bhi)
         out.append(u^)
 
 
-def row_units(pt: F4, weight: E, first: Int, digits: Int, m: Int, mut out: List[Unit]):
-    """weight * pt^row as units, row over the digits from `first` then r (a tail level's rows)."""
+def row_units(pt: F4, weight: E, first: Int, digits: Int, m: Int, mut out: List[Unit], cw: Int = 0, n_cw: Int = 1):
+    """weight * pt^row' on the rows of codeword cw as units, row over the digits from `first` then r (a tail
+    level's rows); the codeword is the top log2 n_cw of those digits (tail.tail_split), an indicator."""
     var be = ext_embed[E_LEVEL](pt)
     var u_digits = digits - first
-    var br = ext_pow[E_LEVEL](be, 1 << u_digits)
+    var low = u_digits - log2_floor(n_cw)
+    var br = ext_pow[E_LEVEL](be, 1 << low)
     var pr = ext_one[E_LEVEL]()
     var scalars = List[E](capacity=m)
     for _ in range(m):
         scalars.append(ext_mul[E_LEVEL](weight, pr))
         pr = ext_mul[E_LEVEL](pr, br)
     var u = Unit(scalars^, digits)
-    u.geo(first, u_digits, be)
+    u.geo(first, low, be)
+    for k in range(low, u_digits):
+        u.delta(first + k, 1, (cw >> (k - low)) & 1)
     out.append(u^)
 
 

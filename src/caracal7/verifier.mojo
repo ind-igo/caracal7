@@ -19,7 +19,7 @@ from caracal7.relations.statement import Compiled
 from caracal7.core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
-from caracal7.pcs import pack_slot, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
+from caracal7.pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
 from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e, check_field_bytes
@@ -316,7 +316,6 @@ struct _Tail[p: Params]:
     var dual: InlineArray[F4, 4]
 
     def __init__(out self, shape: Shape, openings: List[UInt8], beta_gamma: List[UInt8], z1: E, z2: E, d: Domains) raises:
-        comptime assert Self.p.n_cw() == 1, "one codeword per column: rows are (s, column, 4)"   # ponytail: split with the encoder's
         self.units = List[Unit]()
         self.running = E(0)
         self.folded = 0
@@ -349,17 +348,21 @@ struct _Tail[p: Params]:
         var root = r.take(H.DIGEST)
         t.absorb(DS_TAIL_ROOT, root)
         var prev = _open_previous[Self.p, H](r, t, shape, i, root_w, root_z, root_q, self.roots)
+        comptime n_cw = Self.p.n_cw()
+        var n_prev = 1 if i == 0 else shape.tail[i - 1].codewords     # codewords of the opened level
         var count = Self.p.queries() if i == 0 else shape.tail[i - 1].queries
-        var v_count = 4 * count if i == 0 else count
+        var v_count = 4 * n_cw * count if i == 0 else n_prev * count
         # the expected symbols v (9.3) from the opened rows; a function of the transcript, so not sent nor absorbed
         var v = List[UInt8](capacity=v_count * e)
         for q in range(count):
             var idx = _index_of(prev.opened, prev.positions[q])
             if i == 0:
-                for tau in range(4):
-                    _push_e(v, _level1_symbol[Self.p](prev, shape, beta_gamma, idx, tau))
+                for cw in range(n_cw):
+                    for tau in range(4):
+                        _push_e(v, _level1_symbol[Self.p](prev, shape, beta_gamma, idx, cw, tau))
             else:
-                _push_e(v, _tail_symbol(prev, idx, self.r_prev))
+                for cw in range(n_prev):
+                    _push_e(v, _tail_symbol(prev, idx, self.r_prev, cw, n_prev))
         var batch = t.elements(v_count + 1)
         var claim = ext_mul[E_LEVEL](list_e(batch, 0), self.running)
         for k in range(v_count):
@@ -370,13 +373,15 @@ struct _Tail[p: Params]:
             self.units[k].scalar = ext_mul[E_LEVEL](self.units[k].scalar, b0)
         if i == 0:
             for q in range(count):
-                var weights = InlineArray[E, 4](fill=E(0))
-                for tau in range(4):
-                    weights[tau] = list_e(batch, 1 + 4 * q + tau)
-                consistency_units[Self.p](d.level1.point(prev.positions[q]), weights, self.dual, self.units)
+                for cw in range(n_cw):
+                    var weights = InlineArray[E, 4](fill=E(0))
+                    for tau in range(4):
+                        weights[tau] = list_e(batch, 1 + 4 * (q * n_cw + cw) + tau)
+                    consistency_units[Self.p](d.level1.point(prev.positions[q]), weights, self.dual, cw, self.units)
         else:
             for q in range(count):
-                row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q), self.folded, D, M, self.units)
+                for cw in range(n_prev):
+                    row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q * n_prev + cw), self.folded, D, M, self.units, cw, n_prev)
         var rounds = r.field_bytes(9 * e)
         var r_l = List[UInt8]()
         for dgt in range(3):
@@ -411,14 +416,17 @@ struct _Tail[p: Params]:
         r.done()
         for idx in range(len(last.opened)):
             if len(shape.tail) == 0:
-                var enc = encode_at[Self.p](y, d.level1.point(last.opened[idx]))
-                for tau in range(4):
-                    if enc[tau] != _level1_symbol[Self.p](last, shape, beta_gamma, idx, tau):
-                        raise Error("consistency fails at an opened position")
+                for cw in range(Self.p.n_cw()):
+                    var enc = encode_at[Self.p](y, d.level1.point(last.opened[idx]), cw)
+                    for tau in range(4):
+                        if enc[tau] != _level1_symbol[Self.p](last, shape, beta_gamma, idx, cw, tau):
+                            raise Error("consistency fails at an opened position")
             else:
                 var dom = self.doms[len(self.doms) - 1]
-                if tail_encode_at(y, self.y_len, dom.point(last.opened[idx])) != _tail_symbol(last, idx, self.r_prev):
-                    raise Error("consistency fails at an opened position")
+                var n_last = shape.tail[len(shape.tail) - 1].codewords
+                for cw in range(n_last):
+                    if tail_encode_at(y, self.y_len, dom.point(last.opened[idx]), cw, n_last, D - self.folded) != _tail_symbol(last, idx, self.r_prev, cw, n_last):
+                        raise Error("consistency fails at an opened position")
         if clear_value(self.units, y, self.folded, D) != self.running:
             raise Error("evaluation claim fails")
 
@@ -452,9 +460,9 @@ def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript
         t.grind(r.take(8), p.grind_bits)
     if i == 0:
         var positions = t.positions(p.queries(), p.L())
-        var row_w = 4 * shape.columns_w
-        var row_z = 4 * shape.columns_z
-        var row_q = 4 * shape.columns_q
+        var row_w = 4 * p.n_cw() * shape.columns_w
+        var row_z = 4 * p.n_cw() * shape.columns_z
+        var row_q = 4 * p.n_cw() * shape.columns_q
         var mp_w = r.prefixed()
         var rows_w = check_multiproof[H](root_w, p.L(), row_w, positions, mp_w)
         var rows_z = List[UInt8]()
@@ -468,9 +476,9 @@ def _open_previous[p: Params, H: Hash](mut r: ProofReader, mut t: HostTranscript
     var lvl = shape.tail[i - 1]
     var positions = t.positions(lvl.queries, lvl.L)
     var mp = r.prefixed()
-    var rows = check_multiproof[H](roots[i - 1], lvl.L, 8 * p.e, positions, mp)
+    var rows = check_multiproof[H](roots[i - 1], lvl.L, 8 * p.e * lvl.codewords, positions, mp)
     return Opened(positions=positions.copy(), opened=distinct_sorted(positions), rows_w=rows^, rows_z=List[UInt8](), rows_q=List[UInt8](),
-                  row_w=8 * p.e, row_z=0, row_q=0)
+                  row_w=8 * p.e * lvl.codewords, row_z=0, row_q=0)
 
 
 def _index_of(opened: List[Int], s: Int) raises -> Int:
@@ -480,28 +488,29 @@ def _index_of(opened: List[Int], s: Int) raises -> Int:
     raise Error("sampled position was not opened")
 
 
-def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: Span[UInt8, _], idx: Int, tau: Int) -> E:
-    """sum_c beta_c coord_tau(X[s, c]) over the three trees at opened row idx."""
+def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: Span[UInt8, _], idx: Int, cw: Int, tau: Int) -> E:
+    """sum_c beta_c coord_tau(X[s, c, cw]) over the three trees at opened row idx; a row is (column, codeword, 4)."""
+    comptime W = 4 * p.n_cw()
     var acc = E(0)
     var wz = shape.columns_w + shape.columns_z
     for c in range(shape.columns()):
         var sym: UInt8
         if c < shape.columns_w:
-            sym = o.rows_w[idx * o.row_w + c * 4 + tau]
+            sym = o.rows_w[idx * o.row_w + c * W + cw * 4 + tau]
         elif c < wz:
-            sym = o.rows_z[idx * o.row_z + (c - shape.columns_w) * 4 + tau]
+            sym = o.rows_z[idx * o.row_z + (c - shape.columns_w) * W + cw * 4 + tau]
         else:
-            sym = o.rows_q[idx * o.row_q + (c - wz) * 4 + tau]
+            sym = o.rows_q[idx * o.row_q + (c - wz) * W + cw * 4 + tau]
         acc = f_add(acc, f_mul(list_e(beta, c), E(sym)))
     return acc
 
 
-def _tail_symbol(o: Opened, idx: Int, r_prev: Span[UInt8, _]) -> E:
-    """<X[s, :], r_bar> for a tail row of 8 E symbols."""
+def _tail_symbol(o: Opened, idx: Int, r_prev: Span[UInt8, _], cw: Int = 0, n_cw: Int = 1) -> E:
+    """<X[s, cw, :], r_bar> for a tail row of n_cw times 8 E symbols."""
     var rr = host_r3(r_prev)
     var acc = E(0)
     for a in range(8):
-        acc = f_add(acc, ext_mul[E_LEVEL](rbar_at(rr, a, 3), list_e(o.rows_w, idx * 8 + a)))
+        acc = f_add(acc, ext_mul[E_LEVEL](rbar_at(rr, a, 3), list_e(o.rows_w, (idx * n_cw + cw) * 8 + a)))
     return acc
 
 
@@ -510,12 +519,13 @@ def _push_e(mut l: List[UInt8], v: E):
         l.append(v[t])
 
 
-def encode_at[p: Params](y: Span[UInt8, _], pt: F4) -> InlineArray[E, 4]:
-    """Enc(y)(pt) in E (x) F4 as four E coordinates: sum_i (sum_j y[slot(i, j)] b_j) pt^i, the F4 scalar
-    pt^i acting on the coordinates by its 4 x 4 matrix (spec 9.1 alphabet rule)."""
+def encode_at[p: Params](y: Span[UInt8, _], pt: F4, cw: Int = 0) -> InlineArray[E, 4]:
+    """Enc(y)(pt) of codeword cw in E (x) F4 as four E coordinates: sum_i' (sum_j y[slot(join(i', cw), j)] b_j)
+    pt^i', the F4 scalar pt^i' acting on the coordinates by its 4 x 4 matrix (spec 9.1 alphabet rule)."""
     var acc = InlineArray[E, 4](fill=E(0))
     var pw = F4(1, 0, 0, 0)
-    for i in range(p.N() // 4):
+    for ip in range(p.K()):
+        var i = join_index[p](ip, cw)
         for j in range(4):
             var bj = F4(0)
             bj[j] = 1

@@ -91,12 +91,17 @@ struct Profile(TrivialRegisterPassable, Writable):
         var ax1 = _axis(rows_per_chain)
         var ax2 = _axis(chains)
         var n = (1 << ax1[0]) * ax1[1] * (1 << ax2[0]) * ax2[1]
-        var dom = domain_for(n // 4, self.rate_inv, fewest_cosets=True)   # n_cw = 1: N / 4 symbols per column
+        # the codeword split (spec 9.1): the smallest power of two n_cw whose N / (4 n_cw) symbols a domain holds
+        var cw = 1
+        var dom = domain_for(n // 4, self.rate_inv, fewest_cosets=True)
+        while dom[1] == 0 and cw < (1 << (ax1[0] + ax2[0] - 2)):
+            cw *= 2
+            dom = domain_for(n // (4 * cw), self.rate_inv, fewest_cosets=True)
         return Params(e=self.e, a1=ax1[0], m1=ax1[1], a2=ax2[0], m2=ax2[1],
                       L0=dom[0] // dom[1] if dom[1] > 0 else 0, m_cosets=dom[1],
                       leaf_bytes=self.leaf_bytes, tail_digits=self.tail_digits,
                       tail_clear_max=self.tail_clear_max, lambda_bits=self.lambda_bits, grind_bits=self.grind_bits,
-                      regime=self.regime, eta_inv=self.eta_inv, tail_rate_inv=self.tail_rate_inv)
+                      regime=self.regime, eta_inv=self.eta_inv, tail_rate_inv=self.tail_rate_inv, codewords=cw)
 
 
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
@@ -126,6 +131,7 @@ struct Params(TrivialRegisterPassable, Writable):
     var regime: Int         # REGIME_UNIQUE or REGIME_CAPACITY (query_count)
     var eta_inv: Int        # eta = 1 / eta_inv in the capacity regime
     var tail_rate_inv: Int  # tail domain rule (tail_schedule): the smallest domain at rate <= 1/tail_rate_inv
+    var codewords: Int      # n_cw: codewords per column, a power of two (spec 9.1); the top log2 binary digits of the packed index
 
     # ---- derived ----
     def h1(self) -> Int:
@@ -141,10 +147,14 @@ struct Params(TrivialRegisterPassable, Writable):
         return self.m_cosets * self.L0
 
     def n_cw(self) -> Int:
-        """Codewords per column: smallest power of two with N / (4 n_cw) <= L * rate; rate fixed by L."""
-        # ponytail: rate is N/(4 L) at n_cw = 1; the split rule of spec 9.1 only matters
-        # once a column exceeds the domain, which no milestone-1 profile does.
-        return 1
+        """Codewords per column (`codewords`): the smallest power of two whose N / (4 n_cw) symbols the level-1
+        domain holds at the profile's rate (Profile.grid). A codeword is the packed indices with one value of
+        the top log2 n_cw binary digits; the odd digit and the low binary digits stay inside it."""
+        return self.codewords
+
+    def K(self) -> Int:
+        """Message length of one codeword: N / (4 n_cw) F4 symbols."""
+        return self.N() // (4 * self.codewords)
 
     def rate(self) -> Float64:
         return Float64(self.N()) / Float64(4 * self.n_cw() * self.L())
@@ -160,7 +170,9 @@ struct Params(TrivialRegisterPassable, Writable):
 
     def check(self) raises:
         if self.L0 == 0:
-            raise Error("grid needs the codeword split (n_cw > 1): no level-1 domain holds N / 4 symbols at the profile's rate")
+            raise Error("grid needs a larger codeword split: no level-1 domain holds N / (4 n_cw) symbols at the profile's rate")
+        if self.codewords < 1 or (self.codewords & (self.codewords - 1)) != 0 or self.codewords > (1 << (self.a1 + self.a2 - 2)):
+            raise Error("codewords is a power of two of at most 2^(a1 + a2 - 2) (the binary digits of the packed index)")
         if self.e != E_BYTES:
             raise Error("e must be E_BYTES: field.mojo fixes E = F_(127^E_BYTES) per build (-D E16)")
         if self.grind_bits < 0 or self.grind_bits > 26 or self.grind_bits >= self.lambda_bits:
@@ -179,9 +191,9 @@ struct Params(TrivialRegisterPassable, Writable):
             raise Error("L0 | 161280 with an odd part > 1 (the encoder has no scatter path without a radix stage)")
         if self.m_cosets != 1 and self.m_cosets != 2 and self.m_cosets != 4:
             raise Error("m_cosets in {1, 2, 4}")
-        if self.N() > 4 * self.L():
-            raise Error("message longer than the domain; codeword split not implemented")
+        if self.K() > self.L():
+            raise Error("message longer than the domain: a larger codeword split")
 
     def write_to(self, mut w: Some[Writer]):
-        w.write("Params(h1=", self.h1(), ", h2=", self.h2(), ", N=", self.N(),
+        w.write("Params(h1=", self.h1(), ", h2=", self.h2(), ", N=", self.N(), ", n_cw=", self.codewords,
                 ", L=", self.L(), ", rate=", self.rate(), ", queries=", self.queries(), ")")

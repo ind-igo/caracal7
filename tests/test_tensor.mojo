@@ -80,7 +80,7 @@ def _check_consistency[pp: Params]() raises:
     for tau in range(4):
         weights[tau] = _e(20 + tau)
     var units = List[Unit]()
-    consistency_units[pp](pt, weights, f4_dual(), units)
+    consistency_units[pp](pt, weights, f4_dual(), 0, units)
     var w = _materialize(units, 0, pp.a1 + pp.a2, pp.m1 * pp.m2)
     var bad = 0
     for slot in range(pp.N()):

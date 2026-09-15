@@ -269,7 +269,7 @@ struct TableLayout(TrivialRegisterPassable):
         self.rho1t = off; off += p.m1 * p.m1 * 2
         self.rho2t = off; off += DftPlan(p.m2, p.m2).bytes()
         off = (off + 3) & ~3                       # the F4 and u16 tables want 4-byte alignment
-        self.rs = RsTables(base + off, p.L0, p.m_cosets, p.N() // 4); off += self.rs.bytes
+        self.rs = RsTables(base + off, p.L0, p.m_cosets, p.K()); off += self.rs.bytes
         self.g1p = off; off += 2 * p.h1() * 2
         self.g2p = off; off += 2 * p.h2() * 2
         self.q1m = off; off += p.h1() * 2 * p.h1() * 2
@@ -322,7 +322,7 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
             _put(h, t.rho1t + (r * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), (r * y) % p.m1)[0], 0))
     _dft_tables(h, t.rho2t, DftPlan(p.m2, p.m2), F2(d.rho2, 0), 1)
 
-    _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.N() // 4)
+    _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.K())
 
     _residual_tables[p](h, t, d)
     _dft_tables(h, t.fwd1, DftPlan(2 * p.h1(), p.h1()), d.g1, 1)

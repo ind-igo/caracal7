@@ -60,7 +60,7 @@ from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED, ENT_A, ENT_COEF, ENT_CHAL
-from caracal7.core.arena import Arena, Bump
+from caracal7.core.arena import Arena, Bump, ST_ACC, ST_SG
 
 
 
@@ -83,15 +83,16 @@ struct AccLayout(TrivialRegisterPassable):
     def __init__[p: Params](out self, mut bump: Bump, accumulators: Int, products: Int, wiring: Int):
         self.rows = p.N() * p.e
         self.line = p.h2() * p.e
-        self.num = bump.alloc(self.rows)
-        self.den = bump.alloc(self.rows)
-        self.scratch = bump.alloc(self.rows)
-        self.zval = bump.alloc(accumulators * self.rows)
-        self.chain_prod = bump.alloc(max(1, wiring) * self.line)
-        self.z2 = bump.alloc(products * self.line + p.e)
-        self.n_end = bump.alloc(accumulators * self.line)
-        self.d_end = bump.alloc(accumulators * self.line)
-        self.wlines = bump.alloc(wiring * 4 * self.line)
+        # all live from the Z stage through the small grid (Z2 is staged for the proof at the Z commit)
+        self.num = bump.alloc(self.rows, ST_ACC, ST_SG)
+        self.den = bump.alloc(self.rows, ST_ACC, ST_SG)
+        self.scratch = bump.alloc(self.rows, ST_ACC, ST_SG)
+        self.zval = bump.alloc(accumulators * self.rows, ST_ACC, ST_SG)
+        self.chain_prod = bump.alloc(max(1, wiring) * self.line, ST_ACC, ST_SG)
+        self.z2 = bump.alloc(products * self.line + p.e, ST_ACC, ST_SG)
+        self.n_end = bump.alloc(accumulators * self.line, ST_ACC, ST_SG)
+        self.d_end = bump.alloc(accumulators * self.line, ST_ACC, ST_SG)
+        self.wlines = bump.alloc(wiring * 4 * self.line, ST_ACC, ST_SG)
 
     def zval_at(self, k: Int) -> Int:
         return self.zval + k * self.rows

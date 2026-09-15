@@ -112,12 +112,10 @@ def test_derived_grids() raises:
     assert_equal(wide.queries(), 131)                # ceil((112 - 20) / log2(2 / 1.229))
     comptime proxy = SPEC95.grid(2016, 576)
     assert_equal(proxy.N(), 1161216)
-    var stopped = String("")
-    try:
-        proxy.check()
-    except e:
-        stopped = String(e)
-    assert_true(stopped.startswith("grid needs the codeword split"))
+    proxy.check()
+    assert_equal(proxy.n_cw(), 2)                     # 290,304 symbols per column: two codewords of 145,152 on 4 x 161,280
+    assert_equal(proxy.L(), 645120)
+    assert_equal(proxy.K(), 145152)
 
 
 def test_reader_field_bytes() raises:
@@ -367,6 +365,35 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "public column period divides h2: need m >= 1, h2 % m == 0")
+
+
+def test_prove_and_verify_with_codeword_split() raises:
+    """8064 x 96: 193,536 symbols per column exceed the largest domain, so each column is two codewords of
+    96,768 on 4 x 161,280 (rate 0.15); the rows are (column, codeword, 4) and the tail's level-1 batch has
+    4 n_cw weights per query."""
+    comptime split = SPEC95.grid(8064, 96)
+    assert_equal(split.n_cw(), 2)
+    assert_equal(split.L(), 645120)
+    var ctx = DeviceContext()
+    var c = synthetic_statement().compile[split]()
+    var shape = synthetic_statement().compile[split]().take_shape()
+    var prover = Prover[split, Blake3](ctx, synthetic_statement().compile[split]().take_shape(), c.families.copy())
+    load_trace[split, Blake3](ctx, prover, synthetic_trace[split](1))
+    var t0 = perf_counter_ns()
+    var proof = prover.prove(ctx, List[UInt8]())
+    var t1 = perf_counter_ns()
+    assert_true(verify[split, Blake3](proof.copy(), shape, List[UInt8](), c.families))
+    var t2 = perf_counter_ns()
+    print("proof bytes (split):", len(proof), " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms")
+    var bad = proof.copy()
+    bad[len(bad) - 40] ^= 1                          # inside the clear vector or the last multiproof
+    var rejected = False
+    try:
+        if not verify[split, Blake3](bad^, shape, List[UInt8](), c.families):
+            rejected = True
+    except:
+        rejected = True
+    assert_true(rejected)
 
 
 def test_prove_and_verify_with_tail() raises:

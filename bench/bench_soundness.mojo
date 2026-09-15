@@ -148,9 +148,9 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     for i in range(len(s.restrictions) // RES):
         restrictions += max(p.h1(), get_u16(s.restrictions, i * RES + 4)) - 1
 
-    var gap = gap_numerator(p.L(), p.N() // 4, p.regime, p.eta_inv)      # level 1: uniform E^columns fold, block alphabet
+    var gap = gap_numerator(p.L(), p.K(), p.regime, p.eta_inv)      # level 1: uniform E^columns fold, block alphabet
     var batch = 0
-    var queries = query_error(p.L(), p.N() // 4, p.queries(), p.regime, p.eta_inv)
+    var queries = query_error(p.L(), p.K(), p.queries(), p.regime, p.eta_inv)
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
@@ -182,9 +182,9 @@ def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
-    var error = query_error(p.L(), p.N() // 4, q1, regime, p.eta_inv)
+    var error = query_error(p.L(), p.K(), q1, regime, p.eta_inv)
     var m1 = (s.columns() - 1) if section4 else 1
-    var gap = m1 * gap_numerator(p.L(), p.N() // 4, regime, p.eta_inv, section4)
+    var gap = m1 * gap_numerator(p.L(), p.K(), regime, p.eta_inv, section4)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)
         queries += "/" + String(q)
@@ -205,7 +205,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits, "grind_bits", p.grind_bits, "regime", p.regime)
     print("columns W/Z/Q/public", s.columns_w, s.columns_z, s.columns_q, s.columns_p,
           "points", s.points, "entries", s.entries, "horner", s.accumulators(), "wiring_products", s.wiring_products())
-    print("level 1: dimension/length/queries", p.N() // 4, p.L(), p.queries())
+    print("level 1: dimension/length/queries", p.K(), p.L(), p.queries())
     for i in range(len(s.tail)):
         print("level", i + 2, "dimension/length/queries", s.tail[i].rows, s.tail[i].L, s.tail[i].queries)
     var numerator_no_gap = 0
@@ -247,7 +247,7 @@ def self_check() raises:
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
     comptime for i in range(2):
         comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32,
-                            leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3)
+                            leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3, codewords=1)
         var st = Statement()
         st.col("x", BIT)
         st.family("zero", [Term(1, st.read("x"))])

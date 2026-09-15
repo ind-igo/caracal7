@@ -41,9 +41,10 @@ struct TailLevel(TrivialRegisterPassable, Writable):
     var L: Int           # domain size, cosets * L0
     var cosets: Int      # m: 1, 2, or 4
     var queries: Int     # |S_l|
+    var codewords: Int   # n_cw of the level: rows / codewords symbols per codeword, split on the top binary digits of the row
 
     def write_to(self, mut w: Some[Writer]):
-        w.write("TailLevel(len=", self.length, ", rows=", self.rows, ", L=", self.L, "=", self.cosets,
+        w.write("TailLevel(len=", self.length, ", rows=", self.rows, ", n_cw=", self.codewords, ", L=", self.L, "=", self.cosets,
                 "x", self.L // self.cosets, ", q=", self.queries, ")")
 
 
@@ -57,15 +58,20 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
     var digits = p.a1 + p.a2
     while length > p.tail_clear_max and digits >= p.tail_digits:
         var rows = length >> p.tail_digits
+        # the codeword split: the smallest power of two whose rows / cw symbols a domain holds (spec 9.1)
+        var cw = 1
         var dom = domain_for(rows, p.tail_rate_inv)
+        while dom[1] == 0 and cw < (1 << (digits - p.tail_digits)):
+            cw *= 2
+            dom = domain_for(rows // cw, p.tail_rate_inv)
         var L = dom[0]
         var cosets = dom[1]
         if L == 0:
             raise Error("tail level does not fit the F4 domain")
-        # queries at the exact rate rows / L, same formula as level 1
-        var rate = Float64(rows) / Float64(L)
+        # queries at the exact rate (rows / cw) / L, same formula as level 1
+        var rate = Float64(rows // cw) / Float64(L)
         var queries = query_count(p.lambda_bits - p.grind_bits, rate, p.regime, p.eta_inv)
-        levels.append(TailLevel(length=length, rows=rows, L=L, cosets=cosets, queries=queries))
+        levels.append(TailLevel(length=length, rows=rows, L=L, cosets=cosets, queries=queries, codewords=cw))
         length = rows
         digits -= p.tail_digits
     return levels^
@@ -411,7 +417,7 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.chals.copy())
     append_u32(bytes, len(shape.tail))
     for lvl in shape.tail:
-        for v in [lvl.length, lvl.rows, lvl.L, lvl.cosets, lvl.queries]:
+        for v in [lvl.length, lvl.rows, lvl.L, lvl.cosets, lvl.queries, lvl.codewords]:
             append_u32(bytes, v)
     append_u32(bytes, shape.clear_length)
     append_u32(bytes, len(public_inputs))

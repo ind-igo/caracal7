@@ -1500,3 +1500,80 @@ at 72 percent of its queries and one seventh of its level-2 domain. Measured on 
 prove 369 ms, verify 116 ms, from about 705 KB / 400 ms / 135 ms. The ledger's three open obligations for
 this regime (docs/soundness.md) are now on the critical path. Not taken: a per-level `eta`, and e = 22
 to recover the last bits (the level-1 term alone caps the regime near 107.5 at e = 20).
+
+## Measured: SHA-256 hash chain, one proof per grid (2026-09-15)
+
+`Sha256Chain` in `workloads/sha256.mojo`: `hashes_of(h2) = (h2 - 1) / 64` hashes of 32 bytes, each of the
+previous digest, one proof. The reset and the digest export stay inside the existing families: on an end
+chain with a live block after it (public `rst`) the next-state sums route their result into a witness column
+`dg` on the next eight chains (word i on chain + i + 1) and a quadratic family `rs<x>` pins the next state to
+the block's start state read 63 chains back (the copy families keep the axis-2 gate, which admits only linear
+entries). The schedule's head words read `dg` where the public `s8` selector marks a digest chain; `msg` holds
+the padding there. Cost against the single-message layout: one witness column (44), two public columns,
+16 families, 7 opening points (`dg` at k2 = 2 .. 8). `bench/bench_sha256_chain.mojo`, M1 Pro, median of three
+warm proves, every proof verified:
+
+| hashes | grid | cells | arena | host trace | prove (median) | ms / hash | M cells/s | proof | B / hash | verify |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 41 | 32 x 2688 | 3.78M | 401 MiB | 8 ms | 170 ms | 4.15 | 22.2 | 230,684 B | 5,626 | 63 ms |
+| 125 | 32 x 8064 | 11.35M | 1002 MiB | 25 ms | 374 ms | 2.99 | 30.4 | 265,668 B | 2,125 | 158 ms |
+
+Jolt's SHA-2 chain on an M5 Max is 0.33 ms per hash (PR 1848, 2^28 cycles, one proof). The GEMM-skeleton
+stages (lde, quotient, open, fold) are about half of the profiled time at both grids (64 of 136 ms, 178 of
+362 ms); encode W + Q and the tail are the rest. Per hash the 8064 grid beats 2688, the reverse of the
+2026-09-11 single-message table, because the coset transforms moved onto the radix plan since. Next: the
+codeword split (`n_cw > 1`) and a lane layout so one proof covers more than 125 hashes; the proof size per
+hash then falls with the hash count instead of staying at one proof per 125.
+
+## The codeword split, level 1 and the tail (2026-09-15)
+
+`Params.codewords` (n_cw) and `TailLevel.codewords`: a column whose N / 4 symbols no domain holds at the
+profile's rate is n_cw codewords, the smallest power of two that fits (`Profile.grid`, `tail_schedule`), split
+on the top log2 n_cw binary digits of the packed index (spec 9.1); the odd digit and the low binary digits stay
+inside a codeword, so every consistency functional is still a digit product with an indicator on the split
+digits (`consistency_units`, `row_units`). The encoder sees columns x n_cw columns of K = N / (4 n_cw) symbols:
+`k_pack` writes packed (i', column, cw, 4) and the RS passes and the leaf rows follow, so a row is
+(column, codeword, 4) at level 1 and (codeword, 8 E) at a tail level (`k_tail_pack` regroups y first; the
+level's `w_tilde` is the scratch). The tail's level-1 batch has 4 n_cw weights per query, a tail level n_cw.
+The header lists every level's codewords. Measured, `test_prove_and_verify_with_codeword_split`, 8064 x 96
+synthetic (N = 774,144, two codewords of 96,768 on 4 x 161,280 at level 1, eight codewords of 12,096 at tail
+level 0): proof 482,400 B, cold prove 21.8 s, host verify 175 ms, a flipped byte rejected. The soundness ledger
+(`bench_soundness`) still refuses n_cw > 1: the split's proximity accounting is not written.
+
+## Lanes on axis 1, and the arena as stage lifetimes (2026-09-15)
+
+The chain now runs `p.m1` lanes in one proof, each a chain of `hashes_of(h2)` hashes (`chain_hashes`):
+h1 = 32 m1 with gcd(32, m1) = 1, so a row is (z, j) = crt(z, j) in Z_32 x Z_m1 and a rotation is the cyclic read
+crt(32 - r, 0), the carry ripple crt(1, 0), the next lane crt(0, 1). No masks and no rotation columns. A lane
+starts from IV; the last lane ends on the public digest (a FIX_E line), every other lane settles on IV. The
+lane-dependent selectors are witness products of a per-row public and a per-chain public (`l0b0`, `s8w`,
+`rstx`, `lane0w`, `notlastw`), because an entry reads at most one public column. 49 columns, 15 publics. This
+supersedes the 44-column table above. `bench/bench_sha256_chain.mojo`, M1 Pro, median of three warm proves:
+
+| hashes | grid | cells | arena | host trace | prove (median) | ms / hash | M cells/s | proof | B / hash | verify |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 125 | 32 x 8064 | 12.6M | 435 MiB | 31 ms | 380 ms | 3.04 | 33.3 | 289,340 B | 2,314 | 203 ms |
+| 375 | 96 x 8064 | 37.9M | 1350 MiB | 147 ms | 1180 ms | 3.15 | 32.1 | 334,344 B | 891 | 433 ms |
+| 369 | 288 x 2688 | 37.9M | 1346 MiB | 248 ms | 1336 ms | 3.62 | 28.4 | 334,600 B | 906 | 480 ms |
+| 875 | 224 x 8064 | 88.5M | 2801 MiB | 506 ms | 2920 ms | 3.34 | 30.3 | 454,520 B | 519 | 1034 ms |
+| 861 | 672 x 2688 | 88.5M | 2800 MiB | 1074 ms | 4301 ms | 5.00 | 20.6 | 458,712 B | 532 | 1805 ms |
+
+Keep h2 = 8064 and grow h1: the wide-h1 grids are slower per hash on both the host trace and the GEMM
+stages. The proof is a fixed part (about 270 KB, the tail levels) plus about 180 B per hash (the level-1 row
+openings, which scale with cells whether the cells sit in one proof or in several). So segments of a long
+chain cost only the fixed part per segment: at 8k hashes per segment the 71k-hash Jolt chain costs about 15%
+more bytes than one proof would. The rule is: make each proof as large as memory allows, never smaller than
+about 2k hashes.
+
+The arena was 4.4 KB per row with every region live for the whole proof, which capped one proof at about
+3M rows on 16 GB. `Bump.alloc` now records a stage interval per region (`ST_LOAD` .. `ST_TAIL + i`,
+`arena.mojo`) and `Bump.plan` packs regions whose lifetimes never meet onto the same bytes (first fit by
+decreasing size); `ProverLayout` builds twice, record then replay. Encoder scratch lives at its commit,
+W's and Z's coefficients until the LDE, the LDE until the residual, the residual until the quotient, the
+evaluation queries until the level-2 running query, a tail level's scratch at its level and its code one
+level longer. Loaded inputs (trace, advice, public coefficients) and the RS tables keep the full lifetime:
+a prover proves repeatedly from one load. `Prover(keep=True)` skips the packing for tests that read scratch
+after the proof (`test_open`). Result: 1.55 KB per row (435 MiB at 258k rows, 2801 MiB at 1.8M rows),
+2.5x more rows per proof; the M1 Pro reaches about 3.5k hashes per proof, a 128 GB machine about 16k.
+Next, if a larger segment is needed: tile the residual over bands of axis-2 rows so the full LDE is never
+held (about 25% more), and contract the opening GEMM one axis at a time instead of materializing `w_z`.
