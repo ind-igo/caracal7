@@ -74,6 +74,7 @@ def test_device_matches_host() raises:
     absorb[p, Blake3](ctx, arena, t, DS_PREFIX, msg_off, MSG)
     squeeze_elements[p, Blake3](ctx, arena, t, chal, ELEMS)
     assert_equal(_download(ctx, arena, chal, ELEMS * p.e), want_e)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_state_depends_on_separator() raises:

@@ -151,7 +151,7 @@ struct Strided(Loader):
 
     @staticmethod
     def load(base: Base, o: Operands, k: Int, n_hi: Int, n_lo: Int, z: Int) -> F2:
-        return base.unsafe_load[width=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z)
+        return base.unsafe_load[width=2, alignment=2](Int(o.b) + k * Int(o.sb_k) + n_hi * Int(o.sb_hi) + n_lo * Int(o.sb_lo) + z)
 
 
 struct Bytes[kfast_: Bool = False](Loader):
@@ -211,7 +211,7 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var kk = idx % BK
             var v = F2(0)
             if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
             As0.ptr.unsafe_store(kk * BM + r, v[0])
             As1.ptr.unsafe_store(kk * BM + r, v[1])
         comptime for i in range(0, BK * BN, THREADS):
@@ -315,7 +315,7 @@ def gemm_f2_apple[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var kk = idx % BK
             var v = F2(0)
             if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
             var a1 = Int8(v[1])
             As0.ptr.unsafe_store(idx, Int8(v[0]))
             As1.ptr.unsafe_store(idx, a1)
@@ -457,7 +457,7 @@ def gemm_f2_nvidia[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             var kk = idx % BK
             var v = F2(0)
             if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
             var a1 = Int8(v[1])
             As0.ptr.unsafe_store(idx, Int8(v[0]))
             As1.ptr.unsafe_store(idx, a1)

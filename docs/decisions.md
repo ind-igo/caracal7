@@ -1653,3 +1653,46 @@ The M1 is a noisy bench (load 12 to 15 from other apps at the time; the same bin
 The 3090 numbers for these changes are not measured yet; the next rental runs Nsight Systems over the chain
 prove first, since the residual (18 ms), the level-1 materialize (16 ms) and the LDE (13 ms) are 10x to 40x
 off their floors for reasons a MAC count does not show (spills, occupancy, or the instruction mix).
+
+**Byte-wide loads on NVPTX (2026-09-16, RTX 3090).** Nsight Systems over the chain prove (125 hashes, MMA
+backend, 110 ms after the 2026-09-15 changes: 129 -> 110) showed the GPU busy for the whole prove and three
+single kernels at the top: `k_residual` 18.9 ms, `k_materialize_level1` 17.2 ms, `k_build_queries` 12.1 ms,
+each 20x to 80x over its instruction count. Nsight Compute is refused inside the Vast.ai container
+(ERR_NVGPUCTRPERM, a host driver setting), so the kernels were dumped as PTX with
+`ctx.compile_function[k, dump_asm=True]()` (tests/probe_ptx.mojo on the box) and run through `ptxas -v`:
+no spills, 48 to 96 byte stack frames, and every global access `ld.global.b8` / `st.global.b8`. `Base` is a
+byte pointer, so `unsafe_load[width=16]` without an alignment is a 1-aligned load and NVPTX legalizes it to
+16 byte loads; an E value cost 20 loads and, through the lane stores of the 16 + 4 join, a trip through the
+stack. Metal takes unaligned vector loads, so the M1 never showed it. Fix: `Buf.load/store` pass
+`alignment = gcd(W, 16)` (every region base is 256-aligned and element i sits at i W; E is 20 = 4 x 5, so 4),
+the E join is three `join`s (registers), and the raw F2 / F4 loads in dft.mojo, backend.mojo and encode.mojo
+carry `alignment=2` / `4`. Chain prove on the 3090: 110 -> 35.3 ms (0.88 -> 0.28 ms/hash, under Jolt's 0.33
+on an M5 Max); residual 18 -> 2, materialize 17 -> 2, build_queries 12 -> 2, lde 13 -> 2 ms; the E kernels
+lost their stack frames (build_queries 150 -> 118 registers, materialize 96 -> 56). A misaligned offset would
+trap on NVIDIA, so the test suite on the box is the check that every Buf base is W-aligned.
+
+**The NVIDIA teardown deadlock (2026-09-16).** The hang first seen in `tests/test_backend.mojo` on the box
+is not the second `DeviceContext` of a process: a probe creating, using (arena, host buffer, a kernel) and
+tearing down a context three times runs fine, and test_prover makes eleven. It is the context dying before
+the buffers built on it. Mojo destroys a value after its last use, so in a scope like test_residual's fixture
+constructor, test_encode's `_run`, test_backend's `_run` and the chain bench's `run` the context is gone
+before the arena, the host buffers and the prover; on NVIDIA their teardown then deadlocks on a futex with
+every thread parked (no CUDA thread left, gdb cannot attach in the container: ptrace_scope 1), while Metal
+does not care. The whole five-grid chain bench hung at its second grid this way. Fix: `_ = ctx` as the
+last statement of every scope that creates a context (58 sites in tests and benches, a script); the
+prover itself gets its context from the caller. With it test_residual passes on the box and the five-grid
+bench runs through: 0.28 / 0.23 / 0.24 / 0.22 / 0.25 ms per hash on the RTX 3090 for the 125 / 375 / 369 /
+875 / 861-hash grids, all under Jolt's 0.33 on the M5 Max. Open: the minimal trigger (the one-kernel probe
+does not reproduce it), so the rule is by observation.
+
+**After the alignment fix (2026-09-16).** Raising the radix vector loads and stores from `alignment=2` to
+the vector width (2 V) changed nothing measurable on the 3090 (35.3 ms both ways); kept, it is the honest
+alignment. The M1 gains 5% from the byte-pointer fix (384 -> 364 ms, alternated twice, quiet machine): Metal
+took the unaligned vectors already and only lost the E join's stack trip. The 35 ms prove is all GPU time
+(nsys: 35.0 ms of kernels per prove) and flat: merkle leaves 3.9, materialize 2.7, residual 2.6, the opening
+GEMM 2.3, the transcript sampler 2.2 (25 launches of 89 us), build_queries 1.8, the RS stages ~4 in total.
+Test suite: with a cold cache the M1 suite is 300 CPU-seconds over 36 files, wall about 100 s at JOBS=6,
+and `mojo run` caches by content (an unchanged file reruns in a second). The long pole was
+test_prove_and_verify_with_codeword_split at 69 s, 60 of them building the host tables of an 8064 x 96 grid
+(the split depends on N only); on 192 x 4032 the test is 8 s, 7 of them the prove. test_prover's compile
+is now its cost, about 60 s for eight distinct grids (each instantiates the whole kernel set).

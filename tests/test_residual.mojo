@@ -108,6 +108,7 @@ struct Run:
         self.res = _to_list(rh)
         self.scratch = _to_list(qh)
         self.stored = _to_list(sh)
+        _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
     def f2(self, l: List[UInt8], off: Int) -> F2:
         return F2(l[off], l[off + 1])

@@ -29,6 +29,7 @@ def run[p: Params](name: String, lookup: Bool = False) raises:
     for i in range(len(prover.profile_names)):
         if prover.profile_ms[i] > 0:
             print("  ", prover.profile_ms[i], " ms  ", prover.profile_names[i])
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def main() raises:

@@ -339,7 +339,7 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
     var wr = InlineArray[V2, 8](fill=V2(0))       # W_8^m = gA^(m 2^b / 8)
     comptime for m in range(8):
-        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - 3))))
+        wr[m] = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(m << (bb - 3))))
     var xs = InlineArray[V4, 8](fill=V4(0))
     if ok:
         comptime for k in range(8):
@@ -348,7 +348,7 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     comptime for e in range(8):
         var y = ys[e]
         comptime if e > 0:
-            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << (bb - 6)) & ((1 << bb) - 1))))
+            var ws = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(((e * n_lo) << (bb - 6)) & ((1 << bb) - 1))))
             y = fp_mul2(ws, y)
         sh.ptr.unsafe_store(((n_lo + 8 * e) * CW + Int(thread_idx.x)) * 4, fp_canonical(y))
     barrier()
@@ -387,7 +387,7 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     var mask = (1 << bb) - 1
     var wr = InlineArray[V2, r](fill=V2(0))       # W_r^m = gA^(m 2^b / r)
     comptime for m in range(r):
-        wr[m] = fp_center(base.unsafe_load[width=2](ga.at(m << (bb - lr))))
+        wr[m] = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(m << (bb - lr))))
     var xs = InlineArray[V4, r](fill=V4(0))
     comptime for k in range(r):
         xs[k] = etmp.load(base, first + k * step).cast[DType.float32]()
@@ -405,7 +405,7 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     comptime for e in range(r):
         var y = ys[e]
         comptime if e > 0:
-            var ws = fp_center(base.unsafe_load[width=2](ga.at(((e * n_lo) << shift) & mask)))
+            var ws = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(((e * n_lo) << shift) & mask)))
             y = fp_mul2(ws, y)
         etmp.store(base, first + e * step, fp_canonical(y))
 
@@ -417,7 +417,7 @@ def _ldw[V: Int](base: Base, buf: Buf[4], i: Int, n: Int) -> SIMD[DType.float32,
     halves are joined because Metal has no vector insert."""
     comptime W = 4 * V
     if n >= V:
-        return base.unsafe_load[width=W](buf.at(i)).cast[DType.float32]()
+        return base.unsafe_load[width=W, alignment=4](buf.at(i)).cast[DType.float32]()
     comptime if V == 1:
         return rebind[SIMD[DType.float32, W]](SIMD[DType.float32, 4](0))
     else:
@@ -430,7 +430,7 @@ def _stw[V: Int](base: Base, buf: Buf[4], i: Int, n: Int, y: SIMD[DType.uint8, 4
     """Store V consecutive F4 values at element i; only the first n are valid."""
     comptime W = 4 * V
     if n >= V:
-        base.unsafe_store[width=W](buf.at(i), y)
+        base.unsafe_store[width=W, alignment=4](buf.at(i), y)
         return
     comptime if V > 1:
         comptime H = V // 2

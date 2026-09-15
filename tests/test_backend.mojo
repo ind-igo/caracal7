@@ -43,6 +43,7 @@ def _run[D: Int, T: Tile](M: Int, N: Int, K: Int, batch: Int) raises:
                 if acc != got:
                     bad += 1
     assert_equal(bad, 0)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_edges_and_batch() raises:
@@ -87,6 +88,7 @@ def test_f4() raises:
                 if acc != h.unsafe_ptr().unsafe_load[width=4](c + ((z * M + m) * N + n) * 4):
                     bad += 1
     assert_equal(bad, 0)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def main() raises:

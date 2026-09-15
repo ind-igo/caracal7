@@ -51,6 +51,19 @@ uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_sha256_chain
 
 Without a GPU the NVIDIA build still cross-compiles: `--target-accelerator sm_90` on any host.
 
+SHA-256 hash chain on an RTX 3090 (Vast.ai, 2026-09-16, `bench_sha256_chain`, warm prove median, proof verified),
+against Jolt's 0.33 ms per hash on an M5 Max:
+
+| grid | hashes | prove ms | ms per hash |
+| --- | ---: | ---: | ---: |
+| 32 x 8064 | 125 | 35.3 | 0.28 |
+| 96 x 8064 | 375 | 88.0 | 0.23 |
+| 288 x 2688 | 369 | 89.4 | 0.24 |
+| 224 x 8064 | 875 | 195.3 | 0.22 |
+| 672 x 2688 | 861 | 212.7 | 0.25 |
+
+The M1 Pro proves the 125-hash grid in 364 ms (2.9 ms per hash).
+
 Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later behind fixed buffer interfaces.
 
 ## csp-benchmarks results

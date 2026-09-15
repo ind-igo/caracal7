@@ -69,6 +69,7 @@ def test_prover_round_trip() raises:
     except:
         accepted = False
     assert_true(not accepted)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def main() raises:

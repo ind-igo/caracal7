@@ -98,6 +98,7 @@ def test_tree_and_multiproof() raises:
     proof[3] ^= 1
     with assert_raises(contains="root mismatch"):
         _ = check_multiproof[Blake3](root, LEAVES, ROW, positions, proof)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_authenticated_rows_must_be_canonical() raises:

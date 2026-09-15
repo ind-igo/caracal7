@@ -64,6 +64,7 @@ def run[p: Params](bytes: Int) raises:
     print("  warm prove median ", median, " ms (", times[0], " ", times[1], " ", times[2], "), ",
           median / Float64(n_blocks), " ms per block (jolt ", JOLT_MS_PER_BLOCK, "), proof ", size, " B, verify ",
           verify_ms / 3, " ms")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def main() raises:

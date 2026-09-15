@@ -147,20 +147,20 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
                 comptime if bytes_in:
                     x0[k][l] = Int32(base[unsafe_offset=src + l * Int(o.so_line) + k * Int(o.sk)])
                 else:
-                    var v = base.unsafe_load[width=2](src + l * Int(o.so_line) + k * Int(o.sk))
+                    var v = base.unsafe_load[width=2, alignment=2](src + l * Int(o.so_line) + k * Int(o.sk))
                     x0[k][l] = Int32(v[0])
                     x1[k][l] = Int32(v[1])
         elif bytes_in:
             x0[k] = Int32(base[unsafe_offset=src + k * Int(o.sk)])
         else:
-            var v = base.unsafe_load[width=2 * V](src + k * Int(o.sk)).deinterleave()
+            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + k * Int(o.sk)).deinterleave()
             x0[k] = rebind[SIMD[DType.int32, VL]](v[0].cast[DType.int32]())
             x1[k] = rebind[SIMD[DType.int32, VL]](v[1].cast[DType.int32]())
     comptime for j in range(r):
         var re = SIMD[DType.int32, VL](0)
         var im = SIMD[DType.int32, VL](0)
         comptime for k in range(kin):
-            var w = base.unsafe_load[width=2](tab + (j * kin + k) * 2)
+            var w = base.unsafe_load[width=2, alignment=2](tab + (j * kin + k) * 2)
             var w0 = Int32(w[0])
             var w1 = Int32(w[1])
             re += w0 * x0[k] - w1 * x1[k]
@@ -169,9 +169,9 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
         var ii = f_reduce_signed(im)
         comptime if LB > 1:
             comptime for l in range(LB):
-                base.unsafe_store[width=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
+                base.unsafe_store[width=2, alignment=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
         else:
-            base.unsafe_store[width=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
+            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
 
 
 def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:

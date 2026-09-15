@@ -15,6 +15,7 @@ def main() raises:
     var ctx = DeviceContext()
     run[CLIENT.grid(72, 32), 64](ctx)
     run[CLIENT.grid(64, 384), 142](ctx)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def run[p: Params, COLS: Int](ctx: DeviceContext) raises:

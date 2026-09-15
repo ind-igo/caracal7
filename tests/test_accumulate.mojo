@@ -106,6 +106,7 @@ def test_derivation_table_matches_host() raises:
     arena.upload(ctx, o_table, _host(ctx, table))
     derive_chals(ctx, arena, o_chals, o_table, 3)
     assert_true(_down(ctx, arena, o_chals, 6 * E_BYTES) == chals, "derived challenges differ from the host")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_accumulator_matches_host_and_satisfies_the_relations() raises:
@@ -116,6 +117,7 @@ def test_accumulator_matches_host_and_satisfies_the_relations() raises:
     for k in range(2):
         var got = _run(ctx, c.shape.accs, k, trace.copy(), SYNTHETIC_COLUMNS, List[UInt8](), 0)
         assert_true(got[1] == got[2], "grand product is not 1: c8 is not a permutation of c0")   # lhs = D(e1, e2)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 comptime LOOKUP_K = 37
@@ -146,6 +148,7 @@ def test_lookup_accumulator_meets_the_table_constant() raises:
     var c_t = lookup_constant(table, 2, _chals(standard_chals()))
     assert_true(got[1] == c_t, "lookup boundary is not C_T")
     assert_true(c_t != ext_one[E_LEVEL](), "vacuous")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], columns: Int, idx: List[UInt8], table_k: Int) raises -> Tuple[List[UInt8], E, E]:
@@ -295,3 +298,4 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     var w = f_mul(ext_mul[E_LEVEL](list_e(chals, 1), list_e(chals, 2)), E(3))     # 3 delta gamma
     for x2 in range(h2):
         assert_true(ext_mul[E_LEVEL](ends[x2], ends[h2 + x2]) == ext_mul[E_LEVEL](w, ends[2 * h2 + x2]), "chain end fails at x2 = " + String(x2))
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)

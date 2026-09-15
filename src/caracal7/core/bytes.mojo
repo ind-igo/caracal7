@@ -44,27 +44,29 @@ struct Buf[W: Int](TrivialRegisterPassable, DevicePassable):
     # An E value is E_BYTES in memory and E_WIDTH lanes in a register (field.mojo): the access is 16 + 4.
     comptime split: Bool = Self.W == E_BYTES and E_BYTES != E_WIDTH
     comptime R: Int = E_WIDTH if Self.split else Self.W
+    # Every region base is ALIGN bytes aligned and element i sits at i W, so an access is W-aligned up to
+    # 16: without the hint NVPTX emits one byte load per byte (an E load was 20 ld.b8).
+    comptime AL: Int = 16 if Self.W % 16 == 0 else (4 if Self.W % 4 == 0 else (2 if Self.W % 2 == 0 else 1))
 
     @always_inline
     def load(self, base: Base, i: Int) -> SIMD[DType.uint8, Self.R]:
         comptime if Self.split:
-            var lo = base.unsafe_load[width=16](self.at(i))
-            var hi = base.unsafe_load[width=4](self.at(i) + 16)
-            var r = lo.join(SIMD[DType.uint8, 16](0))       # lane stores: Metal has no llvm.vector.insert
-            comptime for l in range(4):
-                r[16 + l] = hi[l]
+            var lo = base.unsafe_load[width=16, alignment=4](self.at(i))
+            var hi = base.unsafe_load[width=4, alignment=4](self.at(i) + 16)
+            # joins only (shuffles stay in registers; lane stores went through the stack)
+            var r = lo.join(hi.join(SIMD[DType.uint8, 4](0)).join(SIMD[DType.uint8, 8](0)))
             return rebind[SIMD[DType.uint8, Self.R]](r)
         else:
-            return rebind[SIMD[DType.uint8, Self.R]](base.unsafe_load[width=Self.W](self.at(i)))
+            return rebind[SIMD[DType.uint8, Self.R]](base.unsafe_load[width=Self.W, alignment=Self.AL](self.at(i)))
 
     @always_inline
     def store(self, base: Base, i: Int, v: SIMD[DType.uint8, Self.R]):
         comptime if Self.split:
             var x = rebind[SIMD[DType.uint8, E_WIDTH]](v)
-            base.unsafe_store[width=16](self.at(i), x.slice[16]())
-            base.unsafe_store[width=4](self.at(i) + 16, x.slice[4, offset=16]())
+            base.unsafe_store[width=16, alignment=4](self.at(i), x.slice[16]())
+            base.unsafe_store[width=4, alignment=4](self.at(i) + 16, x.slice[4, offset=16]())
         else:
-            base.unsafe_store[width=Self.W](self.at(i), rebind[SIMD[DType.uint8, Self.W]](v))
+            base.unsafe_store[width=Self.W, alignment=Self.AL](self.at(i), rebind[SIMD[DType.uint8, Self.W]](v))
 
 
 # ---- device reads of the little-endian integer fields of descriptors and headers ----

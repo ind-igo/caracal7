@@ -195,6 +195,7 @@ def test_prove_and_verify() raises:
     _reject_noncanonical[p](proof, shape, c.families,
         [(z2_bytes, shape.products() * p.h2() * p.e), (q3_bytes, 2 * p.h2() * p.e),
          (openings, shape.points * shape.columns() * p.e), (clear, shape.clear_length * p.e)])
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_prove_and_verify_without_accumulators() raises:
@@ -209,6 +210,7 @@ def test_prove_and_verify_without_accumulators() raises:
     load_trace[p, Blake3](ctx, prover, synthetic_trace[p](1, with_accumulator=False))
     var proof = prover.prove(ctx, List[UInt8]())
     assert_true(verify[p, Blake3](proof^, shape, List[UInt8](), c.families))
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_invalid_permutation_is_rejected() raises:
@@ -228,6 +230,7 @@ def test_invalid_permutation_is_rejected() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "accumulator grand product is not 1")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def _point(dj1: Int, dj2: Int) -> List[UInt8]:
@@ -262,6 +265,7 @@ def test_point_list_and_derivation_table_are_artifact_inputs() raises:
     assert_equal(_rejected(shift_points(c.families), standard_chals(), bad_fam, c.shape.accs), "family entry names a challenge element past the derivation table")
     assert_equal(_rejected(shift_points(c.families), [CHAL_ADD, 0, CHAL_ONE, CHAL_MUL, 5, 1], c.families, c.shape.accs), "challenge derivation row must add or multiply earlier elements")
     assert_equal(_rejected(shift_points(c.families), [CHAL_ADD, 0, CHAL_ONE], c.families, c.shape.accs), "accumulators need the derivation table to start with 1 + beta and (1 + beta) delta")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def _rejected(points: List[UInt8], chals: List[UInt8], families: List[UInt8], accs: List[UInt8]) -> String:
@@ -315,6 +319,7 @@ def test_prove_and_verify_with_lookup() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup table bytes must be canonical field elements (< 127)")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def _public_case(ctx: DeviceContext, proof: List[UInt8], shape: Shape, families: List[UInt8], public: List[UInt8]) raises -> String:
@@ -365,13 +370,15 @@ def test_prove_and_verify_with_public_column_and_restriction() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "public column period divides h2: need m >= 1, h2 % m == 0")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_prove_and_verify_with_codeword_split() raises:
-    """8064 x 96: 193,536 symbols per column exceed the largest domain, so each column is two codewords of
+    """192 x 4032: 193,536 symbols per column exceed the largest domain, so each column is two codewords of
     96,768 on 4 x 161,280 (rate 0.15); the rows are (column, codeword, 4) and the tail's level-1 batch has
-    4 n_cw weights per query."""
-    comptime split = SPEC95.grid(8064, 96)
+    4 n_cw weights per query. The split depends on N only; the short axis first keeps the host table build
+    small (8064 x 96 spent a minute building axis-1 tables; accumulators need h2 < 8064)."""
+    comptime split = SPEC95.grid(192, 4032)
     assert_equal(split.n_cw(), 2)
     assert_equal(split.L(), 645120)
     var ctx = DeviceContext()
@@ -394,6 +401,7 @@ def test_prove_and_verify_with_codeword_split() raises:
     except:
         rejected = True
     assert_true(rejected)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_prove_and_verify_with_tail() raises:
@@ -441,6 +449,7 @@ def test_prove_and_verify_with_tail() raises:
             _ = reader.prefixed()
     regions.append((reader.pos, shape.clear_length * big.e))
     _reject_noncanonical[big](proof, shape, c.families, regions)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 
@@ -484,6 +493,7 @@ def test_prove_and_verify_with_horner_accumulators() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "small grid identity fails at z2")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_prove_and_verify_with_wiring() raises:
@@ -518,6 +528,7 @@ def test_prove_and_verify_with_wiring() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "wiring grand product is not the public factor")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_workload_driver_round_trips_every_synthetic_variant() raises:
@@ -540,6 +551,7 @@ def test_workload_driver_round_trips_every_synthetic_variant() raises:
     except e:
         ok = False
     assert_false(ok)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -71,6 +71,7 @@ def test_prover_round_trip() raises:
     var w = Keccak(message(128))
     var proof = prove_workload[p, Blake3, Keccak](ctx, w)
     assert_true(verify_workload[p, Blake3, Keccak](proof^, w, w.public_inputs[p]()))
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_wrong_digest_is_rejected() raises:
@@ -99,6 +100,7 @@ def test_wrong_digest_is_rejected() raises:
         assert_equal(String(e), "restriction fails")
         ok = False
     assert_false(ok)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
 def test_public_data_rejects_a_message_past_the_grid() raises:

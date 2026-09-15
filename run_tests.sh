@@ -8,11 +8,13 @@ JOBS=${JOBS:-4}
 LOG=$(mktemp -d)
 one() {   # $1 = test or bench file; the rest = mojo args
   f=$1; shift
+  t0=$(date +%s)
   case "$f" in
     tests/*) uv run mojo run --Werror "$@" -I src "$f" ;;
     *)       uv run mojo build --Werror "$@" -I src "$f" -o /dev/null ;;
   esac > "$LOG/$(basename "$f").log" 2>&1
-  if [ $? -eq 0 ]; then echo "ok   $f"; else echo "FAIL $f"; cat "$LOG/$(basename "$f").log"; echo "$f" >> "$LOG/failed"; fi
+  rc=$?; dt=$(( $(date +%s) - t0 ))
+  if [ $rc -eq 0 ]; then echo "ok   $f  ${dt}s"; else echo "FAIL $f  ${dt}s"; cat "$LOG/$(basename "$f").log"; echo "$f" >> "$LOG/failed"; fi
 }
 export -f one 2>/dev/null || true
 FILES=$(ls tests/test_*.mojo)

@@ -28,3 +28,4 @@ def main() raises:
     ctx.synchronize()
     var ms = Float64(perf_counter_ns() - t0) / 1e6 / REPS
     print("merkle", LEAVES, "leaves x", ROW, "B:", ms, "ms,", Float64(LEAVES * ROW) / ms / 1e6, "GB/s")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
