@@ -33,7 +33,23 @@ docs/           decisions.md
 ```
 uv sync
 ./run_tests.sh
+./run_tests.sh -D CARACAL_NVIDIA_MMA   # NVIDIA sm_80+: the integer tensor-core backend
+./run_tests.sh -D CARACAL_APPLE_MMA    # Apple M5 (GPU family 10): the simdgroup MMA backend
 ```
+
+`-D CARACAL_DFT_PROFILE` on a bench build synchronizes and prints every radix stage (radix, inputs, positions
+per thread, threads, microseconds); the encoders, the LDE, the quotient and the tail encode all run on it.
+
+On a rented NVIDIA box (Linux x86, driver installed, any sm_80 or later GPU), in this order:
+
+```
+uv sync
+./run_tests.sh -D CARACAL_NVIDIA_MMA                       # the backend test first: a failure there is the fragment mapping
+uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_gemm.mojo -o bench_gemm && ./bench_gemm
+uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_sha256_chain.mojo -o bench_chain && ./bench_chain
+```
+
+Without a GPU the NVIDIA build still cross-compiles: `--target-accelerator sm_90` on any host.
 
 Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later behind fixed buffer interfaces.
 

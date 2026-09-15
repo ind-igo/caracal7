@@ -5,7 +5,7 @@ from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F2, F4, f_add, ext_mul
 from caracal7.core.arena import Arena, Bump
-from caracal7.core.backend import BACKEND, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
+from caracal7.core.backend import BACKEND, F4_TILE, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
 
 
 def _run[D: Int, T: Tile](M: Int, N: Int, K: Int, batch: Int) raises:
@@ -50,7 +50,7 @@ def test_edges_and_batch() raises:
 
 
 def test_lane_view() raises:
-    _run[8, Tile(BM=8, BN=128, BK=16, TM=8, TN=4)](8, 13 * 8, 13, 1)   # the residual pass shape
+    _run[8, Tile(BM=8, BN=128, BK=16, TM=8, TN=4, mma=False)](8, 13 * 8, 13, 1)   # the residual pass shape
 
 
 def test_f4() raises:
@@ -72,7 +72,7 @@ def test_f4() raises:
     arena.upload(ctx, 0, h)
     var o = strided(a, K * 4, 4, sa_z=M * K * 4, b=b, sb_k=N * 4, sb_hi=4, sb_lo=0, sb_z=K * N * 4,
                     c=c, sc_m=N * 4, sc_hi=4, sc_lo=0, sc_z=M * N * 4)
-    launch_gemm_f4[BACKEND, BACKEND.tile, Strided4, 1](ctx, arena, o, M, N, K, batch)
+    launch_gemm_f4[BACKEND, F4_TILE, Strided4, 1](ctx, arena, o, M, N, K, batch)
     arena.download(ctx, 0, h)
     ctx.synchronize()
     var bad = 0

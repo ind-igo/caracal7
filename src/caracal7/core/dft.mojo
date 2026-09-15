@@ -18,6 +18,8 @@ src -> dst -> scratch -> dst buffer walk of three stages still holds.
 Axis 2 transforms the rows of a column (W F2 per row); axis 1 transforms each row (W = 1, the
 lines are the rows of every column). Every n-row buffer has stride n W 2 per line."""
 from std.math import ceildiv
+from std.sys import is_defined
+from std.time import perf_counter_ns
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
@@ -174,12 +176,26 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
 
 def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:
     comptime kernel = k_radix[r, kin, bytes_in, V, LB]
+    comptime PROF = is_defined["CARACAL_DFT_PROFILE"]()      # -D CARACAL_DFT_PROFILE: synchronize and print every stage
+    var t0 = perf_counter_ns()
+    comptime if PROF:
+        ctx.synchronize()
+        t0 = perf_counter_ns()
     ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
+    comptime if PROF:
+        ctx.synchronize()
+        print("    radix", r, "kin", kin, "V", V, "LB", LB, "threads", o.total, "us", (perf_counter_ns() - t0) // 1000)
 
 
 # TODO(perf): the axis-1 stages (W = 1) run 5 to 10 ms per stage against a memory bound near 1 ms, and are
 # the largest part of the LDE (60 ms) and the encodes (96 ms) at the ECDSA grid. Next step: fuse the three
 # stages of a line in threadgroup memory, one read of the input and one write of the output.
+def _vcap(r: Int, V: Int) -> Int:
+    """Positions per thread for a radix-r stage: at most 2 from radix 16 (r V input lanes twice, plus r V
+    accumulators, must stay in registers)."""
+    return 2 if r >= 16 and V > 2 else V
+
+
 def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     ctx: DeviceContext, arena: Arena, src: Int, dst: Int, scratch: Int, W: Int, lines: Int, tab: Int,
     dst_line: Int = 0, dst_j: Int = 0
@@ -203,20 +219,37 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     comptime LB3 = 4 if V3 == 1 else 1
     if W % V != 0 or lines % LB != 0 or lines % LB3 != 0:
         raise Error("dft_axis: W is not a multiple of V, or lines of LB")
+    comptime V3c = _vcap(n3, V3)                # radix 16 at four positions holds 128 input lanes: spills
+    comptime V2c = _vcap(n2, V)
+    comptime LB3c = 4 if V3c == 1 else 1
+    comptime LB2c = 4 if V2c == 1 else 1
     var R = W * 2
     var Ri = W if bytes_in else R
     var dl = dst_line if dst_line > 0 else n * R
     var dj = dst_j if dst_j > 0 else R
-    _stage[n3, k3, bytes_in, V3, LB3](ctx, arena, Radix(
+    comptime if n1 == 1:
+        if scratch != src:
+            # the odd part is 1, so the last stage would be a copy into the output layout: stage 3 into
+            # scratch, stage 2 straight into the output layout (row j n3 + hi of a line)
+            _stage[n3, k3, bytes_in, V3c, LB3c](ctx, arena, Radix(
+                src=src, so_line=h * Ri, so_pre=0, so_pre_lo=0, sk=n2 * Ri, si=(1 if bytes_in else 2),
+                dst=scratch, to_line=n * R, to_pre=0, to_pre_lo=0, tj=n2 * R, ti=2,
+                tab=tab + plan.t3(), od=1, od_lo=1, tabmod=1, inner=n2 * W // V3c, total=lines // LB3c * n2 * W // V3c))
+            _stage[n2, n2, False, V2c, LB2c](ctx, arena, Radix(
+                src=scratch, so_line=n * R, so_pre=n2 * R, so_pre_lo=0, sk=R, si=2,
+                dst=dst, to_line=dl, to_pre=dj, to_pre_lo=0, tj=n3 * dj, ti=2,
+                tab=tab + plan.t2(), od=n3, od_lo=1, tabmod=n3, inner=W // V2c, total=lines // LB2c * n3 * W // V2c))
+            return
+    _stage[n3, k3, bytes_in, V3c, LB3c](ctx, arena, Radix(
         src=src, so_line=h * Ri, so_pre=0, so_pre_lo=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
         dst=dst, to_line=n * R, to_pre=0, to_pre_lo=0, tj=n1 * n2 * R, ti=2,
-        tab=tab + plan.t3(), od=1, od_lo=1, tabmod=1, inner=n1 * n2 * W // V3, total=lines // LB3 * n1 * n2 * W // V3))
-    _stage[n2, n2, False, V, LB](ctx, arena, Radix(
+        tab=tab + plan.t3(), od=1, od_lo=1, tabmod=1, inner=n1 * n2 * W // V3c, total=lines // LB3c * n1 * n2 * W // V3c))
+    _stage[n2, n2, False, V2c, LB2c](ctx, arena, Radix(
         src=dst, so_line=n * R, so_pre=n1 * n2 * R, so_pre_lo=0, sk=n1 * R, si=2,
         dst=scratch, to_line=n * R, to_pre=n1 * R, to_pre_lo=0, tj=n3 * n1 * R, ti=2,
-        tab=tab + plan.t2(), od=n3, od_lo=1, tabmod=n3, inner=n1 * W // V, total=lines // LB * n3 * n1 * W // V))
+        tab=tab + plan.t2(), od=n3, od_lo=1, tabmod=n3, inner=n1 * W // V2c, total=lines // LB2c * n3 * n1 * W // V2c))
     comptime if na == 1:
-        # ponytail: at n1 = 1 this stage is a copy; skip it when a grid with a power-of-two axis matters
+        # at n1 = 1 with scratch aliasing src this stage is a copy into the output layout
         _stage[n1, n1, False, V, LB](ctx, arena, Radix(
             src=scratch, so_line=n * R, so_pre=n1 * R, so_pre_lo=0, sk=R, si=2,
             dst=dst, to_line=dl, to_pre=dj, to_pre_lo=0, tj=n2 * n3 * dj, ti=2,

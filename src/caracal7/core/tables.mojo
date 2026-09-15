@@ -337,7 +337,8 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
 
 def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8,
                 twist_in: F2 = F2(1, 0), twist_out: F2 = F2(1, 0)):
-    """The stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3.
+    """The stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3. At n1 = 1 the
+    stage-1 table is all ones (twist_out folded into stage 2), so dft_axis may skip that stage.
     The transform twist_out^j sum_k root^(j k) twist_in^k x[k] (a coset evaluation or its inverse) splits
     over the digits: twist_in^(n1 n2 k3) into T3, twist_in^(n1 k2) into T2, twist_in^k1 twist_out^j into T1,
     or with the odd split twist_in^(na kb) into Tb and twist_in^ka twist_out^j into Ta."""
@@ -354,10 +355,12 @@ def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, sc
         for j2 in range(n2):
             for k2 in range(n2):
                 var w = ext_pow[1](root, (n1 * (j3 + n3 * j2) * k2) % n)
+                if n1 == 1:                                  # stage 1 would only apply twist_out^j: fold it here
+                    w = ext_mul[1](w, ext_pow[1](twist_out, j3 + n3 * j2))
                 _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_mul[1](w, ext_pow[1](twist_in, n1 * k2)))
     for jj in range(n2 * n3):
         for jb in range(nb):
-            var tj = ext_pow[1](twist_out, jj + n2 * n3 * jb) if na == 1 else F2(1, 0)
+            var tj = ext_pow[1](twist_out, jj + n2 * n3 * jb) if na == 1 and n1 > 1 else F2(1, 0)
             for kb in range(nb):
                 var w = ext_mul[1](ext_pow[1](root, (na * (jj + n2 * n3 * jb) * kb) % n), ext_pow[1](twist_in, na * kb))
                 _put(h, at + plan.t1() + ((jj * nb + jb) * nb + kb) * 2, ext_mul[1](w, tj))

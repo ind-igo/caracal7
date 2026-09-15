@@ -185,6 +185,8 @@ struct Backend:
 
 Materialized 2026-09-04 in `backend.mojo`: `Backend`, `tile_mac` (SIMD lanes, `mma_k = 1`) and the F2 GEMM skeleton `gemm_f2`; the residual stage is written on it, the plain GEMM shares the tile op. Verified 2026-09-04: there is no single MMA surface. NVIDIA and AMD go through `layout.TensorCore`; Apple M5 goes through `linalg.arch.apple.mma.MmaOpApple`; the M1 has neither. `tile_mac` wraps all three plus the SIMD-lane path.
 
+Materialized 2026-09-15: three backend values named by their tile op, `LANES`, `APPLE_MMA`, `NVIDIA_MMA`, selected by build flag (`-D CARACAL_APPLE_MMA`, `-D CARACAL_NVIDIA_MMA`; host code reads the tile for the launch shape, so a device probe cannot select). `gemm_f2_apple` runs on `MmaOpApple[int32, int8, 2, 2]` (the M5 integer widening simdgroup MMA); `gemm_f2_nvidia` runs on `mma.sync.m16n8k32.s32.s8.s8.s32` through inline PTX (`mma_s8`), because the stdlib `TensorCore` and `mma` wrappers have no int8 case. Both stage A as int8 planes (re, im, -im), so the complex product is four MMAs into two int32 accumulators with the lane path's `max_terms` cadence; `Tile.mma` marks a warp-level tile and `TM, TN` become the warp sub-tile. The lane skeleton remains valid on every backend (the F4 skeleton and the lane-view tiles run on it).
+
 ## 10. Open
 
 - Apple GPU in Mojo: shared-memory size, `barrier`, and whether Blake3 on device reaches the CPU rate. Learned from `rs_encode` and `merkle`.

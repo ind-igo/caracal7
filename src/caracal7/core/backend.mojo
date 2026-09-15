@@ -1,10 +1,15 @@
 """Backend and the tile op (docs/design.md section 9), SIMD-lane implementation for Apple M1 to M4.
 
-`tile_mac` is the one hot op. On SIMD lanes it is the rank-1 update acc[i] += a[i] * b (mma_k = 1)
-on int32 lanes, reduced lazily every `max_terms` products. An MMA backend (NVIDIA TensorCore, Apple
-M5 MmaOpApple) replaces this function, the `Backend` value, and the fragment loads and k step of
-the skeleton below (an MMA consumes mma_k columns of the tile per call); every stage above this
-file is unchanged.
+Three backends, one per kind of tile op, selected by a build flag (`BACKEND`):
+  LANES       `gemm_f2`: `tile_mac`, the rank-1 update acc[i] += a[i] * b on int32 lanes, reduced lazily
+              every `max_terms` products. Any GPU; the only op on Apple M1 to M4. The default.
+  APPLE_MMA   `gemm_f2_apple` (`-D CARACAL_APPLE_MMA`): `MmaOpApple`, the Apple GPU family 10 (M5) integer
+              simdgroup MMA, int8 x int8 -> int32, 16 x 16 x 16 per simdgroup of 32 threads.
+  NVIDIA_MMA  `gemm_f2_nvidia` (`-D CARACAL_NVIDIA_MMA`): `mma.sync.m16n8k32.s32.s8.s8.s32`, the NVIDIA
+              integer tensor core (sm_80 and later), 16 x 8 x 32 per warp of 32 threads.
+The MMA skeletons keep the operands, staging and predication of `gemm_f2` and replace the k step; every
+stage above this file is unchanged. A is staged as int8 planes (re, im, -im), so the complex product is
+four MMAs into two int32 accumulators, with the lane path's reduction cadence.
 
 `gemm_f2` is the shared skeleton of every GEMM-shaped stage on F2 data (the grid DFTs, the
 residual pass, the quotient interpolations): threadgroup tiles, register tiles, the F2 operands as
@@ -15,6 +20,10 @@ anything; the tile only has to be legal.
 """
 
 from std.math import ceildiv
+from std.sys import is_defined, _RegisterPackType
+from std.sys._assembly import inlined_assembly
+from std.memory import bitcast
+from linalg.arch.apple.mma import MmaOpApple
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
@@ -32,17 +41,19 @@ struct Tile(TrivialRegisterPassable):
     var BM: Int
     var BN: Int
     var BK: Int
-    var TM: Int
+    var TM: Int                  # register tile rows per thread; on an MMA tile, rows per warp / simdgroup
     var TN: Int
+    var mma: Bool                # a warp-level MMA skeleton instead of the lane skeleton
 
     def threads(self) -> Int:
-        return (self.BM // self.TM) * (self.BN // self.TN)
+        return (self.BM // self.TM) * (self.BN // self.TN) * (32 if self.mma else 1)
 
 
 @fieldwise_init
 struct Backend(TrivialRegisterPassable):
     """What differs between backends (design section 9). Only the fields a kernel reads today exist;
     a kernel that needs more adds a field here, never a device probe of its own."""
+    var kind: Int                # KIND_LANES, KIND_APPLE_MMA, KIND_NVIDIA_MMA: which F2 skeleton launch_gemm_f2 runs
     var threadgroup_bytes: Int   # shared memory one block may use
     var mma_k: Int               # 1: rank-1 update on SIMD lanes; the MMA tile depth on MMA backends
     var max_terms: Int           # products one int32 lane accumulates before f_reduce_signed
@@ -51,12 +62,21 @@ struct Backend(TrivialRegisterPassable):
     var block: Int               # threads per block of the one-thread-per-element kernels
 
 
-comptime SIMD_LANES = Backend(threadgroup_bytes=32768, mma_k=1, max_terms=128, vec_bytes=4,
-                              tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4), block=256)
+comptime KIND_LANES = 0
+comptime KIND_APPLE_MMA = 1
+comptime KIND_NVIDIA_MMA = 2
+comptime LANES = Backend(kind=KIND_LANES, threadgroup_bytes=32768, mma_k=1, max_terms=128, vec_bytes=4,
+                         tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4, mma=False), block=256)
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
-comptime BACKEND = SIMD_LANES   # ponytail: the only implementation; select by device family here when an MMA path lands
-comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4)   # M = the 8 F2 lanes of E: residual, open, fold
-comptime F4_TILE = Tile(BM=32, BN=32, BK=8, TM=2, TN=2)   # gemm_f4: 4 x 4 register tiles spill (102 byte-GMAC/s), 2 x 4 gives 212, 2 x 2 gives 340
+comptime APPLE_MMA = Backend(kind=KIND_APPLE_MMA, threadgroup_bytes=32768, mma_k=16, max_terms=128, vec_bytes=16,
+                             tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256)
+comptime NVIDIA_MMA = Backend(kind=KIND_NVIDIA_MMA, threadgroup_bytes=49152, mma_k=32, max_terms=128, vec_bytes=16,
+                              tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256)
+comptime BACKEND = NVIDIA_MMA if is_defined["CARACAL_NVIDIA_MMA"]() else (APPLE_MMA if is_defined["CARACAL_APPLE_MMA"]() else LANES)
+# A build flag, not a device probe: host code reads BACKEND.tile for the launch shape, and `is_nvidia_gpu()` is
+# only true inside device code; the Apple GPU family (M5 or not) is not visible at comptime at all.
+comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4, mma=False)   # M = the 8 F2 lanes of E: residual, open, fold
+comptime F4_TILE = Tile(BM=32, BN=32, BK=8, TM=2, TN=2, mma=False)   # gemm_f4: 4 x 4 register tiles spill (102 byte-GMAC/s), 2 x 4 gives 212, 2 x 2 gives 340
 comptime F4_TERMS = 32   # F4 products per lane between reductions: a (1, i) lane moves by at most 8 * 126^2 per product
 
 
@@ -64,8 +84,7 @@ comptime F4_TERMS = 32   # F4 products per lane between reductions: a (1, i) lan
 def tile_mac[B: Backend, TM: Int, TN: Int, neg: Bool = False](
     a: SIMD[DType.int32, TM], b: SIMD[DType.int32, TN], mut acc: InlineArray[SIMD[DType.int32, TN], TM]
 ):
-    """acc[i][j] += a[i] * b[j] (or -=). The (TM x mma_k) by (mma_k x TN) tile product with mma_k = 1."""
-    comptime assert B.mma_k == 1, "only the SIMD-lane tile op exists"
+    """acc[i][j] += a[i] * b[j] (or -=). The (TM x 1) by (1 x TN) tile product on lanes; valid on every backend."""
     comptime for i in range(TM):
         comptime if neg:
             acc[i] -= a[i] * b
@@ -242,10 +261,271 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
                 base.unsafe_store[width=2](at, v)
 
 
+def gemm_f2_apple[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
+    base: Base, o: Operands, M: Int32, N: Int32, K: Int32
+):
+    """gemm_f2 on the Apple M5 simdgroup MMA: the k step is `MmaOpApple.mma` over the BK columns of the
+    tile; re += a0 b0 + (-a1) b1, im += a1 b0 + a0 b1. Each simdgroup owns a (T.TM x T.TN) sub-tile; lane
+    (rb, cb) of a 16 x 16 fragment holds columns cb..cb+3 of rows rb and rb + 8."""
+    comptime BM = T.BM
+    comptime BN = T.BN
+    comptime BK = T.BK
+    comptime SGM = T.TM
+    comptime SGN = T.TN
+    comptime NM = SGM // 16
+    comptime NN = SGN // 16
+    comptime THREADS = T.threads()
+    comptime assert T.mma and B.kind == KIND_APPLE_MMA, "gemm_f2_apple runs on an MMA tile of APPLE_MMA"
+    comptime assert BK % 16 == 0 and SGM % 16 == 0 and SGN % 16 == 0 and BM % SGM == 0 and BN % SGN == 0
+    comptime assert B.max_terms % BK == 0, "the lazy reduction cadence needs BK | max_terms"
+    comptime assert B.max_terms * 2 * 126 * 126 + 126 < Int(WIDE_BIAS), "signed F2 lanes overflow WIDE_BIAS before a reduction"
+    comptime assert (BM * BK) % THREADS == 0 and (BK * BN) % THREADS == 0
+    comptime assert 3 * BM * BK + 2 * BK * BN <= B.threadgroup_bytes
+    comptime Op = MmaOpApple[DType.int32, DType.int8, NM, NN]
+
+    var tid = Int(thread_idx.x)
+    var sg = tid // 32
+    var sg_row = sg // (BN // SGN)
+    var sg_col = sg % (BN // SGN)
+    var brow = Int(block_idx.y) * BM
+    var bcol = Int(block_idx.x) * BN
+    var z = Int(block_idx.z)
+    var zlo = z % Int(o.zd) if o.zd > 0 else z
+    var zhi = z // Int(o.zd) if o.zd > 0 else 0
+    var za = zlo * Int(o.sa_z) + zhi * Int(o.sa_zz)
+    var zb = zlo * Int(o.sb_z) + zhi * Int(o.sb_zz)
+    var zc = zlo * Int(o.sc_z) + zhi * Int(o.sc_zz)
+    var Mi = Int(M)
+    var Ni = Int(N)
+    var Ki = Int(K)
+
+    var As0 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # re
+    var As1 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # im
+    var As2 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # -im
+    var Bs0 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var Bs1 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
+    var op = Op()
+    var re = Op.zero_accum()
+    var im = Op.zero_accum()
+
+    for kt in range(ceildiv(Ki, BK)):
+        comptime for i in range(0, BM * BK, THREADS):
+            var idx = i + tid
+            var r = idx // BK
+            var kk = idx % BK
+            var v = F2(0)
+            if brow + r < Mi and kt * BK + kk < Ki:
+                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+            var a1 = Int8(v[1])
+            As0.ptr.unsafe_store(idx, Int8(v[0]))
+            As1.ptr.unsafe_store(idx, a1)
+            As2.ptr.unsafe_store(idx, -a1)
+        comptime for i in range(0, BK * BN, THREADS):
+            var idx = i + tid
+            var kk: Int
+            var nn: Int
+            comptime if L.kfast:
+                nn = idx // BK
+                kk = idx % BK
+            else:
+                kk = idx // BN
+                nn = idx % BN
+            var n = bcol + nn
+            var v = F2(0)
+            if n < Ni and kt * BK + kk < Ki:
+                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+            Bs0.ptr.unsafe_store(kk * BN + nn, Int8(v[0]))
+            comptime if not L.real:
+                Bs1.ptr.unsafe_store(kk * BN + nn, Int8(v[1]))
+        barrier()
+        var a0 = As0.tile[SGM, BK](sg_row, 0)
+        var a1 = As1.tile[SGM, BK](sg_row, 0)
+        var b0 = Bs0.tile[BK, SGN](0, sg_col)
+        op.mma(re, a0, b0)
+        op.mma(im, a1, b0)
+        comptime if not L.real:
+            var a2 = As2.tile[SGM, BK](sg_row, 0)
+            var b1 = Bs1.tile[BK, SGN](0, sg_col)
+            op.mma(re, a2, b1)
+            op.mma(im, a0, b1)
+        barrier()
+        if ((kt + 1) * BK) % B.max_terms == 0:
+            comptime for t in range(NM * NN):
+                re[t] = f_reduce_signed(re[t]).cast[DType.int32]()
+                im[t] = f_reduce_signed(im[t]).cast[DType.int32]()
+
+    comptime for mi in range(NM):
+        comptime for ni in range(NN):
+            var fr = f_reduce_signed(re[mi * NN + ni])
+            var fi = f_reduce_signed(im[mi * NN + ni])
+            comptime for half in range(2):
+                var m = brow + sg_row * SGM + mi * 16 + op.rb + half * 8
+                comptime for j in range(4):
+                    var n = bcol + sg_col * SGN + ni * 16 + op.cb + j
+                    if m < Mi and n < Ni:
+                        var v = F2(fr[half * 4 + j], fi[half * 4 + j])
+                        var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + zc
+                        comptime if acc:
+                            v = f_add(v, base.unsafe_load[width=2](at))
+                        base.unsafe_store[width=2](at, v)
+
+
+@always_inline
+def mma_s8(mut d: SIMD[DType.int32, 4], a: SIMD[DType.uint32, 4], b: SIMD[DType.uint32, 2]):
+    """d += A (16 x 32, int8, row) B (32 x 8, int8, col) on one warp: mma.sync.m16n8k32. Lane l holds, with
+    g = l // 4 and t = l % 4: a[0] = A[g, 4t..4t+3], a[1] = A[g+8, 4t..], a[2] = A[g, 16+4t..], a[3] = A[g+8, 16+4t..];
+    b[0] = B[4t..4t+3, g], b[1] = B[16+4t.., g]; d = (D[g, 2t], D[g, 2t+1], D[g+8, 2t], D[g+8, 2t+1])."""
+    var r = inlined_assembly[
+        "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {$0, $1, $2, $3}, {$4, $5, $6, $7}, {$8, $9}, {$10, $11, $12, $13};",
+        _RegisterPackType[Int32, Int32, Int32, Int32],
+        constraints="=r,=r,=r,=r,r,r,r,r,r,r,r,r,r,r",
+    ](a[0], a[1], a[2], a[3], b[0], b[1], d[0], d[1], d[2], d[3])
+    d = SIMD[DType.int32, 4](r[0], r[1], r[2], r[3])
+
+
+def gemm_f2_nvidia[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
+    base: Base, o: Operands, M: Int32, N: Int32, K: Int32
+):
+    """gemm_f2 on the NVIDIA integer tensor core: the k step is `mma_s8` per 16 x 8 x 32 fragment. A planes
+    are staged (m, k) and B planes (n, k), k contiguous, so every fragment register is one 4-byte load.
+    Each warp owns a (T.TM x T.TN) sub-tile of 16 x 8 fragments."""
+    comptime BM = T.BM
+    comptime BN = T.BN
+    comptime BK = T.BK
+    comptime WM = T.TM
+    comptime WN = T.TN
+    comptime NM = WM // 16
+    comptime NN = WN // 8
+    comptime THREADS = T.threads()
+    comptime assert T.mma and B.kind == KIND_NVIDIA_MMA, "gemm_f2_nvidia runs on an MMA tile of NVIDIA_MMA"
+    comptime assert BK % 32 == 0 and WM % 16 == 0 and WN % 8 == 0 and BM % WM == 0 and BN % WN == 0
+    comptime assert B.max_terms % BK == 0, "the lazy reduction cadence needs BK | max_terms"
+    comptime assert B.max_terms * 2 * 126 * 126 + 126 < Int(WIDE_BIAS), "signed F2 lanes overflow WIDE_BIAS before a reduction"
+    comptime assert (BM * BK) % THREADS == 0 and (BK * BN) % THREADS == 0
+    comptime assert 3 * BM * BK + 2 * BK * BN <= B.threadgroup_bytes
+
+    var tid = Int(thread_idx.x)
+    var lane = tid % 32
+    var g = lane // 4
+    var t = lane % 4
+    var warp = tid // 32
+    var wrow = warp // (BN // WN)
+    var wcol = warp % (BN // WN)
+    var brow = Int(block_idx.y) * BM
+    var bcol = Int(block_idx.x) * BN
+    var z = Int(block_idx.z)
+    var zlo = z % Int(o.zd) if o.zd > 0 else z
+    var zhi = z // Int(o.zd) if o.zd > 0 else 0
+    var za = zlo * Int(o.sa_z) + zhi * Int(o.sa_zz)
+    var zb = zlo * Int(o.sb_z) + zhi * Int(o.sb_zz)
+    var zc = zlo * Int(o.sc_z) + zhi * Int(o.sc_zz)
+    var Mi = Int(M)
+    var Ni = Int(N)
+    var Ki = Int(K)
+
+    var As0 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # re
+    var As1 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # im
+    var As2 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # -im
+    var Bs0 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BN, BK]())   # (n, k)
+    var Bs1 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BN, BK]())
+    var re = InlineArray[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
+    var im = InlineArray[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
+
+    @always_inline
+    @parameter
+    def frag_a(P: type_of(As0), row: Int, k0: Int) -> SIMD[DType.uint32, 4]:
+        var r0 = (row + g) * BK + k0 + t * 4
+        var r1 = (row + g + 8) * BK + k0 + t * 4
+        return SIMD[DType.uint32, 4](
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r0)),
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r1)),
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r0 + 16)),
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r1 + 16)))
+
+    @always_inline
+    @parameter
+    def frag_b(P: type_of(Bs0), col: Int, k0: Int) -> SIMD[DType.uint32, 2]:
+        var r = (col + g) * BK + k0 + t * 4
+        return SIMD[DType.uint32, 2](
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r)),
+            bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r + 16)))
+
+    for kt in range(ceildiv(Ki, BK)):
+        comptime for i in range(0, BM * BK, THREADS):
+            var idx = i + tid
+            var r = idx // BK
+            var kk = idx % BK
+            var v = F2(0)
+            if brow + r < Mi and kt * BK + kk < Ki:
+                v = base.unsafe_load[width=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+            var a1 = Int8(v[1])
+            As0.ptr.unsafe_store(idx, Int8(v[0]))
+            As1.ptr.unsafe_store(idx, a1)
+            As2.ptr.unsafe_store(idx, -a1)
+        comptime for i in range(0, BK * BN, THREADS):
+            var idx = i + tid
+            var kk: Int
+            var nn: Int
+            comptime if L.kfast:
+                nn = idx // BK
+                kk = idx % BK
+            else:
+                kk = idx // BN
+                nn = idx % BN
+            var n = bcol + nn
+            var v = F2(0)
+            if n < Ni and kt * BK + kk < Ki:
+                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+            Bs0.ptr.unsafe_store(nn * BK + kk, Int8(v[0]))
+            comptime if not L.real:
+                Bs1.ptr.unsafe_store(nn * BK + kk, Int8(v[1]))
+        barrier()
+        comptime for ks in range(0, BK, 32):
+            comptime for mi in range(NM):
+                var row = wrow * WM + mi * 16
+                var a0 = frag_a(As0, row, ks)
+                var a1 = frag_a(As1, row, ks)
+                var a2 = frag_a(As2, row, ks)
+                comptime for ni in range(NN):
+                    var col = wcol * WN + ni * 8
+                    var b0 = frag_b(Bs0, col, ks)
+                    mma_s8(re[mi * NN + ni], a0, b0)
+                    mma_s8(im[mi * NN + ni], a1, b0)
+                    comptime if not L.real:
+                        var b1 = frag_b(Bs1, col, ks)
+                        mma_s8(re[mi * NN + ni], a2, b1)
+                        mma_s8(im[mi * NN + ni], a0, b1)
+        barrier()
+        if ((kt + 1) * BK) % B.max_terms == 0:
+            comptime for f in range(NM * NN):
+                re[f] = f_reduce_signed(re[f]).cast[DType.int32]()
+                im[f] = f_reduce_signed(im[f]).cast[DType.int32]()
+
+    comptime for mi in range(NM):
+        comptime for ni in range(NN):
+            var fr = f_reduce_signed(re[mi * NN + ni])
+            var fi = f_reduce_signed(im[mi * NN + ni])
+            comptime for half in range(2):
+                var m = brow + wrow * WM + mi * 16 + g + half * 8
+                comptime for j in range(2):
+                    var n = bcol + wcol * WN + ni * 8 + t * 2 + j
+                    if m < Mi and n < Ni:
+                        var v = F2(fr[half * 2 + j], fi[half * 2 + j])
+                        var at = Int(o.c) + m * Int(o.sc_m) + (n // D) * Int(o.sc_hi) + (n % D) * Int(o.sc_lo) + zc
+                        comptime if acc:
+                            v = f_add(v, base.unsafe_load[width=2](at))
+                        base.unsafe_store[width=2](at, v)
+
+
 def launch_gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     ctx: DeviceContext, arena: Arena, o: Operands, M: Int, N: Int, K: Int, batch: Int = 1
 ) raises:
-    comptime kernel = gemm_f2[B, T, L, D, acc]
+    comptime if T.mma and B.kind == KIND_NVIDIA_MMA:
+        comptime kernel = gemm_f2_nvidia[B, T, L, D, acc]
+        ctx.enqueue_function[kernel](arena.buf, o, Int32(M), Int32(N), Int32(K),
+                                     grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())
+        return
+    comptime kernel = gemm_f2_apple[B, T, L, D, acc] if T.mma else gemm_f2[B, T, L, D, acc]
     ctx.enqueue_function[kernel](arena.buf, o, Int32(M), Int32(N), Int32(K),
                                  grid_dim=(ceildiv(N, T.BN), ceildiv(M, T.BM), batch), block_dim=T.threads())
 

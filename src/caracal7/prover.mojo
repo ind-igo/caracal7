@@ -23,7 +23,7 @@ from caracal7.core.transcript import TranscriptLayout, reset, absorb, squeeze_el
 from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
-from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, TAIL_F4
+from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, factor_len, TAIL_F4
 from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
 from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, value_bytes, tile_values
 from caracal7.relations.statement import Compiled
@@ -89,7 +89,7 @@ struct LdeLayout(TrivialRegisterPassable):
 
 struct OpenLayout(TrivialRegisterPassable):
     """The openings at the P points (open.mojo) and the fold to the level-2 message."""
-    var w_tab: Int          # (P, table_len, e)     per-point powers and Lagrange factors
+    var w_tab: Int          # (P, table_len, e)     per-point powers and Lagrange factors, then (P, factor_len, e)
     var w_z: Int            # (slot, P, e)          evaluation queries
     var openings: Int       # (P, column, e)
     var open_partial: Int   # (splits, column, P, e) split-K partials of `open`
@@ -99,7 +99,7 @@ struct OpenLayout(TrivialRegisterPassable):
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
         var widest = max(shape.columns_w, max(shape.columns_z, shape.columns_q))
-        self.w_tab = bump.alloc(shape.points * table_len[p]() * p.e, ST_OPEN, ST_OPEN)
+        self.w_tab = bump.alloc(shape.points * (table_len[p]() + factor_len[p]()) * p.e, ST_OPEN, ST_OPEN)
         self.w_z = bump.alloc(shape.points * N * p.e, ST_OPEN, ST_RUN0)
         self.openings = bump.alloc(shape.points * shape.columns() * p.e, ST_OPEN)
         self.open_partial = bump.alloc(shape.points * open_splits[p]() * widest * p.e, ST_OPEN, ST_OPEN)

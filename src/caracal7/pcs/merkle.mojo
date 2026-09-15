@@ -71,10 +71,12 @@ def merkle[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
         n = m
 
 
-def k_frontier[H: Hash](base: Base, tree: Buf[H.DIGEST], leaves: Int32, positions: Buf[4],
-                        count: Int32, row_bytes: Int32, dst: Buf[1], order: Buf[4]):
-    """One thread. Sorts the positions, writes the distinct list to `order` (u32 m, then m u32),
-    the sibling frontier after the rows, and the total byte count at dst[0:4]."""
+def k_frontier[H: Hash](base: Base, leaves: Int32, positions: Buf[4],
+                        count: Int32, row_bytes: Int32, dst: Buf[1], order: Buf[4], sibs: Buf[4]):
+    """One thread of index arithmetic, no digest traffic. Sorts the positions, writes the distinct list
+    to `order` (u32 m, then m u32), the sibling frontier's node indexes to `sibs` (u32 count, then the
+    tree node of each sibling in emission order; k_sibs copies the digests), and the total byte count
+    at dst[0:4]."""
     var known = InlineArray[Int32, MAX_QUERIES](fill=0)
     var next = InlineArray[Int32, MAX_QUERIES](fill=0)
     var m = 0
@@ -96,8 +98,8 @@ def k_frontier[H: Hash](base: Base, tree: Buf[H.DIGEST], leaves: Int32, position
     for i in range(m):
         put_u32(base, order.at(1 + i), Int(known[i]))
 
-    var out = dst.at(4 + m * Int(row_bytes))
-    var level = tree.at(0)
+    var ns = 0
+    var node = 0                                    # the level's first node in the tree
     var n = Int(leaves)
     while n > 1:
         var nm = 0
@@ -109,17 +111,28 @@ def k_frontier[H: Hash](base: Base, tree: Buf[H.DIGEST], leaves: Int32, position
                 i += 2
             else:
                 if s < n:
-                    Buf[H.DIGEST](out).store(base, 0, Buf[H.DIGEST](level).load(base, s))
-                    out += H.DIGEST
+                    put_u32(base, sibs.at(1 + ns), node + s)
+                    ns += 1
                 i += 1
             next[nm] = Int32(k >> 1)
             nm += 1
         for j in range(nm):
             known[j] = next[j]
         m = nm
-        level += n * H.DIGEST
+        node += n
         n = (n + 1) // 2
-    put_u32(base, dst.at(0), out - dst.at(0))
+    put_u32(base, sibs.at(0), ns)
+    put_u32(base, dst.at(0), 4 + w * Int(row_bytes) + ns * H.DIGEST)
+
+
+def k_sibs[H: Hash](base: Base, tree: Buf[H.DIGEST], row_bytes: Int32, order: Buf[4], sibs: Buf[4], dst: Buf[1]):
+    """Block per frontier sibling, thread per byte: copy its digest after the rows."""
+    var r = Int(block_idx.x)
+    if r >= u32(base, sibs.at(0)):
+        return
+    var src = tree.at(u32(base, sibs.at(1 + r)))
+    var out = dst.at(4 + u32(base, order.at(0)) * Int(row_bytes) + r * H.DIGEST)
+    Buf[1](out).store(base, Int(thread_idx.x), Buf[1](src).load(base, Int(thread_idx.x)))
 
 
 def k_rows(base: Base, code: Buf[1], row_bytes: Int32, order: Buf[4], dst: Buf[1]):
@@ -143,7 +156,9 @@ def multiproof_bound[H: Hash](row_bytes: Int, leaves: Int, count: Int) -> Int:
 
 
 def multiproof_region[H: Hash](row_bytes: Int, leaves: Int, count: Int) -> Int:
-    return multiproof_bound[H](row_bytes, leaves, count) + 4 + 4 * count
+    """The bound, the order scratch (u32 m, m u32), then the sibling index scratch (u32 count, one u32 per
+    frontier node: at most count per level)."""
+    return multiproof_bound[H](row_bytes, leaves, count) + 4 + 4 * count + 4 + 4 * count * (len(level_sizes(leaves)) - 1)
 
 
 def query_gather[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
@@ -155,10 +170,14 @@ def query_gather[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
         raise Error("too many queries for the frontier kernel")
     var bound = multiproof_bound[H](row_bytes, leaves, count)
     var order = dst + bound
-    ctx.enqueue_function[k_frontier[H]](arena.buf, Buf[H.DIGEST](tree), Int32(leaves), Buf[4](positions), Int32(count),
-                                        Int32(row_bytes), Buf[1](dst), Buf[4](order), grid_dim=1, block_dim=1)
+    var sibs = order + 4 + 4 * count
+    var levels = len(level_sizes(leaves)) - 1
+    ctx.enqueue_function[k_frontier[H]](arena.buf, Int32(leaves), Buf[4](positions), Int32(count),
+                                        Int32(row_bytes), Buf[1](dst), Buf[4](order), Buf[4](sibs), grid_dim=1, block_dim=1)
     ctx.enqueue_function[k_rows](arena.buf, Buf[1](code), Int32(row_bytes), Buf[4](order), Buf[1](dst),
                                  grid_dim=count, block_dim=BACKEND.block)
+    ctx.enqueue_function[k_sibs[H]](arena.buf, Buf[H.DIGEST](tree), Int32(row_bytes), Buf[4](order), Buf[4](sibs), Buf[1](dst),
+                                    grid_dim=count * levels, block_dim=H.DIGEST)
     return bound
 
 

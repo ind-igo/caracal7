@@ -1577,3 +1577,79 @@ after the proof (`test_open`). Result: 1.55 KB per row (435 MiB at 258k rows, 28
 2.5x more rows per proof; the M1 Pro reaches about 3.5k hashes per proof, a 128 GB machine about 16k.
 Next, if a larger segment is needed: tile the residual over bands of axis-2 rows so the full LDE is never
 held (about 25% more), and contract the opening GEMM one axis at a time instead of materializing `w_z`.
+
+## The MMA backends, named by tile op (2026-09-15)
+
+`backend.mojo` has three backend values, one per kind of tile op, and the name says which op:
+`LANES` (the rank-1 `tile_mac` on int32 lanes; any GPU; the only op on Apple M1 to M4; the default),
+`APPLE_MMA` (`gemm_f2_apple` on `MmaOpApple[DType.int32, DType.int8, 2, 2]`, the Apple GPU family 10
+integer widening simdgroup MMA, 16 x 16 x 16 per simdgroup; `linalg.arch.apple.mma`, the op Modular's Apple
+int8 matmul uses) and `NVIDIA_MMA` (`gemm_f2_nvidia` on `mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`,
+the integer tensor core of sm_80 and later, 16 x 8 x 32 per warp). The stdlib `layout.TensorCore` and
+`gpu.compute.mma` wrappers carry float16, bfloat16, tf32 and fp8 only, no int8, so `mma_s8` is eleven lines
+of inline PTX in the form the stdlib uses for its fp8 case; the fragment layout in its docstring is the PTX
+ISA one for m16n8k32 (lane l: g = l / 4, t = l % 4; A rows g and g + 8, columns 4t..4t+3 and 16 + 4t..; B
+the same columns of k at column g; C columns 2t, 2t + 1 of rows g and g + 8).
+
+Both MMA skeletons keep the operands, staging, predication and reduction cadence of `gemm_f2` and replace
+the k step. A is staged as three int8 planes (re, im, -im) and B as two, so the complex product is four
+MMAs per k step into two int32 accumulators (re += a0 b0 + (-a1) b1, im += a1 b0 + a0 b1); 128 products of
+at most 2 x 126^2 stay below `WIDE_BIAS`. On NVIDIA the planes are stored k-contiguous, A as (m, k) and B
+as (n, k), so every fragment register is one 4-byte shared load. Default tiles 64/64/32 with 32 x 32 per
+warp or simdgroup (4 warps, 128 threads, 10 KB of shared memory).
+
+Selection is a build flag: `-D CARACAL_NVIDIA_MMA`, `-D CARACAL_APPLE_MMA`, else `LANES`. Host code reads
+`BACKEND.tile` for the launch shape and `is_nvidia_gpu()` is only true inside device code, and the Apple
+GPU family (M5 or not) is not visible at comptime at all, so a device probe cannot pick the backend.
+`launch_gemm_f2` dispatches on `Tile.mma` and `Backend.kind`; the lane skeleton stays valid on every backend,
+and `test_lane_view` and the F4 skeleton run on it under every flag (`test_f4` and `bench_gemm` pass
+`F4_TILE` explicitly).
+
+Verified on the M1 Pro: both MMA builds compile through the Mojo frontend for every test and bench; the
+NVIDIA build cross-compiles with `--target-accelerator sm_90`, and the binary carries the int8 `mma.sync`
+in every F2 GEMM instantiation. At run time the Apple build fails pipeline creation on the M1
+("simdgroup_matrix<T,16,16x16> operations are supported by GPUFamily10 and later", as the 2026-09-04
+probe did) and the NVIDIA build has no device here. Correctness and speed of both are not verified until a
+run on the hardware; the NVIDIA machine is the one to rent. The order there is `./run_tests.sh -D
+CARACAL_NVIDIA_MMA` (the backend test first; a failure there is the fragment mapping), then `bench_gemm`
+and `bench_sha256_chain` with the flag. The stages the MMA path moves are the ones on the F2 skeleton,
+about half of the chain prove (lde, quotient, open, fold: 48% on the M1 profile); the RS encoders and the
+axis DFTs are not on it yet (design section 9: group radix stages into one matrix per pass), and they are
+the next step after the hardware numbers are in.
+
+**The suite, in parallel (2026-09-15).** `run_tests.sh` runs JOBS files at a time (default 4) with per-file
+logs and prints only failures; `BENCH=0` skips the bench builds. The cost of a file is its distinct `Params`
+shapes, not the package: every grid instantiates the whole kernel set again (test_backend builds in 2 s,
+the chain test with three prover grids in 42 s). Measured, 6 jobs, tests plus bench builds: 5:43 on a cold
+cache, 1:51 warm; serial it was about 20 minutes. The Mojo compile cache (`mojo --print-cache-location`) had
+grown to 16 GB over every grid ever built; `mojo --clear-cache -f` is safe.
+
+**First NVIDIA run (2026-09-15, RTX 3090, Vast.ai).** `bench_gemm` at 1024³: NVIDIA MMA 64/64/32 gives 0.95 ms/iter (1130 GMAC/s F2); the best lane tile 64/64/8 4x4 gives 1.24 ms (867 GMAC/s). The MMA kernel is verified correct against the lane kernel at 64³ and on ragged shapes. `bench_sha256_chain`, 125-hash grid (32 × 8064, 49 columns): MMA 129.4 ms warm median, 1.04 ms/hash; lanes 131.6 ms, 1.05 ms/hash; GEMM stages 43 ms on both. So at the chain grid the GEMMs are not MAC bound and the tensor cores do not move the total; the wins have to come from the non-GEMM stages (residual 18 ms, lde 13 ms, materialize 16 ms, build_queries 15 ms) and from bigger K per launch. Open problem: `tests/test_backend.mojo` hangs on the box before any output on both backends; probes show one context per test function is the likely trigger (a second `DeviceContext` in the same process hangs at buffer allocation, intermittently). Single-context programs (benches, prover) run fine. Next: share one context per test process.
+
+**The 3090 profile, worked (2026-09-15).** No stage was near its bandwidth or MAC floor on the RTX 3090 (the
+M1 Pro to 3090 gain was 2.9x on a GPU with 4.6x the bandwidth), so the pass went stage by stage, measured on
+the M1 (its ordering differs: open 138, build_queries 87, lde 82, quotient 70, encode W 69 + Q 57 of 383 ms):
+- `k_frontier` ran the Merkle multiproof as one GPU thread copying digests through a dependent load and store
+  per sibling. It now writes only the sibling node indexes and `k_sibs` copies the digests, a block per
+  sibling (open previous 0 was 8 ms on the 3090 at three trees; the M1 did not care).
+- `build_queries` computed a slot weight as five E products and two power loops per slot. `k_factor_tables`
+  builds Mon(x1, x2), P1(x1, r1), P2(x2, r2) and L(r) per point once (`factor_len`); a slot is then two E
+  products from four table reads: 87 -> 17 ms on the M1.
+- The opening GEMM (M = 70, N = 49, K = 258k) ran 128 blocks of 32k k-steps; OPEN_SPLITS 64 -> 1024 gives 2048
+  blocks of 32: 138 -> 87 ms on the M1. Tried and reverted: contracting the opening one axis at a time (a
+  2 H1-wide GEMM per pair digit into an E-valued intermediate, then a GEMM over (term, x2, lane)). It is not
+  fewer multiply-adds: the direct GEMM does e / 2 per (slot, column, point), the contraction 2 e / 2 in step
+  1 plus step 2, 2.6x more, and ran at 1.5 s. The direct GEMM's remaining cost is its shape (two 64-row
+  tiles for 70 rows, one 64-column tile for 49 columns, byte-scattered B loads), not its MAC count.
+- `dft_axis` with `-D CARACAL_DFT_PROFILE` prints every radix stage: 120 ms of the 370 ms prove, 23 ms of it
+  radix-1 copy stages (an odd part of 1 makes the last stage a layout copy) and 28 ms radix-16 stages at four
+  positions per thread (128 input lanes plus accumulators: spills). Now stage 2 writes the output layout
+  directly when the odd part is 1 and the scratch does not alias the source (the radix-1 stage was not a
+  pure copy: it carried twist_out^j for the coset plans, which `_dft_tables` now folds into stage 2 at
+  n1 = 1 and leaves stage 1 all ones, so both paths agree; test_residual and test_smallgrid caught the
+  first version), and `_vcap` holds radix 16 at two positions: radix total 192 -> 152 ms per prove back to
+  back on a loaded M1.
+The M1 is a noisy bench (load 12 to 15 from other apps at the time; the same binary moved 405 -> 668 ms).
+The 3090 numbers for these changes are not measured yet; the next rental runs Nsight Systems over the chain
+prove first, since the residual (18 ms), the level-1 materialize (16 ms) and the LDE (13 ms) are 10x to 40x
+off their floors for reasons a MAC count does not show (spills, occupancy, or the instruction mix).

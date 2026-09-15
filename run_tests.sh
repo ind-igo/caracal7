@@ -1,12 +1,26 @@
 #!/bin/sh
-# Runs every tests/test_*.mojo and builds every bench, warnings as errors; exits non-zero on the first failure.
-# Extra arguments go to mojo. The E16 field switch is the constant in src/caracal7/core/field.mojo.
-set -e
-for t in tests/test_*.mojo; do
-  echo "== $t $*"
-  uv run mojo run --Werror "$@" -I src "$t"
+# Runs every tests/test_*.mojo and builds every bench, warnings as errors, JOBS files at a time (default 4);
+# exits non-zero if any fails and prints that file's log. Extra arguments go to mojo (e.g. -D CARACAL_NVIDIA_MMA).
+# BENCH=0 skips the bench builds. The E16 field switch is the constant in src/caracal7/core/field.mojo.
+# The cost of a file is its distinct Params shapes: every grid instantiates the whole kernel set again.
+set -u
+JOBS=${JOBS:-4}
+LOG=$(mktemp -d)
+one() {   # $1 = test or bench file; the rest = mojo args
+  f=$1; shift
+  case "$f" in
+    tests/*) uv run mojo run --Werror "$@" -I src "$f" ;;
+    *)       uv run mojo build --Werror "$@" -I src "$f" -o /dev/null ;;
+  esac > "$LOG/$(basename "$f").log" 2>&1
+  if [ $? -eq 0 ]; then echo "ok   $f"; else echo "FAIL $f"; cat "$LOG/$(basename "$f").log"; echo "$f" >> "$LOG/failed"; fi
+}
+export -f one 2>/dev/null || true
+FILES=$(ls tests/test_*.mojo)
+[ "${BENCH:-1}" = 0 ] || FILES="$FILES $(ls bench/*.mojo)"
+for f in $FILES; do
+  while [ "$(jobs -p | wc -l)" -ge "$JOBS" ]; do sleep 0.2; done
+  one "$f" "$@" &
 done
-for b in bench/*.mojo; do
-  echo "== build $b"
-  uv run mojo build --Werror "$@" -I src "$b" -o /dev/null
-done
+wait
+if [ -f "$LOG/failed" ]; then echo "FAILED: $(tr '\n' ' ' < "$LOG/failed")"; rm -rf "$LOG"; exit 1; fi
+rm -rf "$LOG"; echo "all passed"

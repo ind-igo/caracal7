@@ -12,8 +12,8 @@ per-point table (z^x on each binary axis, L(r) on each odd axis; `table_entry`) 
 slot costs four E products from it. The verifier reads the same table from the host (`host_table`).
 
 `open` is one GEMM on backend.gemm_f2 with the e / 2 F2 lanes of every point as its rows, C[(point, lane),
-column]; `fold` is k_fold, one thread per slot with the e / 2 F2 lanes of E in fp32 registers (the lane GEMM
-at M = 8 paid for its shared-memory staging, like the residual).
+column], split-K over OPEN_SPLITS slot chunks; `fold` is k_fold, one thread per slot with the e / 2 F2 lanes of E
+in fp32 registers (the lane GEMM at M = 8 paid for its shared-memory staging, like the residual).
 """
 
 from std.math import ceildiv
@@ -71,6 +71,54 @@ def table_entry[p: Params](i: Int, z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> E:
     return _lagrange(ext_pow[E_LEVEL](z2, A2), p.m2, _rho(rho2, i - A1 - A2 - p.m1))
 
 
+def factor_len[p: Params]() -> Int:
+    """Per-point factor table, built from the point table on the device (`k_factor_tables`): Mon(x1, x2) for
+    every binary index, P1(x1, r1) and P2(x2, r2) for the parity term, L(r) = L1(r1) L2(r2). A slot's weight
+    is then two E products (`_slot_weight_fp`)."""
+    comptime A1 = 1 << p.a1
+    comptime A2 = 1 << p.a2
+    return A1 * A2 + A1 * p.m1 + A2 * p.m2 + p.m1 * p.m2
+
+
+def k_factor_tables[p: Params](base: Base, points: Int32, rho1: UInt8, rho2: UInt8, tab: Buf[E_BYTES], ftab: Buf[E_BYTES]):
+    """One thread per factor entry of every point, from the point's table."""
+    comptime A1 = 1 << p.a1
+    comptime A2 = 1 << p.a2
+    comptime FT = factor_len[p]()
+    comptime T = table_len[p]()
+    var gid = Int(global_idx.x)
+    if gid >= Int(points) * FT:
+        return
+    var pt = gid // FT
+    var i = gid % FT
+    var off = pt * T
+    var v: E
+    if i < A1 * A2:
+        v = ext_mul[E_LEVEL](tab.load(base, off + i // A2), tab.load(base, off + A1 + i % A2))
+    elif i < A1 * A2 + A1 * p.m1:
+        var j = i - A1 * A2
+        var x1 = j // p.m1
+        var r1 = j % p.m1
+        if x1 == 0:
+            v = ext_one[E_LEVEL]()
+        else:
+            var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
+            v = f_mul(tab.load(base, off + A1 - x1), E(_scal(rho1, (r1 * s1) % p.m1)))
+    elif i < A1 * A2 + A1 * p.m1 + A2 * p.m2:
+        var j = i - A1 * A2 - A1 * p.m1
+        var x2 = j // p.m2
+        var r2 = j % p.m2
+        if x2 == 0:
+            v = ext_one[E_LEVEL]()
+        else:
+            var s2 = ((1 << (7 - p.a2)) * x2 - 1) % p.m2
+            v = f_mul(tab.load(base, off + A1 + A2 - x2), E(_scal(rho2, (r2 * s2) % p.m2)))
+    else:
+        var r = i - A1 * A2 - A1 * p.m1 - A2 * p.m2
+        v = ext_mul[E_LEVEL](tab.load(base, off + A1 + A2 + r % p.m1), tab.load(base, off + A1 + A2 + p.m1 + r // p.m1))
+    ftab.store(base, gid, v)
+
+
 def host_table[p: Params](z1: E, z2: E, rho1: UInt8, rho2: UInt8) -> List[UInt8]:
     """The point table as host bytes (table_len, e); `host_base` of it is the Base `slot_weight` reads."""
     var t = List[UInt8](capacity=table_len[p]() * E_BYTES)
@@ -126,45 +174,36 @@ def slot_weight[p: Params](slot: Int, base: Base, tab: Buf[E_BYTES], off: Int, r
 
 
 @always_inline
-def _slot_weight_fp[p: Params](slot: Int, base: Base, tab: Buf[E_BYTES], off: Int, rho1: UInt8, rho2: UInt8) -> E:
-    """`slot_weight` for the device on fp32 lanes: the same factors, every product reduced (canonical
-    table values, |x| <= 190 between products, E products below 4.7 M)."""
+def _slot_weight_fp[p: Params](slot: Int, base: Base, ftab: Buf[E_BYTES], off: Int) -> E:
+    """`slot_weight` on the device from the point's factor table at element `off` (same values: every
+    factor is a table read, two E products on fp32 lanes)."""
     comptime H1 = 1 << (p.a1 - 1)
     comptime H2 = 1 << (p.a2 - 1)
     comptime A1 = 1 << p.a1
     comptime A2 = 1 << p.a2
+    comptime P1 = A1 * A2
+    comptime P2 = P1 + A1 * p.m1
+    comptime LT = P2 + A2 * p.m2
     var x1: Int
     var x2: Int
     var r: Int
     var coord: Int
     x1, x2, r, coord = slot_target[p](slot)
-    var r1 = r % p.m1
-    var r2 = r // p.m1
-    var L = fp_reduce(fp_ext_mul[E_LEVEL](to_f32(tab.load(base, off + A1 + A2 + r1)),
-                                    to_f32(tab.load(base, off + A1 + A2 + p.m1 + r2))))
-    var mon = fp_reduce(fp_ext_mul[E_LEVEL](to_f32(tab.load(base, off + x1)),
-                                      to_f32(tab.load(base, off + A1 + x2))))
+    var mon = to_f32(ftab.load(base, off + x1 * A2 + x2))
     var x1p = (slot >> 1) % H1
     var x2s = ((slot >> 1) // H1) % A2
     var w: EF
     if x1p == 0 and (x2s == 0 or x2s == H2):
         w = mon                                              # fixed slot: c_x(r) lies in F
     else:
-        var par = EF(0)
-        par[0] = 1
-        if x1 != 0:
-            var s1 = ((1 << (7 - p.a1)) * x1 - 1) % p.m1
-            par = fp_reduce(to_f32(tab.load(base, off + A1 - x1)) * Float32(Int(_scal(rho1, (r1 * s1) % p.m1))))
-        if x2 != 0:
-            var s2 = ((1 << (7 - p.a2)) * x2 - 1) % p.m2
-            var f2 = fp_reduce(to_f32(tab.load(base, off + A1 + A2 - x2)) * Float32(Int(_scal(rho2, (r2 * s2) % p.m2))))
-            par = fp_reduce(fp_ext_mul[E_LEVEL](par, f2))
+        var par = fp_reduce(fp_ext_mul[E_LEVEL](to_f32(ftab.load(base, off + P1 + x1 * p.m1 + r % p.m1)),
+                                                to_f32(ftab.load(base, off + P2 + x2 * p.m2 + r // p.m1))))
         if coord == 0:
             w = mon + par
         else:                                                # i (mon - par): (re, im) -> (-im, re) per F2 pair
             var d = ef_planes(mon - par)
             w = ef_merge(-d[1], d[0])
-    return fp_canonical(fp_ext_mul[E_LEVEL](w, L))
+    return fp_canonical(fp_ext_mul[E_LEVEL](w, to_f32(ftab.load(base, off + LT + r))))
 
 
 @always_inline
@@ -202,28 +241,32 @@ def k_point_tables[p: Params](base: Base, z: Buf[E_BYTES], shifts: Buf[1], point
     tab.store(base, gid, table_entry[p](gid % T, z1, z2, rho1, rho2))
 
 
-def k_build_queries[p: Params](base: Base, points: Int32, rho1: UInt8, rho2: UInt8, tab: Buf[E_BYTES], w_z: Buf[E_BYTES]):
+def k_build_queries[p: Params](base: Base, points: Int32, ftab: Buf[E_BYTES], w_z: Buf[E_BYTES]):
     comptime N = p.N()
     var gid = Int(global_idx.x)
     if gid >= Int(points) * N:
         return
-    w_z.store(base, (gid % N) * Int(points) + gid // N, _slot_weight_fp[p](gid % N, base, tab, (gid // N) * table_len[p](), rho1, rho2))
+    w_z.store(base, (gid % N) * Int(points) + gid // N, _slot_weight_fp[p](gid % N, base, ftab, (gid // N) * factor_len[p]()))
 
 
 def build_queries[p: Params](ctx: DeviceContext, arena: Arena,
                              z: Int, shifts: Int, points: Int, tab: TableLayout, d: Domains, w_tab: Int, w_z: Int) raises:
     """w_z (slot, P, e) for the P opening points derived from z: the per-point tables (P, table_len, e) into
-    `w_tab`, then the slots."""
+    `w_tab`, the factor tables (P, factor_len, e) after them, then the slots."""
     comptime kt = k_point_tables[p]
+    comptime kf = k_factor_tables[p]
     comptime k = k_build_queries[p]
+    var ftab = w_tab + points * table_len[p]() * p.e
     ctx.enqueue_function[kt](arena.buf, Buf[E_BYTES](z), Buf[1](shifts), Int32(points), Buf[2](tab.base + tab.g1p), Buf[2](tab.base + tab.g2p),
                              d.rho1, d.rho2, Buf[E_BYTES](w_tab),
                              grid_dim=ceildiv(points * table_len[p](), BACKEND.block), block_dim=BACKEND.block)
-    ctx.enqueue_function[k](arena.buf, Int32(points), d.rho1, d.rho2, Buf[E_BYTES](w_tab), Buf[E_BYTES](w_z),
+    ctx.enqueue_function[kf](arena.buf, Int32(points), d.rho1, d.rho2, Buf[E_BYTES](w_tab), Buf[E_BYTES](ftab),
+                             grid_dim=ceildiv(points * factor_len[p](), BACKEND.block), block_dim=BACKEND.block)
+    ctx.enqueue_function[k](arena.buf, Int32(points), Buf[E_BYTES](ftab), Buf[E_BYTES](w_z),
                             grid_dim=ceildiv(points * p.N(), BACKEND.block), block_dim=BACKEND.block)
 
 
-comptime OPEN_SPLITS = 64   # K chunks of the opening GEMM: batch = splits, so the grid is not just the column and row blocks
+comptime OPEN_SPLITS = 1024  # K chunks of the opening GEMM: batch = splits, so the grid is not just the column and row blocks
 
 
 def open_splits[p: Params]() -> Int:
