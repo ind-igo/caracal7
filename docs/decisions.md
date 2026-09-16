@@ -1696,3 +1696,36 @@ and `mojo run` caches by content (an unchanged file reruns in a second). The lon
 test_prove_and_verify_with_codeword_split at 69 s, 60 of them building the host tables of an 8064 x 96 grid
 (the split depends on N only); on 192 x 4032 the test is 8 s, 7 of them the prove. test_prover's compile
 is now its cost, about 60 s for eight distinct grids (each instantiates the whole kernel set).
+
+## The opening GEMM on the 8x8 fp16 simdgroup op (2026-09-16, M1 Pro)
+
+The open stage was 84 ms of the 353 ms chain prove on the M1, 2.3 ms on the 3090: 37x on a 5x hardware gap.
+Isolated (scratchpad open_bench.mojo, one 49-column GEMM at 32 x 8064: M = 350, N = 49, K = 258k in 1024
+splits), the lane kernel took 41 ms and every tile shape tried was worse. Removing parts of the copied kernel:
+no global loads 30 ms, no multiply-adds 13 ms, so the k loop over threadgroup memory was the cost, not
+memory. fp32 accumulation instead of int32 did not help (49 ms; 102 ms with fp32 staged in threadgroup
+memory, so byte count there matters); a pure-ALU probe gives int32 multiply-add and fp32 fma the same rate on
+the M1 (0.75 T lane-ops/s in a 4-wide SIMD loop). The Xcode GPU counters (`xcrun xctrace record --instrument
+'Metal GPU Counters'`, `xctrace export --xpath ... metal-gpu-counter-intervals`) settled it: ALU limiter 54%
+at 12% compute occupancy for the default tile, and the 8 x 128 lane tile is last-level-cache bound at
+100 GB/s (44 row blocks each rereading B). The Metal System Trace also reported 96 B and 1.4 KiB register
+spills for the two kernels.
+
+The M1's GPU family has no integer simdgroup matrix (the M5 path), but the 8x8 fp16 -> fp32 one is there:
+`llvm.air.simdgroup_matrix_8x8_multiply_accumulate` on 64-wide vectors with the lane's two elements at [0],
+[1] and the lane layout `frag8` (both ground-truthed against a host product; the intrinsic and layout are
+what the Modular repo's `_mma_apple_8x8` uses, which is newer than the pinned MAX). A register probe runs it
+at 2.3 T MAC/s. Bytes below 127 are exact in fp16, their products in the fp32 accumulator of the op; sums of up to 1056 products
+are exact in fp32. `k_open_apple8` (open.mojo): A is w_z with its (point, lane, plane) bytes as 700 rows
+(the re and im planes are just interleaved rows, so an A tile is 64 contiguous bytes per slot and the C
+store is the partials' natural order), B the stored column, both staged per 32-slot chunk as fp16 in
+threadgroup memory; each of the 8 simdgroups owns 8 rows x 56 columns as 7 accumulator pairs, a grid z
+axis covers more columns, the accumulators reduce to the centered residue every 32 chunks, and a split of
+any length works (the K guard zero-fills). Selected by `APPLE8` (lane build on an Apple host); the 3090 and
+M5 builds are unchanged. 41 -> 8.6 ms for the isolated GEMM; open 84 -> 30 ms; chain prove 374 -> 301 ms
+(2.4 ms per hash), all five grids verified, the suite passes. Two M tiles per simdgroup was slower (9.4).
+
+A lesson on the way: the B load carried `alignment=8` because the first splits were 256 slots, and the
+72 x 32 test grid (9 slots per split) returned wrong bytes: Metal honours a false hint just as NVPTX
+punishes a missing one. A hint must be provable from the layout (the A hint is: region base, row stride
+and tile offset are multiples of 4).

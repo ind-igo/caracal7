@@ -62,7 +62,7 @@ against Jolt's 0.33 ms per hash on an M5 Max:
 | 224 x 8064 | 875 | 195.3 | 0.22 |
 | 672 x 2688 | 861 | 212.7 | 0.25 |
 
-The M1 Pro proves the 125-hash grid in 364 ms (2.9 ms per hash).
+The M1 Pro proves the 125-hash grid in 301 ms (2.4 ms per hash).
 
 Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later behind fixed buffer interfaces.
 
@@ -86,27 +86,27 @@ non-Rust path; its numbers are about 150 ms higher on the small cases and 260 ms
 Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-process GPU-only times are the
 `warm prove` line of `bench/bench_<target>.mojo`.
 
-**2026-09-14, Apple M1 Pro 16 GB, commit 9c09a5a (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report)**
+**2026-09-16, Apple M1 Pro 16 GB, commit 335ceca plus the 8x8 simdgroup open kernel (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; the memory pass is the 2026-09-14 one; load average 10 to 12 during the run)**
 
 | target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| sha256 | 128 B | 51 | 20 | 177,400 | 77,424 | 46 | 308,224 |
-| sha256 | 256 B | 59 | 29 | 187,860 | 72,956 | 48 | 462,336 |
-| sha256 | 512 B | 70 | 35 | 198,536 | 149,980 | 49 | 924,672 |
-| sha256 | 1024 B | 90 | 33 | 215,228 | 355,956 | 52 | 1,585,152 |
-| sha256 | 2048 B | 160 | 49 | 215,900 | 651,796 | 56 | 3,698,688 |
-| keccak | 128 B | 48 | 28 | 258,692 | 56,652 | 46 | 218,112 |
-| keccak | 256 B | 47 | 29 | 267,288 | 61,972 | 48 | 436,224 |
-| keccak | 512 B | 54 | 32 | 282,040 | 80,724 | 49 | 872,448 |
-| keccak | 1024 B | 85 | 35 | 301,716 | 86,980 | 52 | 1,744,896 |
-| keccak | 2048 B | 111 | 43 | 320,112 | 143,588 | 57 | 3,489,792 |
-| poseidon | 2 | 133 | 40 | 372,141 | 143,588 | 53 | 1,916,928 |
-| poseidon | 4 | 145 | 40 | 373,845 | 143,588 | 52 | 1,916,928 |
-| poseidon | 8 | 138 | 43 | 373,653 | 143,588 | 52 | 1,916,928 |
-| poseidon | 12 | 225 | 49 | 396,789 | 346,120 | 58 | 4,472,832 |
-| poseidon | 16 | 223 | 49 | 394,069 | 346,120 | 59 | 4,472,832 |
-| ecdsa | 1 sig | 425 | 119 | 543,620 | 553,684 | 92 | 19,574,784 |
+| sha256 | 128 B | 47 | 22 | 174,460 | 77,424 | 47 | 308,224 |
+| sha256 | 256 B | 51 | 29 | 187,600 | 72,956 | 48 | 462,336 |
+| sha256 | 512 B | 60 | 35 | 199,084 | 149,980 | 50 | 924,672 |
+| sha256 | 1024 B | 87 | 34 | 216,924 | 355,956 | 52 | 1,585,152 |
+| sha256 | 2048 B | 145 | 53 | 213,628 | 651,796 | 57 | 3,698,688 |
+| keccak | 128 B | 51 | 28 | 257,028 | 56,652 | 47 | 218,112 |
+| keccak | 256 B | 58 | 29 | 269,024 | 61,972 | 48 | 436,224 |
+| keccak | 512 B | 60 | 33 | 283,656 | 80,724 | 49 | 872,448 |
+| keccak | 1024 B | 91 | 35 | 301,492 | 86,980 | 51 | 1,744,896 |
+| keccak | 2048 B | 100 | 43 | 319,120 | 143,588 | 56 | 3,489,792 |
+| poseidon | 2 | 124 | 40 | 372,373 | 143,588 | 52 | 1,916,928 |
+| poseidon | 4 | 134 | 41 | 373,365 | 143,588 | 52 | 1,916,928 |
+| poseidon | 8 | 123 | 40 | 371,061 | 143,588 | 52 | 1,916,928 |
+| poseidon | 12 | 197 | 49 | 396,245 | 346,120 | 59 | 4,472,832 |
+| poseidon | 16 | 202 | 49 | 394,005 | 346,120 | 59 | 4,472,832 |
+| ecdsa | 1 sig | 407 | 122 | 543,972 | 553,684 | 93 | 19,574,784 |
 
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
-session's arena being released); the 1024-byte SHA-256 row is one such run, its warm prove is 75 ms.
+session's arena being released); the small rows move a few ms between runs on a loaded machine.
 

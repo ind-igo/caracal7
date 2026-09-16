@@ -25,10 +25,13 @@ from caracal7.relations.ir import FIX_ONE, FIX_E
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout, Domains
 from caracal7.pcs.encode import slot_target
-from caracal7.core.backend import BACKEND, Bytes, launch_gemm_f2, strided
+from caracal7.core.backend import BACKEND, APPLE8, Bytes, launch_gemm_f2, strided, frag8, mma8
 from caracal7.core.bytes import Base, Buf, u16
 from caracal7.core.arena import Arena
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx, lane_id
+from max.gpu.sync import barrier
+from max.gpu.memory import AddressSpace
+from layout import row_major, stack_allocation
 
 
 
@@ -291,6 +294,90 @@ def k_sum_splits(base: Base, src: Buf[1], splits: Int32, columns: Int32, points:
     dst.store(base, pt * Int(dst_stride) + c * E_BYTES + i, UInt8(acc % 127))
 
 
+comptime OPEN8_BN = 56        # 7 column tiles per block: the trees have at most 56 columns
+comptime OPEN8_BK = 32        # slots per staging chunk
+comptime OPEN8_BM = 64        # rows per block: 8 simdgroups, one 8-row tile each
+comptime OPEN8_THREADS = 256
+
+
+def k_open_apple8(base: Base, a: Int64, b: Int64, c: Int64, mrows: Int32, columns: Int32, points: Int32, n_total: Int32, kb_: Int32):
+    """`open` on the 8x8 fp16 simdgroup op (backend.mma8): C[z, n, M'] = sum over the kb_ slots of split z of
+    A'[M', k] B[k, n] mod 127. A'[M', k] = base[a + k mrows + M'] is w_z with its (point, lane, plane) bytes as rows,
+    so an A tile is contiguous; B[k, n] = base[b + n n_total + k] the stored column; C lands in the partials
+    (s, c, p, e) at c + ((z columns + n) points + M' // e) e + M' % e. A block covers 56 columns (grid z); each simdgroup owns 8 rows x 56 columns
+    (7 accumulator pairs); a chunk stages 64 x 32 A and 32 x 56 B bytes as fp16 in threadgroup memory. Sums of
+    up to 1056 products are exact in fp32: the accumulators reduce to the centered residue every 32 chunks."""
+    comptime BM = OPEN8_BM
+    comptime BN = OPEN8_BN
+    comptime BK = OPEN8_BK
+    comptime NT = BN // 8
+    var tid = Int(thread_idx.x)
+    var sg = tid // 32
+    var rc = frag8(Int(lane_id()))
+    var r = rc[0]
+    var cb = rc[1]
+    var z = Int(block_idx.x)
+    var m0 = Int(block_idx.y) * BM
+    var n0 = Int(block_idx.z) * BN
+    var Mr = Int(mrows)
+    var Nc = Int(columns)
+    var KB = Int(kb_)
+    var k_end = (z + 1) * KB
+    var As = stack_allocation[DType.float16, address_space=AddressSpace.SHARED](row_major[BM * BK]())   # As[m][k]
+    var Bs = stack_allocation[DType.float16, address_space=AddressSpace.SHARED](row_major[BK * BN]())   # Bs[k][n]
+    var acc = InlineArray[SIMD[DType.float32, 2], NT](fill=SIMD[DType.float32, 2](0))
+
+    for kc in range(ceildiv(KB, BK)):
+        var k_base = z * KB + kc * BK
+        # A: thread -> slot k_base + tid // 8, rows (tid % 8) 8 .. + 8: 8 contiguous bytes (row offsets are 4-aligned)
+        var ka = tid // 8
+        var ma = (tid % 8) * 8
+        var va = SIMD[DType.uint8, 8](0)
+        if k_base + ka < k_end:
+            if m0 + ma + 8 <= Mr:
+                va = base.unsafe_load[width=8, alignment=4](Int(a) + (k_base + ka) * Mr + m0 + ma)
+            elif m0 + ma < Mr:
+                for j in range(Mr - m0 - ma):
+                    va[j] = base[unsafe_offset=Int(a) + (k_base + ka) * Mr + m0 + ma + j]
+        var fa = va.cast[DType.float16]()
+        comptime for j in range(8):
+            As.ptr.unsafe_store((ma + j) * BK + ka, fa[j])
+        # B: thread < 224 -> column tid // 4, slots (tid % 4) 8 .. + 8 of the chunk: 8 contiguous bytes
+        if tid < NT * 8 * 4:
+            var nb = n0 + tid // 4
+            var kb = (tid % 4) * 8
+            var vb = SIMD[DType.uint8, 8](0)
+            if nb < Nc:
+                if k_base + kb + 8 <= k_end:
+                    vb = base.unsafe_load[width=8](Int(b) + nb * Int(n_total) + k_base + kb)   # k_base is any multiple of K: no alignment
+                elif k_base + kb < k_end:
+                    for j in range(k_end - k_base - kb):
+                        vb[j] = base[unsafe_offset=Int(b) + nb * Int(n_total) + k_base + kb + j]
+            var fb = vb.cast[DType.float16]()
+            comptime for j in range(8):
+                Bs.ptr.unsafe_store((kb + j) * BN + nb - n0, fb[j])
+        barrier()
+        comptime for ks in range(BK // 8):
+            var af = As.ptr.unsafe_load[width=2]((sg * 8 + r) * BK + ks * 8 + cb)
+            comptime for nt in range(NT):
+                var bf = Bs.ptr.unsafe_load[width=2]((ks * 8 + r) * BN + nt * 8 + cb)
+                acc[nt] = mma8(af, bf, acc[nt])
+        barrier()
+        if (kc + 1) % 32 == 0:
+            comptime for nt in range(NT):
+                acc[nt] = fp_reduce(acc[nt])
+
+    var Mp = m0 + sg * 8 + r
+    if Mp < Mr:
+        var row = Int(c) + ((z * Nc) * Int(points) + Mp // E_BYTES) * E_BYTES + Mp % E_BYTES
+        comptime for nt in range(NT):
+            var v = fp_canonical(acc[nt])
+            comptime for el in range(2):
+                var n = n0 + nt * 8 + cb + el
+                if n < Nc:
+                    base[unsafe_offset=row + n * Int(points) * E_BYTES] = v[el]
+
+
 def open[p: Params](ctx: DeviceContext, arena: Arena,
                     w_z: Int, points: Int, stored: Int, columns: Int, partial: Int, dst: Int, row_columns: Int) raises:
     """dst[p, c] = <w_z[p], stored(c)> for one tree; rows of the openings buffer hold `row_columns`.
@@ -301,9 +388,14 @@ def open[p: Params](ctx: DeviceContext, arena: Arena,
     comptime assert e == E_BYTES, "k_sum_splits walks E_BYTES-byte E values"
     var splits = open_splits[p]()
     var K = N // splits
-    launch_gemm_f2[BACKEND, BACKEND.tile, Bytes[kfast_=True], 1](ctx, arena, strided(
-        a=w_z, sa_m=2, sa_k=points * e, sa_z=K * points * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
-        c=partial, sc_m=2, sc_hi=points * e, sc_lo=0, sc_z=columns * points * e), points * (e // 2), columns, K, batch=splits)
+    comptime if APPLE8:
+        ctx.enqueue_function[k_open_apple8](arena.buf, Int64(w_z), Int64(stored), Int64(partial), Int32(points * e), Int32(columns),
+                                            Int32(points), Int32(N), Int32(K),
+                                            grid_dim=(splits, ceildiv(points * e, OPEN8_BM), ceildiv(columns, OPEN8_BN)), block_dim=OPEN8_THREADS)
+    else:
+        launch_gemm_f2[BACKEND, BACKEND.tile, Bytes[kfast_=True], 1](ctx, arena, strided(
+            a=w_z, sa_m=2, sa_k=points * e, sa_z=K * points * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
+            c=partial, sc_m=2, sc_hi=points * e, sc_lo=0, sc_z=columns * points * e), points * (e // 2), columns, K, batch=splits)
     var total = points * columns * e
     ctx.enqueue_function[k_sum_splits](arena.buf, Buf[1](partial), Int32(splits), Int32(columns), Int32(points), Buf[1](dst),
                                        Int32(row_columns * e), Int32(total),

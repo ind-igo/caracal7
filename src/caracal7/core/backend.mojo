@@ -20,7 +20,8 @@ anything; the tile only has to be legal.
 """
 
 from std.math import ceildiv
-from std.sys import is_defined, _RegisterPackType
+from std.sys import is_defined, _RegisterPackType, llvm_intrinsic
+from std.sys.info import has_apple_gpu_accelerator
 from std.sys._assembly import inlined_assembly
 from std.memory import bitcast
 from linalg.arch.apple.mma import MmaOpApple
@@ -73,6 +74,9 @@ comptime APPLE_MMA = Backend(kind=KIND_APPLE_MMA, threadgroup_bytes=32768, mma_k
 comptime NVIDIA_MMA = Backend(kind=KIND_NVIDIA_MMA, threadgroup_bytes=49152, mma_k=32, max_terms=128, vec_bytes=16,
                               tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256)
 comptime BACKEND = NVIDIA_MMA if is_defined["CARACAL_NVIDIA_MMA"]() else (APPLE_MMA if is_defined["CARACAL_APPLE_MMA"]() else LANES)
+# The lane build on an Apple host (M1..M4, GPU family 7..9): no integer simdgroup matrix, but the 8x8 fp16 -> fp32 one
+# is there and runs at 2.3 T MAC/s on the M1 Pro, 3x the int32 lanes. Bytes < 127 are exact in fp16; their products are exact in the fp32 accumulator of the op.
+comptime APPLE8 = BACKEND.kind == KIND_LANES and has_apple_gpu_accelerator()
 # A build flag, not a device probe: host code reads BACKEND.tile for the launch shape, and `is_nvidia_gpu()` is
 # only true inside device code; the Apple GPU family (M5 or not) is not visible at comptime at all.
 comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4, mma=False)   # M = the 8 F2 lanes of E: residual, open, fold
@@ -259,6 +263,26 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
                 comptime if acc:
                     v = f_add(v, base.unsafe_load[width=2](at))
                 base.unsafe_store[width=2](at, v)
+
+
+@always_inline
+def frag8(lane: Int) -> Tuple[Int, Int]:
+    """The (row, column base) of a lane's two elements of an 8x8 simdgroup matrix (columns base, base + 1)."""
+    return (((lane & 6) >> 1) + ((lane & 16) >> 2), ((lane & 1) << 1) + ((lane & 8) >> 1))
+
+
+@always_inline
+def mma8(a: SIMD[DType.float16, 2], b: SIMD[DType.float16, 2], c: SIMD[DType.float32, 2]) -> SIMD[DType.float32, 2]:
+    """The 8x8 simdgroup matrix op of every Apple GPU: a @ b + c on fp16 fragments with fp32 accumulation, lane
+    layout `frag8`. The AIR intrinsic takes 64-wide vectors; the per-lane pair sits at [0], [1]."""
+    var aw = SIMD[DType.float16, 64](0)
+    var bw = SIMD[DType.float16, 64](0)
+    var cw = SIMD[DType.float32, 64](0)
+    aw[0] = a[0]; aw[1] = a[1]
+    bw[0] = b[0]; bw[1] = b[1]
+    cw[0] = c[0]; cw[1] = c[1]
+    var dw = llvm_intrinsic["llvm.air.simdgroup_matrix_8x8_multiply_accumulate", SIMD[DType.float32, 64]](aw, bw, cw)
+    return SIMD[DType.float32, 2](dw[0], dw[1])
 
 
 def gemm_f2_apple[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
