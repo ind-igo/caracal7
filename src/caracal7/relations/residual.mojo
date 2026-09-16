@@ -6,8 +6,9 @@ Buffers (bytes; slowest ... fastest):
     ltmp      (column, k2, j1, 2)      after the axis-1 forward DFT
     families  (entry, ENTRY)           the compiled family list, kappa folded in after alpha
     residual  (j2, j1, e)              R = sum_j alpha^j R_j on G
-    quotient  five E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
-    trace_q   (3 e columns, x2, x1)    A, B, Q2 coordinate columns as values on H: witness-shaped
+    quotient  four E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
+    coeff_q   (3 e columns, k2, k1, 2) the F2 monomial coefficients of the A, B, Q2 coordinate columns: the Q
+                                       encoder's `coeff`, written directly (no values on H, no idft2)
 The coset steps are launches of backend.gemm_f2 ("shapes are GEMMs", design section 8), the full-length
 transforms radix stages:
     lde        dft_axis per axis (three radix stages, dft.mojo): coefficients k -> the points of G
@@ -17,9 +18,11 @@ transforms radix stages:
                staging cost more than the gather at M = e / 2). The 2 e basis entries of a Horner transition
                are not in the table it walks: k_horner, one thread per point after it, reads the e
                coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
-    quotient   q1m over G1 -> Q1 on the coset; qinv1 (GEMM), then dft_axis over G2 -> the A, B
-               coefficients; q2m, the qinv2p plan -> the Q2 coefficients; dft_axis per axis to their values on H
-               (the three dense axis-2 GEMMs at K = 2 h2 and h2 were 40 of the stage's 57 ms)"""
+    quotient   q1m over G1 -> the axis-1 coefficients of Q1 (one GEMM), then dft_axis over G2 -> the A, B
+               coefficients; q2m, the qinv2p plan -> the Q2 coefficients; k_coef_columns -> the F2
+               coefficients of the 3 e coordinate columns (the Frobenius-real split, decisions.md 2026-09-17).
+               Before that the stage evaluated A, B, Q2 on H and the encoder inverted the 60 columns
+               back: 13 ms of round trip at 32 x 8064"""
 
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
@@ -37,10 +40,9 @@ from std.gpu import global_idx
 
 
 def quotient_elems[p: Params]() -> Int:
-    """E elements of quotient scratch: Q1 on the coset (h1 x G2), its axis-1 transform, the A, B
-    coefficients (G2 x h1), the Q2 coefficients, the Q2 axis-1 transform, the axis-1 values of
-    A, B, Q2, their values on H: 14 N."""
-    return 14 * p.N()
+    """E elements of quotient scratch: the axis-1 transform of Q1 (h1 x G2), the A, B coefficients
+    (G2 x h1), the Q2 coefficients, the Q2 axis-1 transform: 6 N."""
+    return 6 * p.N()
 
 
 # ---- kernels ----
@@ -237,6 +239,37 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
     trace.store(base, gid, vals.load(base, ((c // e) * N + x) * e + c % e))
 
 
+def k_coef_columns[p: Params](base: Base, coef: Buf[2], coeff: Buf[2], groups: Int32):
+    """coeff[(q e + 2 t, k), (q e + 2 t + 1, k)] from the E-valued coefficient tables coef (groups, k2, k1, e):
+    the monomial coefficients of the coordinate columns f_tau(x) = coord_tau(Q(x)) on H (spec 9.2). For the
+    F2 lane t of Q with coefficient c_k, and sigma k = 127 k per axis (the Frobenius x -> x^127 permutes the
+    monomials on H since x^127 = conj(x)):
+        coef_k(f_re) = (c_k + conj(c_sigma k)) / 2,   coef_k(f_im) = (c_k - conj(c_sigma k)) / (2 i).
+    One thread per (q, t, k): reads two E lanes, writes two F2 coefficients."""
+    comptime h1 = p.h1()
+    comptime h2 = p.h2()
+    comptime N = p.N()
+    comptime e = p.e
+    comptime D = e // 2
+    var gid = Int(global_idx.x)
+    if gid >= Int(groups) * D * N:
+        return
+    var k1 = gid % h1
+    var k2 = (gid // h1) % h2
+    var t = (gid // N) % D
+    var q = gid // (N * D)
+    var s1 = (127 * k1) % h1
+    var s2 = (127 * k2) % h2
+    var c = coef.load(base, (q * N + k2 * h1 + k1) * D + t)
+    var m = coef.load(base, (q * N + s2 * h1 + s1) * D + t)
+    var r = Int(c[0]); var s = Int(c[1]); var rm = Int(m[0]); var sm = Int(m[1])
+    var re = F2(UInt8(((r + rm) * 64) % 127), UInt8(((s - sm + 127) * 64) % 127))
+    var im = F2(UInt8(((s + sm) * 64) % 127), UInt8(((rm - r + 127) * 64) % 127))
+    var col = q * e + 2 * t
+    coeff.store(base, (col * h2 + k2) * h1 + k1, re)
+    coeff.store(base, ((col + 1) * h2 + k2) * h1 + k1, im)
+
+
 # ---- host orchestration ----
 
 def _put_u16(mut l: List[UInt8], at: Int, v: Int):
@@ -335,9 +368,9 @@ def residual[p: Params](ctx: DeviceContext, arena: Arena,
 
 
 def quotient[p: Params](ctx: DeviceContext, arena: Arena,
-                        residual_buf: Int, tab: TableLayout, scratch: Int, trace_q: Int) raises:
-    """residual -> A, B, Q2 coefficients -> their values on H -> 3 e coordinate columns as the
-    trace of the quotient tree, which the level-1 encoder then treats like any witness column.
+                        residual_buf: Int, tab: TableLayout, scratch: Int, coeff_q: Int) raises:
+    """residual -> A, B, Q2 coefficients -> the F2 coefficients of the 3 e coordinate columns, the
+    quotient tree's `coeff`, which the level-1 encoder then treats like any witness column's.
     E-valued operands are the D = e / 2 lane view of the skeleton."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
@@ -347,37 +380,25 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     comptime e = p.e
     comptime T = BACKEND.tile
     var R = residual_buf
-    var q1c = scratch                       # (t, j2, e)   Q1 on g1 H1 x G2
-    var t1 = q1c + h1 * G2 * e              # (k1, j2, e)
+    var t1 = scratch                        # (k1, j2, e)  the axis-1 coefficients of Q1 on the coset rows
     var q1coef = t1 + h1 * G2 * e           # (k2, k1, e)  rows k2 < h2: A; rows k2 >= h2: B
     var q2coef = q1coef + G2 * h1 * e       # (k2, k1, e)  right after B: A, B, Q2 are N e apart
     var t2 = q2coef + h2 * h1 * e           # (k1, t2, e)
-    var v1 = t2 + h1 * h2 * e               # (3, k2, x1, e)
-    var vals = v1 + 3 * N * e               # (3, x2, x1, e)
-    # 1. Q1 on the coset from R over all of G1: q1m (t, j1)
+    # 1. axis 1: R over all of G1 -> the coefficients k1 of Q1 on the coset (q1m holds the coset map
+    #    composed with the coset inverse DFT)
     launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
         a=tab.base + tab.q1m, sa_m=G1 * 2, sa_k=2, b=R, sb_k=e, sb_hi=G1 * e, sb_lo=2,
-        c=q1c, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * (e // 2), G1)
-    # ponytail: step 2 stays a dense h1 x h1 GEMM (2 KB, 32 wide); put it on a plan like step 5 if it shows up
-    # 2. axis 1: coset values t -> coefficients k1
-    launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
-        a=tab.base + tab.qinv1, sa_m=h1 * 2, sa_k=2, b=q1c, sb_k=G2 * e, sb_hi=e, sb_lo=2,
-        c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * (e // 2), h1)
-    # 3. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B, the h1 lines of E rows as 8 F2
-    #    lanes, written transposed as (k2, k1, e); t1 is the scratch (dead after stage 3)
+        c=t1, sc_m=G2 * e, sc_hi=e, sc_lo=2), h1, G2 * (e // 2), G1)
+    # 2. axis 2: G2 values j2 -> coefficients k2 in [0, 2 h2): A + X2^h2 B, the h1 lines of E rows as 8 F2
+    #    lanes, written transposed as (k2, k1, e); t1 is the scratch (dead after stage 2)
     dft_axis[DftPlan(G2, G2), E_DFT_V](ctx, arena, t1, q1coef, t1, e // 2, h1, tab.base + tab.ginv2p, dst_line=e, dst_j=h1 * e)
-    # 4. Q2 = S1 / (-2) on H1 x g2 H2: axis 1 from the even j1 of the odd j2 rows, q2m = 63 winv1
+    # 3. Q2 = S1 / (-2) on H1 x g2 H2: axis 1 from the even j1 of the odd j2 rows, q2m = 63 winv1
     launch_gemm_f2[BACKEND, T, Strided, E_BYTES // 2](ctx, arena, strided(
         a=tab.base + tab.q2m, sa_m=h1 * 2, sa_k=2, b=R + G1 * e, sb_k=2 * e, sb_hi=2 * G1 * e, sb_lo=2,
         c=t2, sc_m=h2 * e, sc_hi=e, sc_lo=2), h1, h2 * (e // 2), h1)
-    # 5. axis 2: coset values t2 -> coefficients k2, the output twist g2^-k inside the plan's last stage;
+    # 4. axis 2: coset values t2 -> coefficients k2, the output twist g2^-k inside the plan's last stage;
     #    a row of t2 is e / 2 F2 lanes, written transposed as (k2, k1, e); t1 (dead) is the scratch
     dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, t2, q2coef, t1, e // 2, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
-    # 6, 7. values on H of A, B, Q2: axis 1 over the 3 h2 coefficient rows -> v1 (3, k2, x1, e), then
-    #    axis 2 with a row of x1 as 8 h1 lanes -> vals (3, x2, x1, e). Scratch: vals, then q1c and t1
-    #    (dead); the coefficients stay intact for the tests
-    dft_axis[DftPlan(h1, h1), E_DFT_V](ctx, arena, q1coef, v1, vals, e // 2, 3 * h2, tab.base + tab.hfwd1)
-    dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, v1, vals, q1c, (e // 2) * h1, 3, tab.base + tab.hfwd2)
-    # 8. coordinate columns as the quotient tree's trace
-    comptime k8 = k_values_to_trace[p]
-    ctx.enqueue_function[k8](arena.buf, Buf[1](vals), Buf[1](trace_q), Int32(3), grid_dim=ceildiv(3 * e * N, BACKEND.block), block_dim=BACKEND.block)
+    # 5. the coordinate columns' monomial coefficients, straight into the quotient tree's coeff
+    comptime k5 = k_coef_columns[p]
+    ctx.enqueue_function[k5](arena.buf, Buf[2](q1coef), Buf[2](coeff_q), Int32(3), grid_dim=ceildiv(3 * (e // 2) * N, BACKEND.block), block_dim=BACKEND.block)

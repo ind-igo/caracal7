@@ -31,7 +31,7 @@ struct Run:
     var lde: List[UInt8]
     var res: List[UInt8]
     var scratch: List[UInt8]
-    var stored: List[UInt8]
+    var coeff_q: List[UInt8]
     var fam: List[UInt8]
     var alpha: E
     var chals: List[UInt8]
@@ -56,7 +56,7 @@ struct Run:
         var pub_buf = bump.alloc(cp * N * 2)
         var res_buf = bump.alloc(G * p.e)
         var scratch = bump.alloc(quotient_elems[p]() * p.e)
-        var stored = bump.alloc(3 * p.e * N)
+        var coeff_q = bump.alloc(3 * p.e * N * 2)
         var alpha = bump.alloc(p.e)
         var chals = bump.alloc(3 * p.e)
         var arena = Arena(ctx, bump.used)
@@ -84,13 +84,13 @@ struct Run:
         if with_public:
             lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + cw * G * 2)
         residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf, families, len(c.families) // ENTRY, 0, 0)
-        quotient[p](ctx, arena, res_buf, tab, scratch, stored)
+        quotient[p](ctx, arena, res_buf, tab, scratch, coeff_q)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * N * 2)
         var lh = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * G * 2)
         var rh = ctx.enqueue_create_host_buffer[DType.uint8](G * p.e)
         var qh = ctx.enqueue_create_host_buffer[DType.uint8](quotient_elems[p]() * p.e)
-        var sh = ctx.enqueue_create_host_buffer[DType.uint8](3 * p.e * N)
+        var sh = ctx.enqueue_create_host_buffer[DType.uint8](3 * p.e * N * 2)
         arena.download(ctx, enc.coeff, ch)
         if with_public:                                # the public column's coefficients follow the witness ones: col_at works by index
             var ph = ctx.enqueue_create_host_buffer[DType.uint8](cp * N * 2)
@@ -101,13 +101,13 @@ struct Run:
         arena.download(ctx, lde_buf, lh)
         arena.download(ctx, res_buf, rh)
         arena.download(ctx, scratch, qh)
-        arena.download(ctx, stored, sh)
+        arena.download(ctx, coeff_q, sh)
         ctx.synchronize()
         self.coeff = _to_list(ch)
         self.lde = _to_list(lh)
         self.res = _to_list(rh)
         self.scratch = _to_list(qh)
-        self.stored = _to_list(sh)
+        self.coeff_q = _to_list(sh)
         _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
     def f2(self, l: List[UInt8], off: Int) -> F2:
@@ -233,7 +233,7 @@ def _check_deep(r: Run) raises:
             reads.append(r.col_at(en.col_b, ext_mul[E_LEVEL](z1, ext_embed[E_LEVEL](ext_pow[1](r.d.g1, en.dj1_b))),
                                   ext_mul[E_LEVEL](z2, ext_embed[E_LEVEL](ext_pow[1](r.d.g2, en.dj2_b)))))
     var rz = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)
-    var q1coef = 2 * h1 * G2 * p.e
+    var q1coef = h1 * G2 * p.e
     var q2coef = q1coef + G2 * h1 * p.e
     var a = r.poly_at(q1coef, h2, z1, z2)
     var b = r.poly_at(q1coef + h2 * h1 * p.e, h2, z1, z2)
@@ -274,18 +274,30 @@ def test_public_column_reads_match_host() raises:
     assert_equal(off_rows, 0)
 
 
-def test_quotient_trace_is_values_on_h() raises:
+def test_quotient_coeff_columns_are_coordinates_on_h() raises:
+    """The 3 e coefficient columns the stage writes, evaluated at points of H, are the coordinates of
+    A, B, Q2 there (spec 9.2: evaluate first, then take coordinates)."""
     var r = Run()
-    var q1coef = 2 * h1 * G2 * p.e
+    var q1coef = h1 * G2 * p.e
     var srcs: List[Int] = [q1coef, q1coef + h2 * h1 * p.e, q1coef + G2 * h1 * p.e]
     var rows: List[Int] = [0, 1, 5, h2 - 1]
     var cols: List[Int] = [0, 1, 40, h1 - 1]
     for q in range(3):
         for x2 in rows:
             for x1 in cols:
-                var v = r.poly_at(srcs[q], h2, ext_embed[E_LEVEL](ext_pow[1](r.d.omega1, x1)), ext_embed[E_LEVEL](ext_pow[1](r.d.omega2, x2)))
+                var z1 = ext_embed[E_LEVEL](ext_pow[1](r.d.omega1, x1))
+                var z2 = ext_embed[E_LEVEL](ext_pow[1](r.d.omega2, x2))
+                var v = r.poly_at(srcs[q], h2, z1, z2)
                 for tau in range(p.e):
-                    assert_equal(Int(r.stored[(q * p.e + tau) * N + x2 * h1 + x1]), Int(v[tau]))
+                    var c = q * p.e + tau
+                    var acc = E(0)
+                    for k2 in range(h2 - 1, -1, -1):
+                        var inner = E(0)
+                        for k1 in range(h1 - 1, -1, -1):
+                            inner = f_add(ext_mul[E_LEVEL](inner, z1), ext_embed[E_LEVEL](r.f2(r.coeff_q, ((c * h2 + k2) * h1 + k1) * 2)))
+                        acc = f_add(ext_mul[E_LEVEL](acc, z2), inner)
+                    for i in range(p.e):
+                        assert_equal(Int(acc[i]), Int(v[tau]) if i == 0 else 0)
 
 
 def main() raises:

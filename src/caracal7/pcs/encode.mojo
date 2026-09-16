@@ -68,15 +68,18 @@ struct EncLayout(TrivialRegisterPassable):
     var packed: Int
     var etmp: Int
     var code: Int
+    var has_trace: Bool     # False: the coefficients arrive from elsewhere (the quotient stage); no trace, no idft2
 
     def __init__[p: Params](out self, mut bump: Bump, columns: Int, trace_from: Int = ST_LOAD, trace_to: Int = ST_END,
-                            stage: Int = ST_LOAD, coeff_to: Int = ST_END):
+                            stage: Int = ST_LOAD, coeff_to: Int = ST_END, coeff_from: Int = -1):
         """The trace lives [trace_from, trace_to], the encoder's scratch at `stage` (the commit), the
-        coefficients until `coeff_to` (the LDE reads them); stored, code stay for the openings and queries."""
+        coefficients until `coeff_to` (the LDE reads them); stored, code stay for the openings and queries.
+        `coeff_from` >= 0: the tree has no trace; its coefficients are written from that stage on."""
         self.columns = columns
-        self.trace = bump.alloc(columns * p.N(), trace_from, trace_to)
+        self.has_trace = coeff_from < 0
+        self.trace = bump.alloc(columns * p.N() if self.has_trace else 0, trace_from, trace_to)
         self.ctmp = bump.alloc(columns * p.N() * 2, stage, stage)
-        self.coeff = bump.alloc(columns * p.N() * 2, stage, coeff_to)
+        self.coeff = bump.alloc(columns * p.N() * 2, stage if self.has_trace else coeff_from, coeff_to)
         self.stored = bump.alloc(columns * p.N(), stage)
         self.packed = bump.alloc(columns * p.N(), stage, stage)
         self.etmp = bump.alloc(columns * p.n_cw() * p.L0 * 4, stage, stage)
@@ -600,7 +603,8 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
     """trace -> coeff -> stored -> packed."""
     var cols = Int32(e.columns)
     var n_grid = e.columns * p.N()
-    idft2[p](ctx, arena, e.trace, e.ctmp, e.coeff, e.columns, tab)
+    if e.has_trace:
+        idft2[p](ctx, arena, e.trace, e.ctmp, e.coeff, e.columns, tab)
     # the y1 digit: an m1-point DFT with rho1 twiddles per (column, k2, x1), coeff -> ctmp
     comptime B1 = 1 << p.a1
     comptime m1 = p.m1

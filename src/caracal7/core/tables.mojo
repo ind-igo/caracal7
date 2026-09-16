@@ -242,9 +242,10 @@ struct TableLayout(TrivialRegisterPassable):
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
     var g1p: Int        # (2 h1, 2)     g1^j
     var g2p: Int        # (2 h2, 2)
-    var q1m: Int        # (h1, 2 h1, 2) Q1 on the coset from R on G1: 63 at j = 2t + 1, 64 * (1/h1) sum_k g1^((2t + 1 - 2s) k) at j = 2s
+    var q1m: Int        # (h1, 2 h1, 2) the axis-1 coefficients k of Q1 from R on G1: qinv1 (coset values t -> coefficients,
+                        #               g1^-k h1^-1 omega1^(-t k)) composed with the coset map (63 at j = 2t + 1,
+                        #               64 * (1/h1) sum_k g1^((2t + 1 - 2s) k) at j = 2s); one GEMM instead of two
     var q2m: Int        # (h1, h1, 2)   63 * winv1: Q2 = S1 / (-2) on H1, coefficients from values
-    var qinv1: Int      # (h1, h1, 2)   coset values t -> coefficient k: g1^-k h1^-1 omega1^(-t k)
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
     var c2p: Int        # (2 h2, 2)     the coset points c_t = gamma2 g2^t of the small grid (smallgrid.mojo)
@@ -253,8 +254,6 @@ struct TableLayout(TrivialRegisterPassable):
     var fwd2: Int       # the same on axis 2
     var inv2: Int
     var ginv2p: Int     # DftPlan(2 h2, 2 h2) of the G2 inverse (residual.quotient step 3), (2 h2)^-1 folded in
-    var hfwd1: Int      # DftPlan(h1, h1) of the forward DFT onto H1 (coefficients -> values, quotient step 6)
-    var hfwd2: Int      # the same on H2
     var qinv2p: Int     # DftPlan(h2, h2) of quotient step 5: coset values t -> coefficient k, g2^-k h2^-1 omega2^(-t k)
     var gfwd2p: Int     # DftPlan(2 h2, 2 h2) coefficients -> values on G2 (smallgrid.mojo)
     var cfwd2p: Int     # DftPlan(2 h2, h2) coefficient k -> value at the small grid's coset point c_t = gamma2 g2^t: gamma2^k g2^(t k)
@@ -275,7 +274,6 @@ struct TableLayout(TrivialRegisterPassable):
         self.g2p = off; off += 2 * p.h2() * 2
         self.q1m = off; off += p.h1() * 2 * p.h1() * 2
         self.q2m = off; off += p.h1() * p.h1() * 2
-        self.qinv1 = off; off += p.h1() * p.h1() * 2
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
         self.c2p = off; off += 2 * p.h2() * 2
@@ -284,8 +282,6 @@ struct TableLayout(TrivialRegisterPassable):
         self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
         self.inv2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.ginv2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
-        self.hfwd1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
-        self.hfwd2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.qinv2p = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.gfwd2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
         self.cfwd2p = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
@@ -337,8 +333,6 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     _dft_tables(h, t.fwd2, DftPlan(2 * p.h2(), p.h2()), d.g2, 1)
     _dft_tables(h, t.inv2, DftPlan(p.h2(), p.h2()), w2_inv, inv_h2)
     _dft_tables(h, t.ginv2p, DftPlan(2 * p.h2(), 2 * p.h2()), ext_pow[1](d.g2, 2 * p.h2() - 1), f_inv(UInt8((2 * p.h2()) % 127)))
-    _dft_tables(h, t.hfwd1, DftPlan(p.h1(), p.h1()), d.omega1, 1)
-    _dft_tables(h, t.hfwd2, DftPlan(p.h2(), p.h2()), d.omega2, 1)
     return h^
 
 
@@ -424,25 +418,31 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
         _put(h, t.gate1 + j * 2, f_sub(ext_pow[1](d.g1, j), e1))
     for j in range(2 * h2):
         _put(h, t.gate2 + j * 2, f_sub(ext_pow[1](d.g2, j), e2))
-    for i in range(h1 * 2 * h1 * 2):
-        h[t.q1m + i] = 0
     # Q1(g1^(2t+1)) = (R - S1) / (-2), S1 the axis-1 interpolant of R on H1: one row over all of G1.
     # The interpolant weight sum_k g1^((2 (t - s) + 1) k) depends only on (t - s) mod h1: one row of h1 sums.
+    # The stored table is the composition with the coset inverse DFT qinv1 (row k, col t), so the stage
+    # goes from R on G1 to the axis-1 coefficients of Q1 in one GEMM (decisions.md, 2026-09-17).
     var q1row = List[F2](capacity=h1)
     for diff in range(h1):
         var acc = F2(0)
         for k in range(h1):
             acc = f_add(acc, ext_pow[1](d.g1, ((2 * diff + 1) * k) % (2 * h1)))
         q1row.append(f_mul(f_mul(acc, inv_h1), F2(64)))
+    var cos = List[F2](capacity=h1 * 2 * h1)          # (t, j): the coset map
     for tt in range(h1):
-        _put(h, t.q1m + (tt * 2 * h1 + 2 * tt + 1) * 2, F2(63, 0))
-        for s in range(h1):
-            _put(h, t.q1m + (tt * 2 * h1 + 2 * s) * 2, q1row[(tt - s) % h1])
-        for k in range(h1):
+        for j in range(2 * h1):
+            cos.append(F2(63, 0) if j == 2 * tt + 1 else (q1row[(tt - j // 2) % h1] if j % 2 == 0 else F2(0)))
+    for k in range(h1):
+        for j in range(2 * h1):
+            var acc = F2(0)
+            for tt in range(h1):
+                var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                   # g1^-k / h1
+                var qi = ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1)))
+                acc = f_add(acc, ext_mul[1](qi, cos[tt * 2 * h1 + j]))
+            _put(h, t.q1m + (k * 2 * h1 + j) * 2, acc)
+        for tt in range(h1):
             var wi = _get(h, t.winv1 + (k * h1 + tt) * 2)
             _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))
-            var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                       # g1^-k / h1
-            _put(h, t.qinv1 + (k * h1 + tt) * 2, ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1))))
     # the small grid's coset gamma2 G2 (gamma2 is in no proper subgroup, so c^h2 - 1 vanishes nowhere on it).
     # At 2 h2 = F2_ORDER, G2 is all of F2* and there is no coset: its tables stay unset and the prover
     # refuses a statement with accumulators (prover.mojo)

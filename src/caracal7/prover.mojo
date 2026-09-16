@@ -44,8 +44,8 @@ struct CommitLayout(TrivialRegisterPassable):
     var tree: Int           # (node, 32), level 0 first, tree_nodes(L0) nodes
     var row: Int            # bytes per codeword row: 4 n_cw per column
 
-    def __init__[p: Params, H: Hash](out self, mut bump: Bump, columns: Int, trace_from: Int, trace_to: Int, stage: Int, coeff_to: Int):
-        self.enc = EncLayout.__init__[p](bump, columns, trace_from, trace_to, stage, coeff_to)
+    def __init__[p: Params, H: Hash](out self, mut bump: Bump, columns: Int, trace_from: Int, trace_to: Int, stage: Int, coeff_to: Int, coeff_from: Int = -1):
+        self.enc = EncLayout.__init__[p](bump, columns, trace_from, trace_to, stage, coeff_to, coeff_from)
         self.tree = bump.alloc(tree_nodes(p.L()) * H.DIGEST, stage)
         self.row = 4 * p.n_cw() * columns
 
@@ -222,7 +222,7 @@ struct ProverLayout:
         # W's trace is loaded once and must survive repeated proves; the LDE reads W's and Z's coefficients; Q's trace is the quotient
         self.w = CommitLayout.__init__[p, H](bump, shape.columns_w, ST_LOAD, ST_END, ST_W, ST_LDE)
         self.z = CommitLayout.__init__[p, H](bump, shape.columns_z, ST_ACC, ST_Z, ST_Z, ST_LDE)
-        self.q = CommitLayout.__init__[p, H](bump, shape.columns_q, ST_QUO, ST_Q, ST_Q, ST_Q)
+        self.q = CommitLayout.__init__[p, H](bump, shape.columns_q, ST_QUO, ST_Q, ST_Q, ST_Q, coeff_from=ST_QUO)
         self.families = bump.alloc(shape.entries * ENTRY)
         self.families_g = bump.alloc(shape.entries * ENTRY)
         self.merge = bump.alloc(shape.entries * 6)
@@ -493,7 +493,7 @@ struct Prover[p: Params, H: Hash]:
             small_grid_values[Self.p](ctx, self.arena, L.tables, L.sg)
 
     def _quotient(mut self, ctx: DeviceContext) raises:
-        """The LDE of every column onto the residual grid, the residual, and the quotient as the Q tree's trace."""
+        """The LDE of every column onto the residual grid, the residual, and the quotient as the Q tree's coefficients."""
         ref L = self.layout
         ref S = self.shape
         lde[Self.p](ctx, self.arena, L.w.enc.coeff, S.columns_w, L.tables, L.lde.ltmp, L.lde.lde_at(0))
@@ -505,7 +505,7 @@ struct Prover[p: Params, H: Hash]:
         residual[Self.p](ctx, self.arena, L.lde.lde, L.families, S.entries, L.tables, L.chal.alpha, L.chal.stage1, L.lde.residual,
                          L.families_g, self.entries_g, L.accs, len(S.accs) // ACC, L.merge)
         self._mark(ctx, "residual")
-        quotient[Self.p](ctx, self.arena, L.lde.residual, L.tables, L.lde.quotient, L.q.enc.trace)
+        quotient[Self.p](ctx, self.arena, L.lde.residual, L.tables, L.lde.quotient, L.q.enc.coeff)
         self._mark(ctx, "quotient")
 
     def _openings(mut self, ctx: DeviceContext) raises:

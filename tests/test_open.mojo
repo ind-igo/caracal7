@@ -61,7 +61,7 @@ def test_openings_and_fold() raises:
     var z = _dl(ctx, prover, L.chal.z, 2 * p.e)
     var coeff = _dl(ctx, prover, L.w.enc.coeff, SYNTHETIC_COLUMNS * N * 2)
     var openings = _dl(ctx, prover, L.open.openings, P * C * p.e)
-    var scratch = _dl(ctx, prover, L.lde.quotient, 14 * N * p.e)
+    var scratch = _dl(ctx, prover, L.lde.quotient, 6 * N * p.e)
     var beta = _dl(ctx, prover, L.chal.beta_gamma, C * p.e)
     var stored_w = _dl(ctx, prover, L.w.enc.stored, SYNTHETIC_COLUMNS * N)
     var stored_z = _dl(ctx, prover, L.z.enc.stored, shape.columns_z * N)
@@ -83,7 +83,7 @@ def test_openings_and_fold() raises:
             var want = _horner(coeff, c * N * 2, 2, 2, z1, z2, h2)
             assert_true(want == list_e(openings, pt * C + c), "witness opening mismatch")
     # quotient coordinate columns at z: sum_tau e_tau alpha_tau = Q(z) from the coefficient tables
-    var q1coef = 2 * h1 * G2 * p.e
+    var q1coef = h1 * G2 * p.e
     var srcs: List[Int] = [q1coef, q1coef + h2 * h1 * p.e, q1coef + G2 * h1 * p.e]
     for q in range(3):
         var want = _horner(scratch, srcs[q], p.e, p.e, list_e(z, 0), list_e(z, 1), h2)
