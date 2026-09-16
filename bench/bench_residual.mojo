@@ -40,7 +40,7 @@ def main() raises:
     var lde_buf = bump.alloc(COLS * G * 2)
     var res_buf = bump.alloc(G * p.e)
     var scratch = bump.alloc(quotient_elems[p]() * p.e)
-    var stored = bump.alloc(3 * p.e * p.N())
+    var coeff_q = bump.alloc(3 * p.e * p.N() * 2)      # the F2 coefficients of the 3 e columns
     var alpha = bump.alloc(p.e)
     var chals = bump.alloc(3 * p.e)
     var arena = Arena(ctx, bump.used)
@@ -81,12 +81,12 @@ def main() raises:
     ctx.synchronize()
     report("residual", Int(perf_counter_ns() - t0), f.count * G * 8)
 
-    quotient[p](ctx, arena, res_buf, tab, scratch, stored)
+    quotient[p](ctx, arena, res_buf, tab, scratch, coeff_q)
     ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(REPS):
-        quotient[p](ctx, arena, res_buf, tab, scratch, stored)
+        quotient[p](ctx, arena, res_buf, tab, scratch, coeff_q)
     ctx.synchronize()
-    report("quotient", Int(perf_counter_ns() - t0), 8 * (p.h1() * 2 * p.h1() * 2 * p.h2() + p.h1() * p.h1() * 2 * p.h2()
+    report("quotient", Int(perf_counter_ns() - t0), 8 * (p.h1() * 2 * p.h1() * 2 * p.h2()
                                                           + 2 * p.h2() * 2 * p.h2() * p.h1() + p.h1() * p.h1() * p.h2() + p.h2() * p.h2() * p.h1()))
     _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)

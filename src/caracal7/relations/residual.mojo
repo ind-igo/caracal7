@@ -27,7 +27,7 @@ transforms radix stages:
 from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, E, V2, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul, E_LEVEL, E_BYTES, VH, e_planes, e_merge, ef_planes, ef_merge, to_f32, E_DFT_V
+from caracal7.core.field import F2, E, V2, E_WIDTH, wcast, f_reduce_signed, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul, E_LEVEL, E_BYTES, VH, e_planes, e_merge, ef_planes, ef_merge, to_f32, E_DFT_V
 from caracal7.core.params import Params
 from caracal7.core.tables import TableLayout
 from caracal7.core.backend import BACKEND, Strided, launch_gemm_f2, strided
@@ -239,35 +239,41 @@ def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups
     trace.store(base, gid, vals.load(base, ((c // e) * N + x) * e + c % e))
 
 
-def k_coef_columns[p: Params](base: Base, coef: Buf[2], coeff: Buf[2], groups: Int32):
+def k_coef_columns[p: Params](base: Base, coef: Buf[E_BYTES], coeff: Buf[2], groups: Int32):
     """coeff[(q e + 2 t, k), (q e + 2 t + 1, k)] from the E-valued coefficient tables coef (groups, k2, k1, e):
     the monomial coefficients of the coordinate columns f_tau(x) = coord_tau(Q(x)) on H (spec 9.2). For the
     F2 lane t of Q with coefficient c_k, and sigma k = 127 k per axis (the Frobenius x -> x^127 permutes the
     monomials on H since x^127 = conj(x)):
         coef_k(f_re) = (c_k + conj(c_sigma k)) / 2,   coef_k(f_im) = (c_k - conj(c_sigma k)) / (2 i).
-    One thread per (q, t, k): reads two E lanes, writes two F2 coefficients."""
+    One thread per (q, k): two whole-E loads (k1 fastest, so a lane's stores are contiguous across
+    threads), all e / 2 lanes at once; a thread per lane read 20-byte strides (10 lines per load)."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     comptime N = p.N()
     comptime e = p.e
-    comptime D = e // 2
+    comptime W = E_WIDTH
     var gid = Int(global_idx.x)
-    if gid >= Int(groups) * D * N:
+    if gid >= Int(groups) * N:
         return
     var k1 = gid % h1
     var k2 = (gid // h1) % h2
-    var t = (gid // N) % D
-    var q = gid // (N * D)
+    var q = gid // N
     var s1 = (127 * k1) % h1
     var s2 = (127 * k2) % h2
-    var c = coef.load(base, (q * N + k2 * h1 + k1) * D + t)
-    var m = coef.load(base, (q * N + s2 * h1 + s1) * D + t)
-    var r = Int(c[0]); var s = Int(c[1]); var rm = Int(m[0]); var sm = Int(m[1])
-    var re = F2(UInt8(((r + rm) * 64) % 127), UInt8(((s - sm + 127) * 64) % 127))
-    var im = F2(UInt8(((s + sm) * 64) % 127), UInt8(((rm - r + 127) * 64) % 127))
-    var col = q * e + 2 * t
-    coeff.store(base, (col * h2 + k2) * h1 + k1, re)
-    coeff.store(base, ((col + 1) * h2 + k2) * h1 + k1, im)
+    var c = wcast[DType.int32](coef.load(base, gid))
+    var m = wcast[DType.int32](coef.load(base, q * N + s2 * h1 + s1))
+    var sign = SIMD[DType.int32, W](1)
+    comptime for i in range(1, W, 2):
+        sign[i] = -1
+    var mc = m * sign                                    # conj: negate the imaginary lanes
+    var re = f_reduce_signed((c + mc) * 64)              # (c + conj m) / 2
+    var d = (c - mc) * 64                                # (c - conj m) / 2 = (r - rm, s + sm) per lane
+    var dd = d.deinterleave()
+    var im = f_reduce_signed(dd[1].interleave(-dd[0]))   # times -i: (s + sm, -(r - rm))
+    comptime for t in range(e // 2):
+        var col = q * e + 2 * t
+        coeff.store(base, (col * h2 + k2) * h1 + k1, re.slice[2, offset=2 * t]())
+        coeff.store(base, ((col + 1) * h2 + k2) * h1 + k1, im.slice[2, offset=2 * t]())
 
 
 # ---- host orchestration ----
@@ -401,4 +407,4 @@ def quotient[p: Params](ctx: DeviceContext, arena: Arena,
     dft_axis[DftPlan(h2, h2), E_DFT_V](ctx, arena, t2, q2coef, t1, e // 2, h1, tab.base + tab.qinv2p, dst_line=e, dst_j=h1 * e)
     # 5. the coordinate columns' monomial coefficients, straight into the quotient tree's coeff
     comptime k5 = k_coef_columns[p]
-    ctx.enqueue_function[k5](arena.buf, Buf[2](q1coef), Buf[2](coeff_q), Int32(3), grid_dim=ceildiv(3 * (e // 2) * N, BACKEND.block), block_dim=BACKEND.block)
+    ctx.enqueue_function[k5](arena.buf, Buf[E_BYTES](q1coef), Buf[2](coeff_q), Int32(3), grid_dim=ceildiv(3 * N, BACKEND.block), block_dim=BACKEND.block)

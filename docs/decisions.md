@@ -1817,3 +1817,68 @@ instruction touches at W = 1, not by the op). Left for later: at W >= 2 the tran
 (rows j, columns positions) would make every access 4 bytes and could halve hfwd1; the long axis stays
 staged (a dense 8064-point product is out of reach). Only the Apple 8x8 path changes; the lane and
 NVIDIA builds keep the staged kernels, and the dense table costs at most 4 KB per plan.
+
+## The quotient tree's coefficients written directly (2026-09-17, M1 Pro)
+
+**Decision.** The quotient stage no longer evaluates A, B, Q2 on H, takes the byte coordinates into a
+trace, and lets the encoder invert the 60 columns back to F2 coefficients. It writes the encoder's
+`coeff` from the E-valued coefficient tables in one pass (`k_coef_columns`): for an F2 lane of the
+E coefficient `c_k` and `sigma k = 127 k mod h` per axis,
+
+    coef_k(f_re) = (c_k + conj(c_sigma k)) / 2,    coef_k(f_im) = (c_k - conj(c_sigma k)) / (2 i).
+
+The pairing is the Frobenius `x -> x^127` (`conj(x^k) = x^(127 k)` on H), not `k -> -k`: the roots
+have order dividing 127^2 - 1, and `x^127 = x^-1` only for orders dividing 128. Checked in Python
+against values on H, byte coordinates, inverse 2D DFT on three small grids, then on the device by
+`test_quotient_coeff_columns_are_coordinates_on_h` and the DEEP identity test. The committed columns,
+the proof bytes and the verifier are unchanged (spec 9.2 evaluates first, then takes coordinates; the
+identity is what that order means in coefficients). The Q tree has no trace buffer (`EncLayout.has_trace`,
+`coeff_from`), and the two axis-1 GEMMs (the coset map, then the coset inverse DFT) are one composed
+table `q1m` of h1 x 2 h1. Scratch fell from 14 N to 6 N E values; the `hfwd1`, `hfwd2` tables are gone.
+
+**Measured** (SHA-256 chain, 32 x 8064, 125 hashes, round robin against the previous binary):
+
+| stage | before | after |
+|---|---:|---:|
+| quotient | 32 ms | 20 ms |
+| encode Q | 25 ms | 20 ms |
+| warm prove median | 271 ms | 255 ms |
+
+The first kernel, one thread per (lane, k) reading 2 bytes at 20-byte strides, cost about 9 ms and
+gave back only 8 ms of prove; one thread per E value (two whole-E loads, the lanes as SIMD, twenty
+contiguous 2-byte stores) is about 1 ms. The strided byte-lane trap again (apple-gpu-profiling).
+
+**Why the 4 N grid stays.** A degree-2 residual has bidegree (2 h1 - 1, 2 h2 - 2), 4 N coefficients;
+vanishing on H removes N, so the certificate carries 3 N E values and the 3 e columns are exactly
+that. The residual kernel already skips the zero quarter H x H; the LDE still computes it (about a
+quarter of its 16 ms, a coset-twisted plan would remove it; deferred).
+
+## Herder channel cost at scale: SHA-256 stays bit-level (2026-09-17, M1 Pro)
+
+**Question.** SHA-256 spends 43 bit columns x 32 rows per round (88K byte cells per hash, one bit
+each). Would a 6-bit limb layout with Herder lookups for XOR, Ch, Maj and the carries do less work?
+
+**Measured.** `bench_prover`'s synthetic instance at 32 x 4032 (129K rows; accumulators need
+h2 < 8064 for the small grid's coset), with and without the lookup channel (two record columns,
+two sorted columns, one KIND_LOOKUP accumulator of e = 20 coordinate columns):
+
+| | without | with lookup |
+|---|---:|---:|
+| warm prove | 142 ms | 175-188 ms |
+| accumulate | 12 | 19-21 |
+| residual | 10 | 18 |
+| lde | 6 | 9 |
+| proof | 560 KB | 655 KB |
+
+One channel costs 33-46 ms per 129K rows and 95 KB of proof. The SHA-256 chain at the same row
+count costs about 2.6 ms per witness column, so one lookup record per row costs what 13-18 bit
+columns cost. A 6-bit XOR as a lookup is 3 record + 3 sorted + 20 accumulator column-rows per limb
+row; as bits it is 6 rows x 3 columns = 18 column-rows with the quadratic family. A limb round
+needs on the order of 35 channels over 6 rows, about 3,000 column-rows against the bit design's
+1,376. The lookup route loses by about 2x, as spec 6.3 already states ("fixed 6-bit bitwise
+functions are cheaper as bit certificates unless the channel is shared by several tables"). The
+cost driver is the E-valued accumulator, 20 columns per record per row, which soundness fixes
+(gamma from E; N / |E| must stay below 2^-100 at N = 2^18).
+
+**Decision.** The bit-level SHA-256 statement stands; the cells are not wasted. Herder is for
+tables with no cheap quadratic certificate (range checks on selected values, memory).
