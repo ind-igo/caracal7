@@ -24,7 +24,7 @@ from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 from std.gpu import global_idx, thread_idx, block_idx, lane_id
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, f_reduce_signed, fp_canonical
+from caracal7.core.field import F2, f_reduce_signed, fp_canonical, fp_reduce, fp_center
 from caracal7.core.backend import BACKEND, APPLE8, frag8, mma8
 from caracal7.core.bytes import Base
 from caracal7.core.arena import Arena
@@ -127,15 +127,17 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
     comptime assert kin * 2 * 126 * 126 < 127 * (1 << 15), "a stage's accumulator stays below WIDE_BIAS"
     comptime assert V == 1 or (not bytes_in and LB == 1)
     comptime VL = V * LB
-    var t = global_idx.x
-    if t >= Int(o.total):
+    # 32-bit decode: a 64-bit division is a few hundred instructions on Metal, seven of them per thread
+    var t = UInt32(global_idx.x)
+    if t >= UInt32(o.total):
         return
-    var inner = (t % Int(o.inner)) * V
-    var rest = t // Int(o.inner)
-    var pre = rest % Int(o.od)
-    var line = (rest // Int(o.od)) * LB
-    var hi = pre // Int(o.od_lo)
-    var lo = pre % Int(o.od_lo)
+    var inner = Int(t % UInt32(o.inner)) * V
+    var rest = t // UInt32(o.inner)
+    var pre32 = rest % UInt32(o.od)
+    var line = Int(rest // UInt32(o.od)) * LB
+    var hi = Int(pre32 // UInt32(o.od_lo))
+    var lo = Int(pre32 % UInt32(o.od_lo))
+    var pre = Int(pre32)
     var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
     var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
@@ -172,6 +174,109 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
                 base.unsafe_store[width=2, alignment=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
         else:
             base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
+
+
+def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
+    """k_radix for an odd radix (3, 7, 9: r = kin, F2 input) on the compact table of tables._dft_tables:
+    y[j] = rt(j) sum_k w^(j k) ct(k) x[k] with w of order r in F (r divides 126). Twist the inputs
+    by ct, then the symmetric DFT of encode._dft_odd with real c_m = (w^m + w^-m) / 2 and
+    s_m = (w^m - w^-m) / 2: y_t = x_0 + sum_k c_(tk) (x_k + x_(r-k)) + s_(tk) (x_k - x_(r-k)), y_(r-t)
+    flips the s sum, h = (r - 1) / 2 real products per lane per pair instead of r complex ones; then the
+    row twist. fp32 lanes, everything exact: centered twists (|.| <= 63) times bytes give |x'| <= 15876,
+    the even and odd DFT sums each stay below 8.1 M and their sum below 16.1 M < 2^24, the reduced
+    outputs (|.| <= 190) times the row twist below 24 K. The same thread layout and offsets as k_radix."""
+    comptime assert r == 3 or r == 7 or r == 9, "odd radix with its root in F (order dividing 126)"
+    comptime assert V == 1 or LB == 1
+    comptime h = (r - 1) // 2
+    comptime VL = V * LB
+    comptime VF = SIMD[DType.float32, VL]
+    # 32-bit decode: a 64-bit division is a few hundred instructions on Metal, seven of them per thread
+    var t = UInt32(global_idx.x)
+    if t >= UInt32(o.total):
+        return
+    var inner = Int(t % UInt32(o.inner)) * V
+    var rest = t // UInt32(o.inner)
+    var pre32 = rest % UInt32(o.od)
+    var line = Int(rest // UInt32(o.od)) * LB
+    var hi = Int(pre32 // UInt32(o.od_lo))
+    var lo = Int(pre32 % UInt32(o.od_lo))
+    var pre = Int(pre32)
+    var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
+    var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
+    var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * r * 2
+    var x0 = InlineArray[VF, r](fill=VF(0))
+    var x1 = InlineArray[VF, r](fill=VF(0))
+    comptime for k in range(r):
+        var c = fp_center(base.unsafe_load[width=2, alignment=2](tab + k * 2))  # ct(k), centered
+        var v0: VF
+        var v1: VF
+        comptime if LB > 1:
+            var b0 = SIMD[DType.uint8, VL](0)
+            var b1 = SIMD[DType.uint8, VL](0)
+            comptime for l in range(LB):
+                var v = base.unsafe_load[width=2, alignment=2](src + l * Int(o.so_line) + k * Int(o.sk))
+                b0[l] = v[0]
+                b1[l] = v[1]
+            v0 = b0.cast[DType.float32]()
+            v1 = b1.cast[DType.float32]()
+        else:
+            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + k * Int(o.sk)).deinterleave()
+            v0 = rebind[VF](v[0].cast[DType.float32]())
+            v1 = rebind[VF](v[1].cast[DType.float32]())
+        x0[k] = VF(c[0]) * v0 - VF(c[1]) * v1
+        x1[k] = VF(c[0]) * v1 + VF(c[1]) * v0
+    var cw = InlineArray[Float32, h + 1](fill=0)
+    var sw = InlineArray[Float32, h + 1](fill=0)
+    cw[0] = 1.0
+    comptime for m in range(1, h + 1):
+        var wm = fp_center(base.unsafe_load[width=2, alignment=2](tab + (2 * r + m) * 2))
+        var wn = fp_center(base.unsafe_load[width=2, alignment=2](tab + (2 * r + r - m) * 2))
+        cw[m] = fp_reduce((wm[0] + wn[0]) * 64.0)
+        sw[m] = fp_reduce((wm[0] - wn[0]) * 64.0)
+    # store y_j = rt(j) reduce(y) as it is complete: the live set stays at the pair sums, not r outputs
+    @always_inline
+    @parameter
+    def put(j: Int, v0: VF, v1: VF):
+        var rt = fp_center(base.unsafe_load[width=2, alignment=2](tab + (r + j) * 2))   # rt(j), centered
+        var u0 = fp_reduce(v0)
+        var u1 = fp_reduce(v1)
+        var rr = fp_canonical(VF(rt[0]) * u0 - VF(rt[1]) * u1)
+        var ii = fp_canonical(VF(rt[0]) * u1 + VF(rt[1]) * u0)
+        comptime if LB > 1:
+            comptime for l in range(LB):
+                base.unsafe_store[width=2, alignment=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
+        else:
+            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
+
+    var sa0 = InlineArray[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
+    var sa1 = InlineArray[VF, h + 1](fill=VF(0))
+    var sb0 = InlineArray[VF, h + 1](fill=VF(0))
+    var sb1 = InlineArray[VF, h + 1](fill=VF(0))
+    var y00 = x0[0]
+    var y01 = x1[0]
+    comptime for k in range(1, h + 1):
+        sa0[k] = x0[k] + x0[r - k]
+        sa1[k] = x1[k] + x1[r - k]
+        sb0[k] = x0[k] - x0[r - k]
+        sb1[k] = x1[k] - x1[r - k]
+        y00 += sa0[k]
+        y01 += sa1[k]
+    put(0, y00, y01)
+    comptime for tt in range(1, h + 1):
+        var e0 = x0[0]
+        var e1 = x1[0]
+        var d0 = VF(0)
+        var d1 = VF(0)
+        comptime for k in range(1, h + 1):
+            comptime m = (tt * k) % r
+            comptime idx = m if m <= h else r - m
+            comptime sign = Float32(1.0) if m <= h else Float32(-1.0)
+            e0 = sa0[k].fma(VF(cw[idx]), e0)
+            e1 = sa1[k].fma(VF(cw[idx]), e1)
+            d0 = sb0[k].fma(VF(sw[idx] * sign), d0)
+            d1 = sb1[k].fma(VF(sw[idx] * sign), d1)
+        put(tt, e0 + d0, e1 + d1)
+        put(r - tt, e0 - d0, e1 - d1)
 
 
 comptime RADIX8_TILES = 2        # 8-position tiles per simdgroup of k_radix8
@@ -285,7 +390,13 @@ def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: Devic
     comptime if PROF:
         ctx.synchronize()
         t0 = perf_counter_ns()
+    if o.total >= 1 << 32:
+        raise Error("radix stage too large for the 32-bit thread decode")
     var launched = False
+    comptime if r == 3 or r == 7 or r == 9:
+        comptime assert kin == r and not bytes_in, "odd stages are square F2 stages"
+        ctx.enqueue_function[k_radix_odd[r, V, LB]](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
+        launched = True
     comptime if APPLE8 and r % 8 == 0 and kin % 8 == 0 and r <= 16 and kin <= 16:
         if Int(o.inner) * V >= RADIX8_MIN_INNER:
             comptime kernel8 = k_radix8[r, kin, bytes_in, V, LB]

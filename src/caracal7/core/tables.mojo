@@ -235,7 +235,7 @@ struct TableLayout(TrivialRegisterPassable):
     var winv1: Int      # (h1, h1, 2)   F2: h1^-1 * omega1^(-t k), row k, col t
     var rho1: Int       # (m1)          F: rho1^y
     var rho2: Int       # (m2)
-    var rho1t: Int      # (m1, m1, 2)   F2: rho1^(r y), the radix table of the to_stored digit pass (encode.mojo)
+    var rho1t: Int      # (m1, m1, 2)   F2: the radix table of the to_stored digit pass (encode.mojo): rho1^(r y), or the compact odd block at m1 <= 9
     var rho2t: Int      # DftPlan(m2, m2) stage tables of rho2^(r y), the chain digit's pass (split past 9)
     var rs: RsTables    # level-1 RS domain, absolute offsets
     # residual grid G_l = <g_l>, point j = g_l^j; even j is H_l, odd j the coset (spec 8, 10.2)
@@ -317,9 +317,15 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
         h[t.rho1 + y] = f_pow(SIMD[DType.uint8, 1](d.rho1), y)[0]
     for y in range(p.m2):
         h[t.rho2 + y] = f_pow(SIMD[DType.uint8, 1](d.rho2), y)[0]
-    for r in range(p.m1):
+    if p.m1 > 1 and p.m1 <= 9:                        # the compact odd block of dft.k_radix_odd: no twists, w = rho1
         for y in range(p.m1):
-            _put(h, t.rho1t + (r * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), (r * y) % p.m1)[0], 0))
+            _put(h, t.rho1t + y * 2, F2(1, 0))
+            _put(h, t.rho1t + (p.m1 + y) * 2, F2(1, 0))
+            _put(h, t.rho1t + (2 * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), y)[0], 0))
+    else:                                            # dense (m1, m1), the lane kernel k_radix
+        for r in range(p.m1):
+            for y in range(p.m1):
+                _put(h, t.rho1t + (r * p.m1 + y) * 2, F2(f_pow(SIMD[DType.uint8, 1](d.rho1), (r * y) % p.m1)[0], 0))
     _dft_tables(h, t.rho2t, DftPlan(p.m2, p.m2), F2(d.rho2, 0), 1)
 
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.K())
@@ -336,7 +342,7 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
 
 
 def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, scale: UInt8,
-                twist_in: F2 = F2(1, 0), twist_out: F2 = F2(1, 0)):
+                twist_in: F2 = F2(1, 0), twist_out: F2 = F2(1, 0)) raises:
     """The stage tables of dft.mojo for `root` of order plan.n, `scale` folded into stage 3. At n1 = 1 the
     stage-1 table is all ones (twist_out folded into stage 2), so dft_axis may skip that stage.
     The transform twist_out^j sum_k root^(j k) twist_in^k x[k] (a coset evaluation or its inverse) splits
@@ -358,20 +364,34 @@ def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, sc
                 if n1 == 1:                                  # stage 1 would only apply twist_out^j: fold it here
                     w = ext_mul[1](w, ext_pow[1](twist_out, j3 + n3 * j2))
                 _put(h, at + plan.t2() + ((j3 * n2 + j2) * n2 + k2) * 2, ext_mul[1](w, ext_pow[1](twist_in, n1 * k2)))
+    # the odd stages (nb, then na when split) read compact blocks in the r x r slots (dft.k_radix_odd):
+    # [ct: r column twists][rt: r row twists][w: the r powers of the order-r root], so that
+    # T[j][k] = rt(j) w^(j k) ct(k) with ct(kb) = root^(na jj kb) twist_in^(na kb), w = root^(na n2 n3)
+    if (nb > 1 and (nb > 9 or nb == 5)) or na > 9 or na == 5:
+        raise Error("odd radix outside 3, 7, 9: the compact block needs a root in F (dft.k_radix_odd)")
     for jj in range(n2 * n3):
+        var blk = at + plan.t1() + jj * nb * nb * 2
+        if nb == 1:                                      # n1 = 1: the stage is skipped, the slot unused
+            _put(h, blk, F2(1, 0))
+            continue
+        var wb = ext_pow[1](root, na * n2 * n3)
+        for kb in range(nb):
+            _put(h, blk + kb * 2, ext_mul[1](ext_pow[1](root, (na * jj * kb) % n), ext_pow[1](twist_in, na * kb)))
         for jb in range(nb):
-            var tj = ext_pow[1](twist_out, jj + n2 * n3 * jb) if na == 1 and n1 > 1 else F2(1, 0)
-            for kb in range(nb):
-                var w = ext_mul[1](ext_pow[1](root, (na * (jj + n2 * n3 * jb) * kb) % n), ext_pow[1](twist_in, na * kb))
-                _put(h, at + plan.t1() + ((jj * nb + jb) * nb + kb) * 2, ext_mul[1](w, tj))
-            if na > 1:
+            _put(h, blk + (nb + jb) * 2, ext_pow[1](twist_out, jj + n2 * n3 * jb) if na == 1 and n1 > 1 else F2(1, 0))
+        for m in range(nb):
+            _put(h, blk + (2 * nb + m) * 2, ext_pow[1](wb, m))
+        if na > 1:
+            var wa = ext_pow[1](root, n2 * n3 * nb)
+            for jb in range(nb):
+                var blka = at + plan.ta() + (jb + nb * jj) * na * na * 2
+                var jp = jj + n2 * n3 * jb
+                for ka in range(na):
+                    _put(h, blka + ka * 2, ext_mul[1](ext_pow[1](root, (jp * ka) % n), ext_pow[1](twist_in, ka)))
                 for ja in range(na):
-                    var j = jj + n2 * n3 * (jb + nb * ja)
-                    var tja = ext_pow[1](twist_out, j)
-                    for ka in range(na):
-                        var w = ext_mul[1](ext_pow[1](root, (j * ka) % n), ext_pow[1](twist_in, ka))
-                        _put(h, at + plan.ta() + (((jb + nb * jj) * na + ja) * na + ka) * 2, ext_mul[1](w, tja))
-
+                    _put(h, blka + (na + ja) * 2, ext_pow[1](twist_out, jj + n2 * n3 * (jb + nb * ja)))
+                for m in range(na):
+                    _put(h, blka + (2 * na + m) * 2, ext_pow[1](wa, m))
 
 def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: Domains) raises:
     comptime h1 = p.h1()

@@ -1766,3 +1766,28 @@ the simdgroup op with fewer than 32 lanes and the 10-position E stages wrong. Le
 stages (~40 ms of radix time) could use the symmetric DFT form of `_dft_odd` once the per-prefix tables
 are split into a twist and a plain DFT matrix (4 products per pair instead of 9 at radix 9); the axis-1
 stages (~18 ms) are memory passes that a fused per-line kernel would halve.
+
+## The odd radix stages in the symmetric form, and a 32-bit index decode (2026-09-16, M1 Pro)
+
+The radix 3, 7, 9 stages were 45 ms of the 86 ms radix time left after the simdgroup kernel, dense
+r x r table products at the int32 lane floor (324 real multiplies per position at radix 9). The tables
+`_dft_tables` builds are the product of three simple factors, T[j][k] = rt(j) w^(j k) ct(k): a column
+twist per prefix (the Cooley-Tukey twiddle and twist_in), the plain r-point DFT of a root of order r,
+and a row twist (twist_out, ones in most tables). Every root of odd order here lies in F127 (the odd
+part of a grid axis divides 63), so the DFT has the symmetric form the RS encoder's `_dft_odd` already
+uses, with real c_m = (w^m + w^-m) / 2 and s_m: (r - 1) / 2 real products per pair per lane instead of
+r complex ones. The odd slots of the tables now hold [ct][rt][w] (3 r F2 values fit the r x r slot for
+r >= 3), `rho1t` the same for 1 < m1 <= 9, and `k_radix_odd` (fp32 lanes, everything exact: |x'| <=
+15876 after the centered twist, sums below 8.1 M, reduced outputs times the centered row twist below
+24 K) replaces `k_radix` for odd r <= 9 on every backend; m1 = 21 keeps the dense table and kernel.
+100 multiplies per position at radix 9 instead of 324.
+
+The first version held all r outputs, the pair sums and the inputs at once (about 200 registers at
+four positions per thread against the lane kernel's 90) and gained nothing; storing each output pair
+as it completes gave 45 -> 33 ms. The rest was the index decode: seven 64-bit divisions per thread
+(inner, prefix, line, od_lo, tabmod) at a few hundred instructions each. In 32-bit (every count is far
+below 2^32) both lane kernels gained, the odd stages 33 -> 28 ms, the radix 4 and 8 lane stages up to
+2x; the `alignment=` hints of the sibling kernel (provable: the two odd-length byte tables pair up,
+every region and stride is even) took the odd stages to 22 ms, the radix sum 86 -> 58 ms. Chain prove
+on the M1 Pro ~289 -> ~270 ms (2.2 ms per hash); LDE 25 -> 17 ms. The 3090 runs the same lane kernels
+and should gain in proportion (not measured).
