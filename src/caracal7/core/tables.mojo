@@ -15,6 +15,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 from caracal7.core.field import F2, F4, f_add, f_sub, f_pow, f_mul, f_inv, ext_mul, ext_pow, ext_embed
 from caracal7.core.params import Params
 from caracal7.core.dft import DftPlan
+from caracal7.core.backend import frag8
 
 comptime F2_ORDER = 16128            # |F2*| = 127^2 - 1
 comptime F4_ORDER = 260144640        # |F4*| = 127^4 - 1
@@ -369,6 +370,20 @@ def _dft_tables(h: HostBuffer[DType.uint8], at: Int, plan: DftPlan, root: F2, sc
     # T[j][k] = rt(j) w^(j k) ct(k) with ct(kb) = root^(na jj kb) twist_in^(na kb), w = root^(na n2 n3)
     if (nb > 1 and (nb > 9 or nb == 5)) or na > 9 or na == 5:
         raise Error("odd radix outside 3, 7, 9: the compact block needs a root in F (dft.k_radix_odd)")
+    if plan.has_dense():
+        # the dense (k_in, n) table of dft.k_dft8, every twist folded, in fragment order: 8x8 fragment
+        # (kq, jq) is 32 lanes of 4 bytes, lane (fr, fc) = frag8 holding T[kq 8 + fr, jq 8 + fc + (0, 1)],
+        # so a simdgroup's fragment load is one contiguous 128-byte line
+        for kq in range(plan.k_in // 8):
+            for jq in range(n // 8):
+                for lane in range(32):
+                    var rc = frag8(lane)
+                    var k = kq * 8 + rc[0]
+                    for el in range(2):
+                        var j = jq * 8 + rc[1] + el
+                        var w = f_mul(ext_pow[1](root, (j * k) % n), F2(scale))
+                        w = ext_mul[1](w, ext_mul[1](ext_pow[1](twist_in, k), ext_pow[1](twist_out, j)))
+                        _put(h, at + plan.dense() + ((kq * (n // 8) + jq) * 32 + lane) * 4 + el * 2, w)
     for jj in range(n2 * n3):
         var blk = at + plan.t1() + jj * nb * nb * 2
         if nb == 1:                                      # n1 = 1: the stage is skipped, the slot unused

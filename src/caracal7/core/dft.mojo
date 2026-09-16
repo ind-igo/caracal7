@@ -30,6 +30,9 @@ from caracal7.core.bytes import Base
 from caracal7.core.arena import Arena
 
 
+comptime DENSE_MAX = 64          # n of the dense short-axis product k_dft8: at most 8 x 4 table fragments per output tile
+
+
 @fieldwise_init
 struct DftPlan(TrivialRegisterPassable):
     """n = n1 n2 n3 and the nonzero inputs k3 of stage 3 (k_in = n1 n2 k3); n1 = na nb, na = 1 when
@@ -82,8 +85,15 @@ struct DftPlan(TrivialRegisterPassable):
         """Stage a when split: n2 n3 nb tables of na x na."""
         return self.t1() + self.n2 * self.n3 * self.nb * self.nb * 2
 
-    def bytes(self) -> Int:
+    def dense(self) -> Int:
+        """The dense (k_in, n) table T[k, j] of the short axis (k_dft8), after the stage tables."""
         return self.ta() + (self.n2 * self.n3 * self.nb * self.na * self.na * 2 if self.na > 1 else 0)
+
+    def has_dense(self) -> Bool:
+        return self.n1 == 1 and self.n <= DENSE_MAX and self.n % 8 == 0 and self.k_in % 8 == 0 and self.k_in <= 32
+
+    def bytes(self) -> Int:
+        return self.dense() + (self.k_in * self.n * 2 if self.has_dense() else 0)
 
 
 @fieldwise_init
@@ -412,9 +422,117 @@ def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: Devic
         print("    radix", r, "kin", kin, "V", V, "LB", LB, "threads", o.total, "us", (perf_counter_ns() - t0) // 1000)
 
 
-# TODO(perf): the axis-1 stages (W = 1) run 1 to 5 ms per stage against a memory bound near 1 ms, and are
-# the largest part of the LDE (60 ms) and the encodes (96 ms) at the ECDSA grid. Next step: fuse the three
-# stages of a line in threadgroup memory, one read of the input and one write of the output.
+comptime DFT8_TILES = 8          # 8-position tiles per simdgroup of k_dft8: the table fragments load once per thread
+comptime DFT8_THREADS = 128
+comptime DFT8_SG = DFT8_THREADS // 32
+
+
+def k_dft8[n: Int, kin: Int, bytes_in: Bool](base: Base, o: Radix):
+    """The whole short axis as one dense product on the 8x8 fp16 simdgroup op (backend.mma8): X[m, j] =
+    sum_k x[m, k] T[k, j] over the positions m = line W + w (W = o.inner, o.total positions), T the dense
+    (kin, n) table at o.tab in fragment order (tables._dft_tables). The staged form costs fewer multiply-adds (n3 + n2 per
+    output against kin) but two lane passes; the op runs at 6x the lane rate on complex products (12x on
+    F bytes) and this is one pass. A tile is 8 positions: lane (fr, fc) loads inputs k = kq 8 + fc, fc + 1
+    of position tile 8 + fr as one 2 SI-byte load when k is the fast index (sk = SI, W = 1), else two; a
+    table fragment (kq, jq) is one contiguous 128-byte load per simdgroup (L1-resident); the lane's outputs j = jq 8 + fc,
+    fc + 1 store as 4 bytes when tj = 2. Complex over the reals: re += a0 b0 - a1 b1, im += a0 b1 + a1 b0
+    (a1 = 0 for F bytes). Bytes below 127 are exact in fp16 and 2 kin <= 64 products of 126^2 stay below
+    2^24 in the fp32 accumulator, so fp_canonical is exact. Lanes past the last position load zeros and
+    skip the store; the simdgroup ops themselves never sit under a per-lane branch. Measured on the M1 Pro
+    (2026-09-17, chain grid): 1.5 to 1.7x the two lane stages per call; the table fragments in registers
+    beat a load per use by 10%, the 3-op complex product lost (the kernel is bound by the 8 lines an
+    instruction touches at W = 1, not by the op), and a fused two-stage lane kernel was 2 to 3x slower
+    than the two stages (the lane stages are ALU-bound at the lane rate, not memory-bound)."""
+    comptime assert n % 8 == 0 and kin % 8 == 0 and n <= DENSE_MAX and kin <= 32, "k_dft8 tiles by 8"
+    comptime KQ = kin // 8
+    comptime JQ = n // 8
+    comptime SI = 1 if bytes_in else 2
+    var sg = Int(thread_idx.x) // 32
+    var lane = Int(lane_id())
+    var rc = frag8(lane)
+    var fr = rc[0]
+    var fc = rc[1]
+    var rows = Int(o.total)
+    var W = UInt32(o.inner)
+    var contig_k = Int(o.sk) == SI
+    var contig_j = Int(o.tj) == 2
+    var tab = Int(o.tab)
+    var bf0 = InlineArray[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # T fragments, re
+    var bf1 = InlineArray[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # im
+    comptime for i in range(KQ * JQ):
+        var f = base.unsafe_load[width=4](tab + (i * 32 + lane) * 4).cast[DType.float16]()
+        bf0[i] = SIMD[DType.float16, 2](f[0], f[2])
+        bf1[i] = SIMD[DType.float16, 2](f[1], f[3])
+    for t in range(DFT8_TILES):
+        var tile = (Int(block_idx.x) * DFT8_SG + sg) * DFT8_TILES + t
+        if tile * 8 >= rows:                         # uniform over the simdgroup
+            break
+        var m = tile * 8 + fr
+        var ok = m < rows
+        var line = Int(UInt32(m) // W)
+        var w = Int(UInt32(m) % W)
+        var src = Int(o.src) + line * Int(o.so_line) + w * Int(o.si)
+        var dst = Int(o.dst) + line * Int(o.to_line) + w * Int(o.ti)
+        var a0 = InlineArray[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
+        var a1 = InlineArray[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
+        if ok:
+            comptime for kq in range(KQ):
+                var off = src + (kq * 8 + fc) * Int(o.sk)
+                comptime if bytes_in:
+                    var v: SIMD[DType.uint8, 2]
+                    if contig_k:
+                        v = base.unsafe_load[width=2](off)
+                    else:
+                        v = SIMD[DType.uint8, 2](base[unsafe_offset=off], base[unsafe_offset=off + Int(o.sk)])
+                    a0[kq] = v.cast[DType.float16]()
+                else:
+                    var v: SIMD[DType.uint8, 4]
+                    if contig_k:
+                        v = base.unsafe_load[width=4](off)
+                    else:
+                        var u0 = base.unsafe_load[width=2](off)
+                        var u1 = base.unsafe_load[width=2](off + Int(o.sk))
+                        v = SIMD[DType.uint8, 4](u0[0], u0[1], u1[0], u1[1])
+                    var f = v.cast[DType.float16]()
+                    a0[kq] = SIMD[DType.float16, 2](f[0], f[2])
+                    a1[kq] = SIMD[DType.float16, 2](f[1], f[3])
+        comptime for jq in range(JQ):
+            var re = SIMD[DType.float32, 2](0)
+            var im = SIMD[DType.float32, 2](0)
+            comptime for kq in range(KQ):
+                var b0 = bf0[kq * JQ + jq]
+                var b1 = bf1[kq * JQ + jq]
+                re = mma8(a0[kq], b0, re)
+                im = mma8(a0[kq], b1, im)
+                comptime if not bytes_in:
+                    re = mma8(-a1[kq], b1, re)
+                    im = mma8(a1[kq], b0, im)
+            var cr = fp_canonical(re)
+            var ci = fp_canonical(im)
+            if ok:
+                var off = dst + (jq * 8 + fc) * Int(o.tj)
+                if contig_j:
+                    base.unsafe_store[width=4](off, SIMD[DType.uint8, 4](cr[0], ci[0], cr[1], ci[1]))
+                else:
+                    base.unsafe_store[width=2](off, SIMD[DType.uint8, 2](cr[0], ci[0]))
+                    base.unsafe_store[width=2](off + Int(o.tj), SIMD[DType.uint8, 2](cr[1], ci[1]))
+
+
+def _stage_dense[n: Int, kin: Int, bytes_in: Bool](ctx: DeviceContext, arena: Arena, o: Radix) raises:
+    comptime PROF = is_defined["CARACAL_DFT_PROFILE"]()
+    var t0 = perf_counter_ns()
+    comptime if PROF:
+        ctx.synchronize()
+        t0 = perf_counter_ns()
+    if o.total >= 1 << 32 or o.inner >= 1 << 32:
+        raise Error("dense stage too large for the 32-bit position decode")
+    var tiles = ceildiv(Int(o.total), 8)
+    ctx.enqueue_function[k_dft8[n, kin, bytes_in]](arena.buf, o, grid_dim=ceildiv(tiles, DFT8_SG * DFT8_TILES), block_dim=DFT8_THREADS)
+    comptime if PROF:
+        ctx.synchronize()
+        print("    dense", n, "kin", kin, "positions", o.total, "us", (perf_counter_ns() - t0) // 1000)
+
+
 def _vcap(r: Int, V: Int) -> Int:
     """Positions per thread for a radix-r stage: at most 2 from radix 16 (r V input lanes twice, plus r V
     accumulators, must stay in registers)."""
@@ -452,6 +570,14 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     var Ri = W if bytes_in else R
     var dl = dst_line if dst_line > 0 else n * R
     var dj = dst_j if dst_j > 0 else R
+    comptime if APPLE8 and plan.has_dense():
+        # the short axis as one dense product on the 8x8 op: positions (line, w), rows k at Ri, outputs j at dj
+        if not bytes_in or W == 1:                  # byte rows wider than one position stay on the stages
+            _stage_dense[n, h, bytes_in](ctx, arena, Radix(
+                src=src, so_line=h * Ri, so_pre=0, so_pre_lo=0, sk=Ri, si=2,
+                dst=dst, to_line=dl, to_pre=0, to_pre_lo=0, tj=dj, ti=2,
+                tab=tab + plan.dense(), od=1, od_lo=1, tabmod=1, inner=W, total=lines * W))
+            return
     comptime if n1 == 1:
         if scratch != src:
             # the odd part is 1, so the last stage would be a copy into the output layout: stage 3 into

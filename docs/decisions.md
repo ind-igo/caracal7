@@ -1791,3 +1791,29 @@ below 2^32) both lane kernels gained, the odd stages 33 -> 28 ms, the radix 4 an
 every region and stride is even) took the odd stages to 22 ms, the radix sum 86 -> 58 ms. Chain prove
 on the M1 Pro ~289 -> ~270 ms (2.2 ms per hash); LDE 25 -> 17 ms. The 3090 runs the same lane kernels
 and should gain in proportion (not measured).
+
+## The short axis as one dense product on the 8x8 op (2026-09-17, M1 Pro)
+
+The axis-1 stages (h1 = 32: radix 8 then 4, or 8 then 8 for the LDE's 32 -> 64) looked like memory
+passes at 1 to 3 ms each against a 0.25 ms bandwidth floor. They are not: the arithmetic model puts the
+radix-8 lane stage at 0.6 T lane-ops/s, the M1 lane rate, so the stages are ALU-bound and fusing the
+passes cannot pay. Measured the hard way first: a fused two-stage lane kernel (one thread per position,
+the n2 n3 intermediates in registers, vector loads of the contiguous 32-byte line) ran 2 to 3x slower
+than the two stages it replaced, and a 16-bit SIMD version crashed the Metal compiler.
+
+What pays is the op: `k_dft8` treats the short axis as the dense product X[m, j] = sum_k x[m, k] T[k, j]
+over every position m = (line, w) on the 8x8 fp16 simdgroup op, with T the (k_in, n) table with every
+twist folded (`DftPlan.dense`, filled by `_dft_tables` when n1 = 1 and n <= 64). The dense form costs
+2.7x the multiply-adds of the staged one, at 6x the lane rate on complex products (12x on F bytes),
+and it is one pass. A tile is 8 positions; lane (fr, fc) loads inputs k = kq 8 + fc, fc + 1 of its
+position as one 2- or 4-byte load, and the outputs j = jq 8 + fc, fc + 1 store as 4 bytes when they
+are adjacent. The table sits in fragment order (an 8x8 fragment is 32 lanes of 4 bytes) so a
+simdgroup's fragment load is one 128-byte line instead of 8, and every thread holds the fragments in
+registers across 8 tiles. Microbench medians on the chain grid, per call: inv1 (bytes) 1.58 -> 0.93 ms,
+fwd1 (32 -> 64, F2) 3.55 -> 2.40 ms, hfwd1 (W = 4) 1.77 -> 1.33 ms; chain prove ~3 to 5 ms less
+(~265 ms, the A/B ran under load 12). Tried and dropped: a load per fragment use (10% slower on bytes),
+the 3-op complex product (slower on the 64-output call: the kernel is bound by the 8 lines one
+instruction touches at W = 1, not by the op). Left for later: at W >= 2 the transposed orientation
+(rows j, columns positions) would make every access 4 bytes and could halve hfwd1; the long axis stays
+staged (a dense 8064-point product is out of reach). Only the Apple 8x8 path changes; the lane and
+NVIDIA builds keep the staged kernels, and the dense table costs at most 4 KB per plan.
