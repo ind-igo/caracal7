@@ -1729,3 +1729,40 @@ A lesson on the way: the B load carried `alignment=8` because the first splits w
 72 x 32 test grid (9 slots per split) returned wrong bytes: Metal honours a false hint just as NVPTX
 punishes a missing one. A hint must be provable from the layout (the A hint is: region base, row stride
 and tile offset are multiples of 4).
+
+## The radix-8 and radix-16 DFT stages on the 8x8 simdgroup op (2026-09-16, M1 Pro)
+
+`-D CARACAL_DFT_PROFILE` on the 125-hash chain: the 43 radix launches of a prove sum to 101 ms of 316
+(profile build), the four LDE axis-2 stages 24 ms. The radix 16 x 16 stage of the LDE matched the int32
+lane model exactly: 1.58 M threads times 4096 multiply-adds at 0.75 T lane-ops/s is 8.6 ms, measured 8.4,
+against a memory floor near 1 ms. So `k_radix` sits on the same ALU ceiling as the old open kernel, and the
+same op applies: a stage is Y = T X per prefix, T the r x kin table in F2, which over the reals is
+A = [[W0, -W1], [W1, W0]] (2r x 2kin) times the (plane, k) x position byte matrix, exact in fp16 in and
+fp32 out (2 kin <= 32 products of bytes below 127 stay under 2^19).
+
+Three versions, all correct, two of them slower than the lane kernel:
+1. Per-lane byte loads and stores straight from global memory, tiles of 8 positions, four 64-bit
+   divisions per tile to decode (prefix, line, position) from a flat index: LDE 34 -> 133 ms. A byte
+   load per fragment element touches 8 rows per instruction, and a 64-bit division is a few hundred
+   instructions on Metal (the lane kernel has seven per thread too, amortised over r kin multiply-adds).
+2. Spans of 32 positions staged through threadgroup memory by 8-byte loads and stores (the open design),
+   still a flat index: LDE 128 ms. With a 3D grid (span chunk, line group, prefix) and no per-span
+   division: radix 16 stages 40% faster than the lanes, but radix 4, 7, 9 two to ten times slower.
+   Staging costs about one shared store per input byte and one load per output byte plus three barriers
+   per span, which at radix 9 is as much as the lane kernel's entire work per position, and lines of 8
+   or 10 positions (the axis-1 and E-valued stages) leave a span a quarter full.
+3. The kept one, `k_radix8`: for r and kin in {8, 16} a lane's fragment rows pair up, so one 4-byte load
+   of input k at the lane's two positions (re, im, re, im) feeds both plane fragments and the lane's
+   output rows j and r + j are the (re, im) of one output, stored as 4 bytes. No threadgroup memory, no
+   barrier, no division: grid (tile chunks, line groups, prefixes), a block holds one prefix's A
+   fragments and walks 4 lines by 2 tiles per simdgroup. Radix 16 x 16 at the LDE 8.4 -> 4.2 ms, 16 x 8
+   5.1 -> 2.3, the quotient's 16 x 16 6.8 -> 3.0, every 8 and 16 stage 2 to 3x; the radix sum 101 -> 86
+   ms, LDE 34 -> 25, chain prove ~300 -> ~290 ms. Radix 7 and 9 stay on the lanes (an odd radix needs
+   3 x 3 padded tiles and a lane shuffle to pair re and im; the estimate is parity, not tried), as do
+   stages with fewer than 8 positions per line.
+
+A partial tile at a line end must mask per lane, not break: a `break` on the lane's own position left
+the simdgroup op with fewer than 32 lanes and the 10-position E stages wrong. Left for later: the odd
+stages (~40 ms of radix time) could use the symmetric DFT form of `_dft_odd` once the per-prefix tables
+are split into a twist and a plain DFT matrix (4 products per pair instead of 9 at radix 9); the axis-1
+stages (~18 ms) are memory passes that a fused per-line kernel would halve.

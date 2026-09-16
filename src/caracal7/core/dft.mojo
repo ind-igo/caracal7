@@ -21,11 +21,11 @@ from std.math import ceildiv
 from std.sys import is_defined
 from std.time import perf_counter_ns
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx, lane_id
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, f_reduce_signed
-from caracal7.core.backend import BACKEND
+from caracal7.core.field import F2, f_reduce_signed, fp_canonical
+from caracal7.core.backend import BACKEND, APPLE8, frag8, mma8
 from caracal7.core.bytes import Base
 from caracal7.core.arena import Arena
 
@@ -174,6 +174,110 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
             base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
 
 
+comptime RADIX8_TILES = 2        # 8-position tiles per simdgroup of k_radix8
+comptime RADIX8_LPB = 4          # lines per block: the table fragments load once per block
+comptime RADIX8_THREADS = 128
+comptime RADIX8_SG = RADIX8_THREADS // 32   # simdgroups per block: a block covers 64 positions of each of its lines
+comptime RADIX8_MIN_INNER = 8    # stages with fewer contiguous positions per line keep the lane kernel
+
+
+def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
+    """k_radix on the 8x8 fp16 simdgroup op (backend.mma8) for r, kin in {8, 16}. A stage is Y = T X per
+    prefix: T the r x kin table in F2, X the kin inputs of every position (line, inner) of the prefix.
+    Over the reals that is A = [[W0, -W1], [W1, W0]] (2r x 2kin, rows (plane, j), columns (plane, k);
+    kin columns of [W0; W1] when the input is F bytes) times B[(plane, k), position] = the input byte.
+    With r and kin multiples of 8 a lane's fragment rows pair up: row tile kt holds input k = (kt mod
+    kin / 8) 8 + fr of plane kt / (kin / 8), so one 4-byte load of input k at the lane's two positions
+    (re, im, re, im) feeds both planes, and the lane's output rows j and r + j of tile pairs are the
+    (re, im) of one output, stored as 4 bytes. No threadgroup memory, no barrier. Grid (tile chunks,
+    line groups, prefixes): a block holds one prefix's A fragments in registers and walks RADIX8_LPB
+    lines, each simdgroup RADIX8_TILES tiles of 8 positions; the per-tile coordinates need no division
+    (a 64-bit division is a few hundred instructions on Metal; the prefix decode is once per thread). Bytes below 127 are exact in fp16, their
+    products in the fp32 accumulator; 2 kin <= 32 terms stay below 2^19, so every sum is exact before
+    fp_canonical. V and LB only scale the descriptor's counts: `inner` counts V positions, `total`
+    counts LB lines. Radices 7 and 9 stay on the lane kernel: measured slower here (2026-09-16)."""
+    comptime assert r % 8 == 0 and kin % 8 == 0 and r <= 16 and kin <= 16, "k_radix8 pairs fragment rows"
+    comptime KQ = kin // 8                          # input row tiles per plane
+    comptime KT = KQ if bytes_in else 2 * KQ         # real K tiles (plane, k tile)
+    comptime RQ = r // 8                            # output row tiles per plane
+    comptime SI = 1 if bytes_in else 2
+    var sg = Int(thread_idx.x) // 32
+    var rc = frag8(Int(lane_id()))
+    var fr = rc[0]
+    var fc = rc[1]
+    var inner = Int(o.inner) * V
+    var lines = (Int(o.total) // (Int(o.od) * Int(o.inner))) * LB
+    var pre = Int(block_idx.z)
+    var hi = pre // Int(o.od_lo)
+    var lo = pre % Int(o.od_lo)
+    var src_pre = Int(o.src) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo)
+    var dst_pre = Int(o.dst) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo)
+    var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
+    var af = InlineArray[SIMD[DType.float16, 2], 2 * RQ * KT](fill=SIMD[DType.float16, 2](0))
+    comptime for jt in range(2 * RQ):
+        comptime po = jt // RQ
+        var j = (jt % RQ) * 8 + fr
+        comptime for kt in range(KT):
+            comptime pi = kt // KQ
+            var v = SIMD[DType.float16, 2](0)
+            comptime for el in range(2):
+                var k = (kt % KQ) * 8 + fc + el
+                var w = base.unsafe_load[width=2](tab + (j * kin + k) * 2)
+                var x = Float32(w[0]) if po == pi else Float32(w[1])
+                comptime if po == 0 and pi == 1:
+                    x = -x
+                v[el] = x.cast[DType.float16]()
+            af[jt * KT + kt] = v
+    var tile0 = (Int(block_idx.x) * RADIX8_SG + sg) * RADIX8_TILES
+    for l in range(RADIX8_LPB):
+        var line = Int(block_idx.y) * RADIX8_LPB + l
+        if line >= lines:                            # uniform over the block
+            return
+        var src_line = src_pre + line * Int(o.so_line)
+        var dst_line = dst_pre + line * Int(o.to_line)
+        for t in range(RADIX8_TILES):
+            var p0 = (tile0 + t) * 8
+            if p0 >= inner:                          # uniform over the simdgroup
+                break
+            var p = p0 + fc                          # the lane's positions p, p + 1; past the line end they are masked
+            var ok0 = p < inner
+            var ok1 = p + 1 < inner
+            var acc = InlineArray[SIMD[DType.float32, 2], 2 * RQ](fill=SIMD[DType.float32, 2](0))
+            comptime for kq in range(KQ):
+                var off = src_line + (kq * 8 + fr) * Int(o.sk) + p * SI
+                comptime if bytes_in:
+                    var vb = SIMD[DType.uint8, 2](0)
+                    if ok1:
+                        vb = base.unsafe_load[width=2](off)
+                    elif ok0:
+                        vb[0] = base[unsafe_offset=off]
+                    var bf = vb.cast[DType.float16]()
+                    comptime for jt in range(2 * RQ):
+                        acc[jt] = mma8(af[jt * KT + kq], bf, acc[jt])
+                else:
+                    var vb = SIMD[DType.uint8, 4](0)
+                    if ok1:
+                        vb = base.unsafe_load[width=4](off)
+                    elif ok0:
+                        vb[0] = base[unsafe_offset=off]
+                        vb[1] = base[unsafe_offset=off + 1]
+                    var fb = vb.cast[DType.float16]()
+                    var b0 = SIMD[DType.float16, 2](fb[0], fb[2])      # plane 0 at p, p + 1
+                    var b1 = SIMD[DType.float16, 2](fb[1], fb[3])      # plane 1
+                    comptime for jt in range(2 * RQ):
+                        acc[jt] = mma8(af[jt * KT + kq], b0, acc[jt])
+                        acc[jt] = mma8(af[jt * KT + KQ + kq], b1, acc[jt])
+            comptime for jq in range(RQ):
+                var re = fp_canonical(acc[jq])
+                var im = fp_canonical(acc[RQ + jq])
+                var off = dst_line + (jq * 8 + fr) * Int(o.tj) + p * Int(o.ti)
+                if ok1:
+                    base.unsafe_store[width=4](off, SIMD[DType.uint8, 4](re[0], im[0], re[1], im[1]))
+                elif ok0:
+                    base[unsafe_offset=off] = re[0]
+                    base[unsafe_offset=off + 1] = im[0]
+
+
 def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: DeviceContext, arena: Arena, o: Radix) raises:
     comptime kernel = k_radix[r, kin, bytes_in, V, LB]
     comptime PROF = is_defined["CARACAL_DFT_PROFILE"]()      # -D CARACAL_DFT_PROFILE: synchronize and print every stage
@@ -181,13 +285,23 @@ def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: Devic
     comptime if PROF:
         ctx.synchronize()
         t0 = perf_counter_ns()
-    ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
+    var launched = False
+    comptime if APPLE8 and r % 8 == 0 and kin % 8 == 0 and r <= 16 and kin <= 16:
+        if Int(o.inner) * V >= RADIX8_MIN_INNER:
+            comptime kernel8 = k_radix8[r, kin, bytes_in, V, LB]
+            var lines = (Int(o.total) // (Int(o.od) * Int(o.inner))) * LB
+            var tiles_per_line = ceildiv(Int(o.inner) * V, 8)
+            ctx.enqueue_function[kernel8](arena.buf, o, grid_dim=(ceildiv(tiles_per_line, RADIX8_SG * RADIX8_TILES), ceildiv(lines, RADIX8_LPB), Int(o.od)),
+                                          block_dim=RADIX8_THREADS)
+            launched = True
+    if not launched:
+        ctx.enqueue_function[kernel](arena.buf, o, grid_dim=ceildiv(Int(o.total), BACKEND.block), block_dim=BACKEND.block)
     comptime if PROF:
         ctx.synchronize()
         print("    radix", r, "kin", kin, "V", V, "LB", LB, "threads", o.total, "us", (perf_counter_ns() - t0) // 1000)
 
 
-# TODO(perf): the axis-1 stages (W = 1) run 5 to 10 ms per stage against a memory bound near 1 ms, and are
+# TODO(perf): the axis-1 stages (W = 1) run 1 to 5 ms per stage against a memory bound near 1 ms, and are
 # the largest part of the LDE (60 ms) and the encodes (96 ms) at the ECDSA grid. Next step: fuse the three
 # stages of a line in threadgroup memory, one read of the input and one write of the output.
 def _vcap(r: Int, V: Int) -> Int:
