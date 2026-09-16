@@ -428,18 +428,21 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
         for k in range(h1):
             acc = f_add(acc, ext_pow[1](d.g1, ((2 * diff + 1) * k) % (2 * h1)))
         q1row.append(f_mul(f_mul(acc, inv_h1), F2(64)))
-    var cos = List[F2](capacity=h1 * 2 * h1)          # (t, j): the coset map
-    for tt in range(h1):
-        for j in range(2 * h1):
-            cos.append(F2(63, 0) if j == 2 * tt + 1 else (q1row[(tt - j // 2) % h1] if j % 2 == 0 else F2(0)))
+    # q1m[k][j] = sum_t qinv1[k][t] cos[t][j] with qinv1[k][t] = g1^-k / h1 * omega1^(-t k) and cos[t][2t+1] = 63,
+    # cos[t][2s] = q1row[(t - s) mod h1]: the even columns are a circular convolution, omega1^(-s k) qhat[k]
+    # with qhat[k] = sum_d omega1^(-d k) q1row[d]; O(h1^2), not the dense triple product
+    var qhat = List[F2](capacity=h1)
     for k in range(h1):
-        for j in range(2 * h1):
-            var acc = F2(0)
-            for tt in range(h1):
-                var w = f_mul(ext_pow[1](g1_inv, k), inv_h1)                   # g1^-k / h1
-                var qi = ext_mul[1](w, ext_pow[1](g1_inv, (2 * tt * k) % (2 * h1)))
-                acc = f_add(acc, ext_mul[1](qi, cos[tt * 2 * h1 + j]))
-            _put(h, t.q1m + (k * 2 * h1 + j) * 2, acc)
+        var acc = F2(0)
+        for dd in range(h1):
+            acc = f_add(acc, ext_mul[1](ext_pow[1](g1_inv, (2 * dd * k) % (2 * h1)), q1row[dd]))
+        qhat.append(acc)
+    for k in range(h1):
+        var wk = f_mul(ext_pow[1](g1_inv, k), inv_h1)                          # g1^-k / h1
+        for s in range(h1):
+            var om = ext_mul[1](wk, ext_pow[1](g1_inv, (2 * s * k) % (2 * h1)))  # g1^-k / h1 * omega1^(-s k)
+            _put(h, t.q1m + (k * 2 * h1 + 2 * s) * 2, ext_mul[1](om, qhat[k]))
+            _put(h, t.q1m + (k * 2 * h1 + 2 * s + 1) * 2, f_mul(om, F2(63)))
         for tt in range(h1):
             var wi = _get(h, t.winv1 + (k * h1 + tt) * 2)
             _put(h, t.q2m + (k * h1 + tt) * 2, f_mul(wi, F2(63)))

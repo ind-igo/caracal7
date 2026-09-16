@@ -657,7 +657,7 @@ def to_packed[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout, tab: Ta
 
 
 def pack[p: Params](ctx: DeviceContext, arena: Arena, e: EncLayout) raises:
-    """stored -> packed. Also the entry point of the quotient tree, which writes `stored` directly."""
+    """stored -> packed."""
     comptime k4 = k_pack[p]
     ctx.enqueue_function[k4](arena.buf, Buf[1](e.stored), Buf[4](e.packed), Int32(e.columns),
                              grid_dim=grid(e.columns * p.N() // 4), block_dim=BACKEND.block)
