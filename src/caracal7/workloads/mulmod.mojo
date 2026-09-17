@@ -295,13 +295,8 @@ def _lane(L: Int, name: String) -> String:
     return "l" + String(L) + name
 
 
-def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True) raises -> Statement:
-    """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
-    `circuit` (default one product of public operands): see `Op`. `pin` puts the circuit bytes at the head
-    of the public inputs (a workload whose circuit is fixed in code needs no header)."""
-    var ops = circuit.copy() if len(circuit) > 0 else single_op()
-    var at = _place(ops)
-    var st = Statement()
+def product_columns(mut st: Statement) raises:
+    """The product lane's W columns: a's pieces, b, the coefficient bits, r and the ripple carries."""
     for t in range(PIECES):
         for j in range(Q):
             st.col("a" + String(t) + String(j), BIT)
@@ -316,6 +311,86 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bo
     for k in range(CARRY):
         for j in range(Q):
             st.col(_y(k, j), BIT)
+
+
+def plain_fingerprint(mut st: Statement, acc: String, name: String, rz: List[Int]) raises:
+    """Accumulator `acc`: the plain fingerprint (at zeta) of the Q-column value `name`."""
+    var terms = List[Term]()
+    for j in range(Q):
+        terms.append(Term(1, st.read(name + String(j)), chal=rz[j]))
+    st.horner(acc, terms, scale=rz[Q])
+
+
+def product_certificate(mut st: Statement, zeros: Bool = True) raises -> List[Int]:
+    """The product lane on a statement with `product_columns` and the publics `s{t}` (piece rows) and `bd`
+    (b's bound): the derived elements rz[10 t + k] = rho^t zeta^k (element indices, -1 for 1, returned), the
+    accumulators ra (a piece-weighted), ha (a plain), rb, rc, the chain-end identity zeta^6 R_A R_B = R_C,
+    the carry ripple into r, the coefficient alias, the piece selection, b's bound and (`zeros`) the zero
+    rows on the idle row's carries."""
+    var rz = List[Int](length=10 * PIECES, fill=-1)
+    rz[1] = ZETA
+    for k in range(2, 10):
+        rz[k] = st.derived(CHAL_MUL, rz[k - 1], ZETA)
+    rz[10] = RHO
+    rz[20] = st.derived(CHAL_MUL, RHO, RHO)
+    for t in range(1, PIECES):
+        for k in range(1, 10):
+            rz[10 * t + k] = st.derived(CHAL_MUL, rz[10 * t], rz[k])
+    var ia = List[Term]()
+    for t in range(PIECES):
+        for j in range(Q):
+            ia.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[10 * t + j]))
+    st.horner("ra", ia, scale=rz[Q])
+    var ih = List[Term]()
+    for t in range(PIECES):
+        for j in range(Q):
+            ih.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[j]))
+    st.horner("ha", ih, scale=rz[Q])
+    plain_fingerprint(st, "rb", "b", rz)
+    var ic = List[Term]()
+    for t in range(PIECES):
+        for m in range(CBITS):
+            for j in range(Q):
+                ic.append(Term(1 << m, st.read(_c(t, m, j)), chal=rz[10 * t + j + 6 - m]))
+    st.horner("rc", ic, scale=rz[Q])
+    st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb"), chal=rz[6]), Term(-1, st.read("rc"))])
+    # ripple per position: pile + carry in - r - 2 carry out; position 0 takes the carry from the next row's position 3
+    for j in range(Q):
+        var terms = List[Term]()
+        for t in range(PIECES):
+            for m in range(CBITS):
+                terms.append(Term(1, st.read(_c(t, m, j))))
+        for k in range(CARRY):
+            terms.append(Term(1 << k, st.read(_y(k, j - 1)) if j > 0 else st.read(_y(k, Q - 1), k1=1)))
+        terms.append(Term(-1, st.read("r" + String(j))))
+        for k in range(CARRY):
+            terms.append(Term(-(2 << k), st.read(_y(k, j))))
+        st.family("carry" + String(j), terms)
+    # alias b6 b5 = 0 for the coefficient at each position: bit 6 sits six slots up, bit 5 five
+    for t in range(PIECES):
+        for j in range(Q):
+            st.family("alias" + String(t) + String(j), [Term(1, st.read(_c(t, 6, (j + 6) % Q), k1=(ROWS - (j + 6) // Q) % ROWS),
+                                                              st.read(_c(t, 5, (j + 5) % Q), k1=(ROWS - (j + 5) // Q) % ROWS))])
+    for t in range(PIECES):
+        for j in range(Q):
+            st.family("piece" + String(t) + String(j), [Term(1, st.read("a" + String(t) + String(j))), Term(-1, st.read("s" + String(t)), st.read("a" + String(t) + String(j)))])
+    # b below 2^260 like the add-lane values: a hint operand has no factor or wire to bound it
+    for j in range(Q):
+        st.family("bbd" + String(j), [Term(1, st.read("b" + String(j))), Term(-1, st.read("bd"), st.read("b" + String(j)))])
+    if zeros:
+        for k in range(CARRY):
+            st.zero(_y(k, Q - 1), FIX_E)
+    return rz^
+
+
+def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True) raises -> Statement:
+    """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
+    `circuit` (default one product of public operands): see `Op`. `pin` puts the circuit bytes at the head
+    of the public inputs (a workload whose circuit is fixed in code needs no header)."""
+    var ops = circuit.copy() if len(circuit) > 0 else single_op()
+    var at = _place(ops)
+    var st = Statement()
+    product_columns(st)
     for name in ["h", "o", "g", "f"]:
         for j in range(Q):
             st.col(name + String(j), BIT)
@@ -344,72 +419,12 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bo
             st.pub(_lane(L, name), 1)
     if pin:
         st.pin(circuit_bytes(ops))
-    # rz[10 t + k] = rho^t zeta^k as element indices, -1 for 1
-    var rz = List[Int](length=10 * PIECES, fill=-1)
-    rz[1] = ZETA
-    for k in range(2, 10):
-        rz[k] = st.derived(CHAL_MUL, rz[k - 1], ZETA)
-    rz[10] = RHO
-    rz[20] = st.derived(CHAL_MUL, RHO, RHO)
-    for t in range(1, PIECES):
-        for k in range(1, 10):
-            rz[10 * t + k] = st.derived(CHAL_MUL, rz[10 * t], rz[k])
-    var ia = List[Term]()
-    for t in range(PIECES):
-        for j in range(Q):
-            ia.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[10 * t + j]))
-    st.horner("ra", ia, scale=rz[Q])
-    var ih = List[Term]()
-    for t in range(PIECES):
-        for j in range(Q):
-            ih.append(Term(1, st.read("a" + String(t) + String(j)), chal=rz[j]))
-    st.horner("ha", ih, scale=rz[Q])
-    var plain: List[String] = ["b", "f"]
-    var accs: List[String] = ["rb", "rf"]
-    for i in range(len(plain)):
-        var terms = List[Term]()
-        for j in range(Q):
-            terms.append(Term(1, st.read(plain[i] + String(j)), chal=rz[j]))
-        st.horner(accs[i], terms, scale=rz[Q])
-    var ic = List[Term]()
-    for t in range(PIECES):
-        for m in range(CBITS):
-            for j in range(Q):
-                ic.append(Term(1 << m, st.read(_c(t, m, j)), chal=rz[10 * t + j + 6 - m]))
-    st.horner("rc", ic, scale=rz[Q])
+    var rz = product_certificate(st, zeros)
+    plain_fingerprint(st, "rf", "f", rz)
     for L in range(LANES):
         for name in ["x", "y", "z", "s"]:
-            var terms = List[Term]()
-            for j in range(Q):
-                terms.append(Term(1, st.read(_lane(L, name + String(j))), chal=rz[j]))
-            st.horner("f" + String(L) + name, terms, scale=rz[Q])
-    st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb"), chal=rz[6]), Term(-1, st.read("rc"))])
-    # ripple per position: pile + carry in - r - 2 carry out; position 0 takes the carry from the next row's position 3
-    for j in range(Q):
-        var terms = List[Term]()
-        for t in range(PIECES):
-            for m in range(CBITS):
-                terms.append(Term(1, st.read(_c(t, m, j))))
-        for k in range(CARRY):
-            terms.append(Term(1 << k, st.read(_y(k, j - 1)) if j > 0 else st.read(_y(k, Q - 1), k1=1)))
-        terms.append(Term(-1, st.read("r" + String(j))))
-        for k in range(CARRY):
-            terms.append(Term(-(2 << k), st.read(_y(k, j))))
-        st.family("carry" + String(j), terms)
-    # alias b6 b5 = 0 for the coefficient at each position: bit 6 sits six slots up, bit 5 five
-    for t in range(PIECES):
-        for j in range(Q):
-            st.family("alias" + String(t) + String(j), [Term(1, st.read(_c(t, 6, (j + 6) % Q), k1=(ROWS - (j + 6) // Q) % ROWS),
-                                                              st.read(_c(t, 5, (j + 5) % Q), k1=(ROWS - (j + 5) // Q) % ROWS))])
-    for t in range(PIECES):
-        for j in range(Q):
-            st.family("piece" + String(t) + String(j), [Term(1, st.read("a" + String(t) + String(j))), Term(-1, st.read("s" + String(t)), st.read("a" + String(t) + String(j)))])
-    # b below 2^260 like the add-lane values: a hint operand has no factor or wire to bound it
-    for j in range(Q):
-        st.family("bbd" + String(j), [Term(1, st.read("b" + String(j))), Term(-1, st.read("bd"), st.read("b" + String(j)))])
+            plain_fingerprint(st, "f" + String(L) + name, _lane(L, name), rz)
     if zeros:
-        for k in range(CARRY):
-            st.zero(_y(k, Q - 1), FIX_E)
         for L in range(LANES):
             for k in range(ACARRY):
                 st.zero(_lane(L, "c" + String(k) + String(Q - 1)), FIX_E)

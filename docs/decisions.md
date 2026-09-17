@@ -2070,3 +2070,37 @@ and a failing case in tests/test_groups.mojo:
 Not built: a mask read at the same shift for ungated next-chain reads (SHA-256's `k2 = 16` schedule),
 pushing the selector into a helper column so a quadratic factor can pool, an allocator that compares pool
 versus overlay per statement.
+
+## RSA-2048 verify: limb products summed along chains, one proof (2026-09-18, M1 Pro)
+
+`workloads/rsa.mojo`. Measured on the OpenSSL fixture (genrsa 2048, dgst -sha256 -sign; m the PKCS#1 v1.5
+encoding, checked as pow(s, e, n) in Python), grid 144 x 2688, 2448 chains live, CLIENT:
+
+| | |
+|---|---|
+| warm prove | 0.90 s |
+| proof | 676 KB |
+| verify | 0.96 s, of which 0.41 s in the verifier's stages; the rest derives the public data (28 columns of N bytes, 1,224 factor columns) |
+
+Why this shape and not Karatsuba block products (the 2026-09-17 estimate of 0.3 s):
+
+- **Additions cost wires, and wires are the scarce resource.** A three-operand add lane takes four wiring
+  slots and 5,184 cells; the F2* identities allow 16,128 slot-chain endpoints per proof. Karatsuba's
+  recombination needs about 340 adds per modmul (a leaf contributes to up to eight positions with signs),
+  5,800 per verify: three times the wire budget before a single product is wired. The estimate ignored
+  the adds.
+- **Running sums along chains need no wires.** Products a_i b_j sit on a limbs x (limbs + 1) block of
+  chains so that every read of the sum lane shifts forward on axis 2 (k2 = limbs for the next chain of
+  the anti-diagonal, k2 = 1 with the UP row shift for the chain below); each chain adds its own lo half,
+  the hi halves from below and the running lo from the diagonal. A modmul is 128 products, 16 carry
+  chains and no add op; the identity a b = q n + r closes on a compare lane over the 16 head chains with
+  a 2^258 bias and a carry read between heads, wired only for lo(t_qn) and r_p. Slots: 5, so h2 goes to
+  2688 and one proof holds the verify (the mulmod chain's 11 slots capped it at 1,344 chains).
+- **The chain width dropped** from 236 to 172 columns: no fold, no add lanes, a raw product.
+- **Not built, in order of payoff:** the squaring symmetry (a_i a_j = a_j a_i: 36 products instead of 64
+  on 16 of the 17 modmuls, about 30% of the chains); the public data derivation on the verifier's side
+  (0.5 s of the 0.96 s; the factor columns for n_j repeat 136 times); constant public columns with m = h2.
+- **Reviewed:** the carry chains and the idle chains had free product operands whose r the sum lane reads
+  (Codex, before its filter cut it off); the piece and bound selectors are now per chain and zero there, so
+  a = b = 0 off the products and the chain-end identity forces r = 0. Two Opus reviews then checked the
+  indexing, the sum-lane invariant, the telescoping, the mod-127 residuals and the public data by hand.

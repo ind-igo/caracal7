@@ -119,7 +119,7 @@ def test_trace_satisfies_every_bit_family() raises:
                 cols.append(trace[col * N + x1])
         r.append(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals))
     var z6 = list_e(chals, Int(c.shape.ends[7]) - 1)
-    assert_equal(ext_mul[E_LEVEL](ext_mul[E_LEVEL](r[0], r[2]), z6), r[4])
+    assert_equal(ext_mul[E_LEVEL](ext_mul[E_LEVEL](r[0], r[2]), z6), r[3])   # ra, ha, rb, rc, rf
     var off = 18 * N
     for name in ["a00", "a01", "a02", "a03", "a10", "a11", "a12", "a13", "a20", "a21", "a22", "a23", "b0", "b1", "b2", "b3", "f0", "f1", "f2", "f3"]:
         for x1 in range(h1):
