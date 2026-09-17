@@ -10,7 +10,7 @@ from caracal7.verifier import encode_at
 from caracal7.core.params import CLIENT
 from caracal7.core.tables import RsDomain, RsTables, build_rs_tables
 from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.tail import DOM_BYTES, ROUND_THREADS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold, power_table_len, TAIL_F4
+from caracal7.pcs.tail import DOM_BYTES, ROUND_ROWS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold, power_table_len, TAIL_F4
 from caracal7.core.bytes import list_e
 from caracal7.pcs.tail import host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
@@ -93,7 +93,7 @@ def test_tail_kernels() raises:
     var o_pts = bump.alloc(Q * 4)
     var o_pts2 = bump.alloc(Q * 4)
     var o_w = bump.alloc(N * E_BYTES)
-    var o_partial = bump.alloc(3 * ROUND_THREADS * E_BYTES)
+    var o_partial = bump.alloc(3 * ROUND_ROWS * E_BYTES)
     var o_rounds = bump.alloc(9 * E_BYTES)
     var o_ynext = bump.alloc(ROWS * E_BYTES)
     var o_wnext = bump.alloc(ROWS * E_BYTES)

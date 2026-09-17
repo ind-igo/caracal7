@@ -24,7 +24,7 @@ from caracal7.core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q,
 from caracal7.proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from caracal7.core.hash import Hash
 from caracal7.pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, factor_len, TAIL_F4
-from caracal7.pcs import DOM_BYTES, ROUND_THREADS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
+from caracal7.pcs import DOM_BYTES, ROUND_ROWS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
 from caracal7.relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, value_bytes, tile_values
 from caracal7.relations.statement import Compiled
 from caracal7.relations import AccLayout, accumulate, horner, wiring, derive_chals, counting_sort, merge_tables
@@ -135,7 +135,7 @@ struct QueryLayout(TrivialRegisterPassable):
     var positions: Int      # (max queries, u32)    S of the level being opened
     var pts: Int            # (max queries, 4)      leaf points of the opened positions
     var ptab: Int           # (queries, table, 4)   level-1 powers of the leaf points
-    var partial: Int        # (ROUND_THREADS, 3, e) sumcheck partial sums
+    var partial: Int        # (ROUND_ROWS, 3, e) sumcheck partial sums
     var dom1: Int           # DOM_BYTES             the level-1 domain
     var stage: Int          # gathered rows and siblings of one multiproof, staged to the host in stream order
     var found: Int          # u32                   the nonce found
@@ -145,7 +145,7 @@ struct QueryLayout(TrivialRegisterPassable):
         self.positions = bump.alloc(max_queries * 4)
         self.pts = bump.alloc(max_queries * 4)
         self.ptab = bump.alloc(max_queries * power_table_len[p]() * 4)
-        self.partial = bump.alloc(ROUND_THREADS * 3 * p.e)
+        self.partial = bump.alloc(ROUND_ROWS * 3 * p.e)
         self.dom1 = bump.alloc(DOM_BYTES)
         self.stage = bump.alloc(stage_bytes)
         self.found = bump.alloc(4)

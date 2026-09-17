@@ -1882,3 +1882,36 @@ cost driver is the E-valued accumulator, 20 columns per record per row, which so
 
 **Decision.** The bit-level SHA-256 statement stands; the cells are not wasted. Herder is for
 tables with no cheap quadratic certificate (range checks on selected values, memory).
+
+## Tail rounds: registers, not memory or threads (2026-09-17, M1 Pro)
+
+**Question.** The GPU counters over the chain prove (32 x 8064, 255 ms) put "rounds 0" at 14 ms with
+ALU 12%, occupancy 8%, reads 59 GB/s: neither ALU-bound nor at the bandwidth ceiling. The first
+reading was "the one-block sum over 16,384 partials"; a block-level reduction would fix that.
+
+**Measured** (`k_round_partial` alone, N = 258,048, digit 0, best of 3 x 20 launches):
+
+| variant | ms |
+|---|---:|
+| committed (multipliers and four folded values in fp32 registers) | 3.7 |
+| one-thread sum over the 16,384 partials | 0.85 |
+| 4,096 / 65,536 / 131,072 threads instead of 16,384 | 4.8 / 4.0 / 4.8 |
+| plus a threadgroup-memory block reduction (24 KB a block) | 5.7 |
+| multipliers as bytes, converted at use | 1.6 |
+| three passes over the group, one folded pair live at a time | 3.6 |
+| one evaluation only (one accumulator, one folded pair) | 0.3 |
+| loads only | 0.1 |
+
+The loads are 3% of the time and the thread count changes nothing, so the kernel was neither
+memory-bound nor starved of threads. The time follows the per-thread register footprint: seven
+32-lane fp32 vectors (three accumulators, four folded values) plus four fp32 multipliers and the
+five-limb product's temporaries. Dropping the multipliers to bytes (96 fewer registers) gives 2.3x;
+one accumulator with one pair gives 12x. The threadgroup reduction made it worse (residency).
+
+**Decision.** Multipliers stay bytes (`rbar_at` output, `to_f32` at use); the sum over the partials
+runs as two launches of `k_round_sum` (64 blocks of 256 rows, then one block of 64). Chain warm
+prove 255 -> 242 ms (rounds 0: 14 -> 5, rounds 1: 4 -> 2), proof and verify unchanged. Three
+launches of the one-evaluation kernel would save another 0.4 ms a round at digits 0 and 1 and
+nothing at digit 2; not taken. The lesson carries to NVIDIA unchanged: a kernel with low ALU, low
+bandwidth and low occupancy is register-limited on either GPU, and shrinking per-thread state is
+the first experiment, not more threads or a smarter reduction.

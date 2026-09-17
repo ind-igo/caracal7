@@ -13,7 +13,7 @@ are the verifier's side of the same formulas.
 
 from std.bit import log2_floor
 from std.math import ceildiv
-from std.gpu import global_idx, thread_idx
+from std.gpu import global_idx, thread_idx, block_idx
 from max.gpu.host import DeviceContext
 
 from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
@@ -25,6 +25,8 @@ from caracal7.core.bytes import Base, Buf, u32, list_e
 from caracal7.core.arena import Arena
 
 comptime ROUND_THREADS = 16384     # partial sums of one sumcheck round (1024 left the GPU idle: 42 ms a round at N = 82,944)
+comptime ROUND_SUM_BLOCKS = 64     # first pass of the sum over the partials (one block walking all 16,384 was 0.85 ms)
+comptime ROUND_ROWS = ROUND_THREADS + ROUND_SUM_BLOCKS   # rows of (3, e) in the partial buffer
 comptime DOM_BYTES = 20            # an RsDomain in the arena: g (4), then gamma4^k for k < 4
 
 
@@ -195,36 +197,38 @@ def k_materialize_tail(base: Base, running: Buf[E_BYTES], batch: Buf[E_BYTES], p
     w_tilde.store(base, row, w)
 
 
-def k_round_partial[threads: Int](base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BYTES], length: Int32, d: Int32, r: Buf[E_BYTES], partial: Buf[E_BYTES]):
+def k_round_partial(base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BYTES], length: Int32, d: Int32, r: Buf[E_BYTES], partial: Buf[E_BYTES]):
     """Round d of the partial sumcheck over the three low digits: digits below d are bound to r_0 ..
-    r_{d-1}, digit d is the variable b, everything above is summed. Thread t of `threads` sums its
-    share of the groups (row, digits above d) into partial[t] = (s(0), s(1), s(2))."""
+    r_{d-1}, digit d is the variable b, everything above is summed. Thread t of ROUND_THREADS sums its
+    share of the groups (row, digits above d) into partial[t] = (s(0), s(1), s(2)).
+    Registers set the speed, not memory or arithmetic (2026-09-17, N = 258,048: the loads alone take
+    0.1 ms a round, the kernel 3.7 ms with the multipliers in fp32 registers, 1.6 ms with them as
+    bytes converted at use; one evaluation alone runs in 0.3 ms). So the multipliers stay bytes."""
     var t = global_idx.x
-    if t >= threads:
-        return
     var dd = Int(d)
     var m = 1 << dd
     var rr = _r3(base, r)
-    var rb = InlineArray[EF, 4](fill=EF(0))
+    var rb = InlineArray[E, 4](fill=E(0))
     for a in range(m):
-        rb[a] = to_f32(rbar_at(rr, a, dd))
+        rb[a] = rbar_at(rr, a, dd)
     # fp32 lanes: up to four products of canonical values (below 2.1 M each) per sum, reduced to
     # |x| <= 190 before the products of sums (below 4.7 M), one reduction of each accumulator per group
     var acc0 = EF(0)
     var acc1 = EF(0)
     var acc2 = EF(0)
     var groups = Int(length) // (2 * m)
-    for grp in range(t, groups, threads):
+    for grp in range(t, groups, ROUND_THREADS):
         var n0 = grp * 2 * m
         var y0 = EF(0)
         var y1 = EF(0)
         var w0 = EF(0)
         var w1 = EF(0)
         for a in range(m):
-            y0 += fp_ext_mul[E_LEVEL](rb[a], to_f32(y.load(base, n0 + a)))
-            y1 += fp_ext_mul[E_LEVEL](rb[a], to_f32(y.load(base, n0 + m + a)))
-            w0 += fp_ext_mul[E_LEVEL](rb[a], to_f32(w_tilde.load(base, n0 + a)))
-            w1 += fp_ext_mul[E_LEVEL](rb[a], to_f32(w_tilde.load(base, n0 + m + a)))
+            var ra = to_f32(rb[a])
+            y0 += fp_ext_mul[E_LEVEL](ra, to_f32(y.load(base, n0 + a)))
+            y1 += fp_ext_mul[E_LEVEL](ra, to_f32(y.load(base, n0 + m + a)))
+            w0 += fp_ext_mul[E_LEVEL](ra, to_f32(w_tilde.load(base, n0 + a)))
+            w1 += fp_ext_mul[E_LEVEL](ra, to_f32(w_tilde.load(base, n0 + m + a)))
         y0 = fp_reduce(y0)
         y1 = fp_reduce(y1)
         w0 = fp_reduce(w0)
@@ -237,15 +241,17 @@ def k_round_partial[threads: Int](base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BY
     partial.store(base, 3 * t + 2, fp_canonical(acc2))
 
 
-def k_round_sum[threads: Int](base: Base, partial: Buf[E_BYTES], dst: Buf[E_BYTES]):
-    """3 e threads, one per (evaluation b, byte l): the round message s = (s(0), s(1), s(2)) from the partial sums."""
-    var i = Int(thread_idx.x)                        # one block
+def k_round_sum(base: Base, src: Buf[E_BYTES], dst: Buf[E_BYTES], rows: Int32):
+    """Block b, 3 e threads (one per evaluation and byte): dst[b] = the sum of src rows b rows .. (b + 1) rows.
+    Two launches sum the ROUND_THREADS partials: ROUND_SUM_BLOCKS blocks, then one block over their sums."""
+    var i = Int(thread_idx.x)
     if i >= 3 * E_BYTES:
         return
+    var b = Int(block_idx.x)
     var acc = SIMD[DType.uint8, 1](0)
-    for t in range(threads):
-        acc = f_add(acc, base.unsafe_load[width=1](partial.at(3 * t) + i))
-    base.unsafe_store(dst.at(0) + i, acc)
+    for t in range(b * Int(rows), (b + 1) * Int(rows)):
+        acc = f_add(acc, base.unsafe_load[width=1](src.at(3 * t) + i))
+    base.unsafe_store(dst.at(3 * b) + i, acc)
 
 
 def k_fold8(base: Base, src: Buf[E_BYTES], rows: Int32, r: Buf[E_BYTES], dst: Buf[E_BYTES]):
@@ -318,15 +324,14 @@ def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,
 
 def tail_round(ctx: DeviceContext, arena: Arena,
                w_tilde: Int, y: Int, length: Int, digit: Int, r: Int, partial: Int, dst: Int) raises:
-    """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`; the partial
-    sums are one per group up to ROUND_THREADS, so a small level does not reduce idle partials."""
-    var groups = length // (2 << digit)
-    comptime for t in [ROUND_THREADS, ROUND_THREADS // 4, ROUND_THREADS // 16]:
-        if groups >= t or t == ROUND_THREADS // 16:
-            ctx.enqueue_function[k_round_partial[t]](arena.buf, Buf[E_BYTES](w_tilde), Buf[E_BYTES](y), Int32(length), Int32(digit), Buf[E_BYTES](r), Buf[E_BYTES](partial),
-                                                     grid_dim=_grid(t), block_dim=BACKEND.block)
-            ctx.enqueue_function[k_round_sum[t]](arena.buf, Buf[E_BYTES](partial), Buf[E_BYTES](dst), grid_dim=1, block_dim=64)
-            return
+    """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`. `partial` holds
+    ROUND_THREADS + ROUND_SUM_BLOCKS rows of (3, e): the threads' sums, then the blocks' sums."""
+    comptime rows = ROUND_THREADS // ROUND_SUM_BLOCKS
+    var sums = partial + ROUND_THREADS * 3 * E_BYTES
+    ctx.enqueue_function[k_round_partial](arena.buf, Buf[E_BYTES](w_tilde), Buf[E_BYTES](y), Int32(length), Int32(digit), Buf[E_BYTES](r), Buf[E_BYTES](partial),
+                                          grid_dim=_grid(ROUND_THREADS), block_dim=BACKEND.block)
+    ctx.enqueue_function[k_round_sum](arena.buf, Buf[E_BYTES](partial), Buf[E_BYTES](sums), Int32(rows), grid_dim=ROUND_SUM_BLOCKS, block_dim=64)
+    ctx.enqueue_function[k_round_sum](arena.buf, Buf[E_BYTES](sums), Buf[E_BYTES](dst), Int32(ROUND_SUM_BLOCKS), grid_dim=1, block_dim=64)
 
 
 def tail_fold(ctx: DeviceContext, arena: Arena, src: Int, rows: Int, r: Int, dst: Int) raises:
