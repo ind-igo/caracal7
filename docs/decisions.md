@@ -1915,3 +1915,37 @@ launches of the one-evaluation kernel would save another 0.4 ms a round at digit
 nothing at digit 2; not taken. The lesson carries to NVIDIA unchanged: a kernel with low ALU, low
 bandwidth and low occupancy is register-limited on either GPU, and shrinking per-thread state is
 the first experiment, not more threads or a smarter reduction.
+
+## Open previous: the frontier in one block, the grind at 8,192 threads (2026-09-17, M1 Pro)
+
+**Measured** (each kernel of `_open_previous` alone at level 1 of the chain grid, warm): grind 0.7 to
+4.2 ms a search (random), `k_frontier` 1.0 ms, `squeeze_positions` 0.2 ms, `k_rows` and `k_sibs`
+0.05 ms each. Four levels: about 18 ms, the grind and the frontier nearly all of it.
+
+**Frontier.** One thread sorting 95 positions took 0.35 ms and walking 20 levels 0.45 ms: a chain of
+dependent instructions with nothing to hide their latency, about 100 cycles an iteration. Moving its
+two 1,024-entry arrays from private to threadgroup memory gave 1.0 -> 0.8 ms only. One block of 256
+threads (rank sort over the first occurrences, then per level a flag per entry and O(i) scans for
+placement) gives 0.38 ms with byte-identical output. A tree prefix sum would go under 0.1 ms;
+not worth 1.5 ms a prove today.
+
+**Grind.** A block leaves the search only once its nonces pass the winner (the smallest nonce, for
+determinism), and polls every GRIND_POLL iterations, so up to GRIND_POLL x GRIND_THREADS nonces are
+tried past the winner: 262,144 at the old 32,768 x 8, a quarter of the 2^20 expected. Paired sweep,
+20 fresh states each, 20 bits, mean ms a search:
+
+| threads | poll 1 | poll 2 | poll 8 |
+|---:|---:|---:|---:|
+| 4,096 | 2.45 | 3.37 | 2.92 |
+| 8,192 | 2.13 | 2.40 | 2.75 |
+| 16,384 | 2.18 | 2.91 | 3.07 |
+| 32,768 | 3.13 | 4.06 | 3.99 |
+| 65,536 | 3.63 | 4.87 | 4.62 |
+
+The pair moved into `Backend` (`grind_threads`, `grind_poll`): 8,192 x 1 on the lane and Apple
+backends, the old 32,768 x 8 kept on NVIDIA_MMA, not measured there (the 3090 has 82 SMs and the
+balance between overshoot and occupancy is its own). 16 bits instead of 20 would be 0.6 ms a
+search; the bit count is the soundness ledger's, not a tuning knob.
+
+**Result.** Chain warm prove median 242 -> 235 ms; open previous 0 to 3 from 5 + 2 + 3 + 5 to
+about 2 + 1 + 2 + 1 ms. Audit (Opus self-review, Codex): clean on the rounds and frontier changes.

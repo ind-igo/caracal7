@@ -7,6 +7,9 @@ the frontier walked level by level, ascending, each sibling once. `check_multipr
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu.memory import AddressSpace
+from max.gpu.sync import barrier
+from layout import row_major, stack_allocation
 from max.gpu.host import DeviceContext
 
 from caracal7.core.params import Params
@@ -16,7 +19,7 @@ from caracal7.core.bytes import Base, Buf, u32, put_u32, host_base, check_field_
 from caracal7.core.arena import Arena
 from std.gpu import global_idx
 
-comptime MAX_QUERIES = 1024        # ponytail: frontier walk keeps the position list in registers
+comptime MAX_QUERIES = 1024        # k_frontier holds four Int32 lists of this length in threadgroup memory (16 KB)
 
 
 def level_sizes(leaves: Int) -> List[Int]:
@@ -73,56 +76,94 @@ def merkle[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
 
 def k_frontier[H: Hash](base: Base, leaves: Int32, positions: Buf[4],
                         count: Int32, row_bytes: Int32, dst: Buf[1], order: Buf[4], sibs: Buf[4]):
-    """One thread of index arithmetic, no digest traffic. Sorts the positions, writes the distinct list
+    """One block of index arithmetic, no digest traffic. Sorts the positions, writes the distinct list
     to `order` (u32 m, then m u32), the sibling frontier's node indexes to `sibs` (u32 count, then the
     tree node of each sibling in emission order; k_sibs copies the digests), and the total byte count
-    at dst[0:4]."""
-    var known = InlineArray[Int32, MAX_QUERIES](fill=0)
-    var next = InlineArray[Int32, MAX_QUERIES](fill=0)
+    at dst[0:4]. Thread i owns list entry i (and i + block, ...): the sort is a rank sort over the
+    first occurrences, each level flags its entries (1: second of a sibling pair, dropped; 2: emits
+    its sibling) and places them by short scans. One thread doing the same took 0.8 ms a call, a
+    chain of dependent instructions with nothing to hide their latency (2026-09-17); this block takes
+    0.38 ms. ponytail: the O(m) scans per level are the rest, a tree prefix sum would go under 0.1 ms."""
+    comptime assert 4 * MAX_QUERIES * 4 <= BACKEND.threadgroup_bytes, "the frontier's four lists fit threadgroup memory"
+    comptime B = BACKEND.block
+    var tid = Int(thread_idx.x)
+    var cnt = Int(count)
+    var pos = stack_allocation[DType.int32, address_space=AddressSpace.SHARED](row_major[MAX_QUERIES]())
+    var known = stack_allocation[DType.int32, address_space=AddressSpace.SHARED](row_major[MAX_QUERIES]())
+    var next = stack_allocation[DType.int32, address_space=AddressSpace.SHARED](row_major[MAX_QUERIES]())
+    var flag = stack_allocation[DType.int32, address_space=AddressSpace.SHARED](row_major[MAX_QUERIES]())
+    for i in range(tid, cnt, B):
+        pos[i] = Int32(u32(base, positions.at(i)))
+    barrier()
+    for i in range(tid, cnt, B):                    # first occurrence of its value
+        var f = Int32(1)
+        for j in range(i):
+            if pos[j] == pos[i]:
+                f = 0
+        flag[i] = f
+    barrier()
     var m = 0
-    for q in range(Int(count)):
-        var v = Int32(u32(base, positions.at(q)))
-        var i = m
-        while i > 0 and known[i - 1] > v:
-            known[i] = known[i - 1]
-            i -= 1
-        known[i] = v
-        m += 1
-    var w = 0
-    for i in range(m):
-        if i == 0 or known[i] != known[i - 1]:
-            known[w] = known[i]
-            w += 1
-    m = w
-    put_u32(base, order.at(0), m)
-    for i in range(m):
-        put_u32(base, order.at(1 + i), Int(known[i]))
+    for j in range(cnt):
+        if flag[j] == 1:
+            m += 1
+    for i in range(tid, cnt, B):                    # rank among the first occurrences
+        if flag[i] == 1:
+            var r = 0
+            for j in range(cnt):
+                if flag[j] == 1 and pos[j] < pos[i]:
+                    r += 1
+            known[r] = pos[i]
+            put_u32(base, order.at(1 + r), Int(pos[i]))
+    if tid == 0:
+        put_u32(base, order.at(0), m)
+    barrier()
 
+    var w = m
     var ns = 0
     var node = 0                                    # the level's first node in the tree
     var n = Int(leaves)
     while n > 1:
-        var nm = 0
-        var i = 0
-        while i < m:
+        for i in range(tid, m, B):                  # known is ascending and distinct: a pair is (even k, k + 1)
             var k = Int(known[i])
             var s = k ^ 1
-            if i + 1 < m and Int(known[i + 1]) == s:
-                i += 2
-            else:
-                if s < n:
-                    put_u32(base, sibs.at(1 + ns), node + s)
-                    ns += 1
-                i += 1
-            next[nm] = Int32(k >> 1)
-            nm += 1
-        for j in range(nm):
-            known[j] = next[j]
-        m = nm
+            var f = Int32(0)
+            if i > 0 and Int(known[i - 1]) == s:
+                f = 1
+            elif not (i + 1 < m and Int(known[i + 1]) == s) and s < n:
+                f = 2
+            flag[i] = f
+        barrier()
+        for i in range(tid, m, B):
+            var f = flag[i]
+            if f != 1:
+                var drop = 0
+                var emit = 0
+                for j in range(i):
+                    if flag[j] == 1:
+                        drop += 1
+                    elif flag[j] == 2:
+                        emit += 1
+                next[i - drop] = Int32(Int(known[i]) >> 1)
+                if f == 2:
+                    put_u32(base, sibs.at(1 + ns + emit), node + (Int(known[i]) ^ 1))
+        var drops = 0
+        var emits = 0
+        for j in range(m):
+            if flag[j] == 1:
+                drops += 1
+            elif flag[j] == 2:
+                emits += 1
+        barrier()
+        m -= drops
+        ns += emits
+        for i in range(tid, m, B):
+            known[i] = next[i]
         node += n
         n = (n + 1) // 2
-    put_u32(base, sibs.at(0), ns)
-    put_u32(base, dst.at(0), 4 + w * Int(row_bytes) + ns * H.DIGEST)
+        barrier()
+    if tid == 0:
+        put_u32(base, sibs.at(0), ns)
+        put_u32(base, dst.at(0), 4 + w * Int(row_bytes) + ns * H.DIGEST)
 
 
 def k_sibs[H: Hash](base: Base, tree: Buf[H.DIGEST], row_bytes: Int32, order: Buf[4], sibs: Buf[4], dst: Buf[1]):
@@ -173,7 +214,7 @@ def query_gather[p: Params, H: Hash](ctx: DeviceContext, arena: Arena,
     var sibs = order + 4 + 4 * count
     var levels = len(level_sizes(leaves)) - 1
     ctx.enqueue_function[k_frontier[H]](arena.buf, Int32(leaves), Buf[4](positions), Int32(count),
-                                        Int32(row_bytes), Buf[1](dst), Buf[4](order), Buf[4](sibs), grid_dim=1, block_dim=1)
+                                        Int32(row_bytes), Buf[1](dst), Buf[4](order), Buf[4](sibs), grid_dim=1, block_dim=BACKEND.block)
     ctx.enqueue_function[k_rows](arena.buf, Buf[1](code), Int32(row_bytes), Buf[4](order), Buf[1](dst),
                                  grid_dim=count, block_dim=BACKEND.block)
     ctx.enqueue_function[k_sibs[H]](arena.buf, Buf[H.DIGEST](tree), Int32(row_bytes), Buf[4](order), Buf[4](sibs), Buf[1](dst),

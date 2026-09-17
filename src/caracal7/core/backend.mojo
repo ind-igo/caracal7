@@ -61,18 +61,23 @@ struct Backend(TrivialRegisterPassable):
     var vec_bytes: Int           # bytes per vector load
     var tile: Tile               # default tile
     var block: Int               # threads per block of the one-thread-per-element kernels
+    var grind_threads: Int       # nonce search: threads, each walking nonces t, t + grind_threads, ...
+    var grind_poll: Int          # iterations between a block's polls of the nonce found
 
 
 comptime KIND_LANES = 0
 comptime KIND_APPLE_MMA = 1
 comptime KIND_NVIDIA_MMA = 2
 comptime LANES = Backend(kind=KIND_LANES, threadgroup_bytes=32768, mma_k=1, max_terms=128, vec_bytes=4,
-                         tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4, mma=False), block=256)
+                         tile=Tile(BM=64, BN=64, BK=8, TM=4, TN=4, mma=False), block=256, grind_threads=8192, grind_poll=1)
 # 128 terms: signed F2 lanes move by at most 2 * 126^2 per term, 128 of them stay below WIDE_BIAS.
 comptime APPLE_MMA = Backend(kind=KIND_APPLE_MMA, threadgroup_bytes=32768, mma_k=16, max_terms=128, vec_bytes=16,
-                             tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256)
+                             tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256, grind_threads=8192, grind_poll=1)
 comptime NVIDIA_MMA = Backend(kind=KIND_NVIDIA_MMA, threadgroup_bytes=49152, mma_k=32, max_terms=128, vec_bytes=16,
-                              tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256)
+                              tile=Tile(BM=64, BN=64, BK=32, TM=32, TN=32, mma=True), block=256, grind_threads=32768, grind_poll=8)
+# grind: a block leaves the search only once its nonces pass the one found, so up to grind_poll x grind_threads nonces
+# are tried past the winner. M1 Pro, 20 bits, 20 paired seeds (2026-09-17): 8192 x 1 gives 2.1 ms a search, the old
+# 32768 x 8 gave 4.0, 65536 x 8 gave 4.6. The NVIDIA pair is the old one, not measured there.
 comptime BACKEND = NVIDIA_MMA if is_defined["CARACAL_NVIDIA_MMA"]() else (APPLE_MMA if is_defined["CARACAL_APPLE_MMA"]() else LANES)
 # The lane build on an Apple host (M1..M4, GPU family 7..9): no integer simdgroup matrix, but the 8x8 fp16 -> fp32 one
 # is there and runs at 2.3 T MAC/s on the M1 Pro, 3x the int32 lanes. Bytes < 127 are exact in fp16; their products are exact in the fp32 accumulator of the op.

@@ -19,6 +19,7 @@ from caracal7.core.arena import Bump
 from caracal7.core.hash import Hash
 from caracal7.core.bytes import Base, Buf, u32, put_u32, u64, put_u64, host_base
 from caracal7.core.arena import Arena
+from caracal7.core.backend import BACKEND
 
 # Domain separators, one per line of spec 9.4, in transcript order.
 comptime DS_PREFIX: UInt8 = 0       # protocol version, tower constants, grid, domains and rates, public inputs
@@ -36,8 +37,8 @@ comptime _COUNTER = 64
 comptime _SCRATCH = 72
 comptime MAX_CHUNKS = 1024          # ponytail: one block per absorb, 1 MiB; larger messages fall back to the serial thread
 comptime _CV_BYTES = 32             # per-chunk value slot, >= H.DIGEST
-comptime GRIND_THREADS = 32768      # nonce search: threads, each walking nonces t, t + GRIND_THREADS, ...
-comptime GRIND_POLL = 8             # iterations between polls of `found`
+comptime GRIND_THREADS = BACKEND.grind_threads   # nonce search: threads, each walking nonces t, t + GRIND_THREADS, ...
+comptime GRIND_POLL = BACKEND.grind_poll         # iterations between polls of `found`
 comptime _NO_NONCE: UInt32 = 0xFFFFFFFF
 
 

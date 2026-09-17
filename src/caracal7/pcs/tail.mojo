@@ -211,8 +211,8 @@ def k_round_partial(base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BYTES], length: 
     var rb = InlineArray[E, 4](fill=E(0))
     for a in range(m):
         rb[a] = rbar_at(rr, a, dd)
-    # fp32 lanes: up to four products of canonical values (below 2.1 M each) per sum, reduced to
-    # |x| <= 190 before the products of sums (below 4.7 M), one reduction of each accumulator per group
+    # fp32 lanes: up to four products of canonical values (below 1.4 M each, 5.6 M a sum) per sum, reduced to
+    # |x| <= 190 before the products of sums (below 3.2 M), one reduction of each accumulator per group
     var acc0 = EF(0)
     var acc1 = EF(0)
     var acc2 = EF(0)
@@ -326,6 +326,7 @@ def tail_round(ctx: DeviceContext, arena: Arena,
                w_tilde: Int, y: Int, length: Int, digit: Int, r: Int, partial: Int, dst: Int) raises:
     """dst (3, e) = the round message of digit `digit` given r_0 .. r_{digit-1} at `r`. `partial` holds
     ROUND_THREADS + ROUND_SUM_BLOCKS rows of (3, e): the threads' sums, then the blocks' sums."""
+    comptime assert ROUND_THREADS % BACKEND.block == 0, "every launched thread writes its own partial row"
     comptime rows = ROUND_THREADS // ROUND_SUM_BLOCKS
     var sums = partial + ROUND_THREADS * 3 * E_BYTES
     ctx.enqueue_function[k_round_partial](arena.buf, Buf[E_BYTES](w_tilde), Buf[E_BYTES](y), Int32(length), Int32(digit), Buf[E_BYTES](r), Buf[E_BYTES](partial),
