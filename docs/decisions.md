@@ -2044,3 +2044,29 @@ Two limits found on the way, both structural:
 Not built: the raw-product op kind, the limb adds with carries between limbs (the add lane's q is
 chain-constant bits, not a wired value, so a limb carry has to be a hint witness on both sides), the
 Karatsuba tree. That is the mulmod part of the gadget layer; the number says it is worth building.
+
+## Row groups: a shared column pool with public selectors (2026-09-18)
+
+`Statement.group(name, chains, selector, inner="")` gives a gadget a chain range; its columns pool physical
+columns per kind with the other groups', so a grid of several gadgets costs rows times the widest one (the
+product-only mulmod chain measured 1.43x on this). The rules that make it sound, each with a builder check
+and a failing case in tests/test_groups.mojo:
+
+- A grouped family's linear witness terms take the group's selector as their `b` factor; the second factor
+  of a quadratic term stays an exclusive plain column (zero off the group forces the term to 0 there), never
+  a lookup record or a LIMB6 (table filler is not zero). Public-only terms stay unselected (the gadget zeroes
+  its publics off the group).
+- A grouped family reads the group's witness columns only. A next-chain read exists only as the linear
+  GATE_2 term (k2 = 1) under the inner selector, which replaces the gate; any other k2 shift would land in
+  pooled cells no family constrains. A pooled column nothing reads is rejected (its physical column's
+  `touched` flag would hide it).
+- A grouped Horner ingest term is multiplied by the selector, start 0, no other public multiplier.
+- The selectors are dedicated m = 1 columns, listed in the shape (`group_record`); the verifier checks their
+  public data is exactly the chain indicator, so a wrong selector is a rejected proof, not a statement with
+  a gadget switched off.
+- `pad_trace` of a declared group pads the group's idle rows in every declared group's column, other
+  declared groups' lookup records over the whole range, and leaves label-group columns to their own call.
+
+Not built: a mask read at the same shift for ungated next-chain reads (SHA-256's `k2 = 16` schedule),
+pushing the selector into a helper column so a quadratic factor can pool, an allocator that compares pool
+versus overlay per statement.

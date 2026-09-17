@@ -57,6 +57,7 @@ comptime HORNER_TRANSITIONS = 2 * E_BYTES   # linear entries Families.horner emi
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
 comptime PUBF = 8       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2, chain u16 (where its public reads are taken)
+comptime GRP = 8        # row group: first chain u16, chain count u16, selector public column u16, inner selector public column u16 (NONE): the verifier checks their public data is the chain indicator
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -351,6 +352,14 @@ def wire_record(family: Int, col_a: Int, col_b: Int) raises -> List[UInt8]:
     set_u16(w, 2, NONE if col_b < 0 else col_b)
     set_u16(w, 4, family)
     return w^
+
+
+def group_record(base: Int, chains: Int, selector: Int, inner: Int) raises -> List[UInt8]:
+    """A row group of `chains` chains from `base`: public column `selector` is 1 on them and 0 elsewhere,
+    `inner` (NONE for none) the same but 0 on the group's last chain."""
+    if base < 0 or base > 65535 or chains < 1 or chains > 65535 or selector < 0 or selector > 65535 or inner < 0 or inner > 65535:
+        raise Error("group record: base, chains, selector and inner are u16")
+    return [UInt8(base & 255), UInt8(base >> 8), UInt8(chains & 255), UInt8(chains >> 8), UInt8(selector & 255), UInt8(selector >> 8), UInt8(inner & 255), UInt8(inner >> 8)]
 
 
 def public_factor_record(acc: Int, id: F2, sigma: F2, chain: Int) raises -> List[UInt8]:

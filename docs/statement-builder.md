@@ -52,7 +52,10 @@ of high-degree expressions. A frontend that needs a helper column declares it.
 
 ```
 var st = Statement()
-st.col("a0", BIT, group="keccak")              # W column; kinds BIT, LIMB6, BYTE; the index is the declaration order
+st.pub("gk", 1)                                # a group selector: public data 1 on the group's chains (Layout.selector)
+st.pub("gki", 1)                               # its inner selector: 0 on the group's last chain too (Layout.selector(group, inner=True))
+var base = st.group("keccak", 64, "gk", inner="gki")   # a row group: 64 chains from `base`; its columns pool physical columns with the other groups'
+st.col("a0", BIT, group="keccak")              # W column; kinds BIT, LIMB6, BYTE; the index is the declaration order (pooled by kind across declared groups)
 st.acc("z", KIND_PERM, num=[...], den=[...])   # Z block; KIND_LOOKUP takes table=st.table(rows)
 st.pub("m", m=4)                               # public column, block (d2, h1); d2 = 0 means h2 / m
 st.restrict("s0", FIX_E)                       # a public line on the last chain; count = 0 means h1 coefficients
@@ -71,7 +74,16 @@ var c = st.compile[p]()                        # Compiled: shape, families bytes
 ```
 
 A `Term` is `coef * element(chal) * b_basis * b_basis2 * a * b` with `b` optional; a public read is a read of
-a `pub` name. `family` emits one entry per term through `Families.add`, sharing the family index (its position
+a `pub` name. A declared group's family reads the group's witness columns only (an ungrouped column would be
+free off the group); every linear witness term is multiplied by the group's selector and the second factor of
+a quadratic term keeps an exclusive column, so the family vanishes on other groups' chains; the gadget's own
+public columns must be zero off the group. A next-chain read on the group's last chain lands in the next
+group, in cells no family of this group constrains: only a linear GATE_2 term reads the next chain (k2 = 1), and it
+takes the group's inner selector in place of the gate (SHA-256's `k2 = 16` schedule reads need a mask read at
+the same shift, not built). The selectors are in the shape; the verifier checks their public data is the chain
+indicator. A Horner accumulator ingesting a group's columns is
+selected term by term (start 0, the selector its only public multiplier), so one accumulator can fingerprint a value of each group and a `wire` can join
+them; a public factor's ingest bytes are h1 per ingest entry, the off-group entries' bytes ignored. `family` emits one entry per term through `Families.add`, sharing the family index (its position
 among `family` and `acc` calls); `gate` is `mult`. Kinds emit their certificates after the user's families: a
 BIT column its Booleanity family, a LIMB6 column a lookup into the [64] table through a `<name>.sorted` column
 the builder appends to W. Groups are labels for `pad_trace(layout, trace, group, live_rows)`, which fills idle

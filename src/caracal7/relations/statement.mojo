@@ -9,15 +9,24 @@ lookup into the [64] table through a sorted column the builder allocates (`<name
 nothing. An E column is a Z block and only `acc` creates one. Padding is a function of the kinds too: an
 idle row of a lookup record column holds a table row, any other column zero, and Z blocks and sorted
 columns are the prover's (`pad_trace`).
+Row groups (`group`): a declared group owns a chain range and a selector public column; its columns pool
+physical columns with the other groups' (per kind), its families are multiplied by the selector and its
+accumulators are selected term by term, so a grid of several gadgets costs rows times the widest gadget.
 ponytail: one lookup per LIMB6 column (16 Z columns each); a shared range lookup when ECDSA's limb count
-is measured. Groups are labels for `pad_trace`; a per-group live-row count is the frontend's.
+is measured. A column that is the second factor of a quadratic term stays exclusive (zero off its group,
+which makes the term vanish there); pushing the selector into a helper column is the upgrade when a wide
+quadratic gadget (SHA-256) must pool. A next-chain read (k2 > 0) on a group's last chains reads the next
+group's chains, whose pooled cells no family of this group constrains: only a linear GATE_2 term reads the
+next chain, under the group's inner selector (1 on every chain of the group but its last) in place of the
+gate. The selectors are in the shape (`group_record`); the verifier checks their public data is the chain
+indicator. Undeclared groups are labels for `pad_trace` only.
 """
 
 from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow, E_BYTES
 from caracal7.core.params import Params
 from caracal7.core.tables import Domains
 from caracal7.core.bytes import set_u16, get_u16, append_u32
-from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
+from caracal7.relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, group_record, NONE, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
 from caracal7.core.field import F2, ext_mul, ext_pow
 from caracal7.core.tables import Domains, f2_primitive, F2_ORDER
 from caracal7.proof import Shape
@@ -99,9 +108,12 @@ struct Layout(Copyable, Movable):
     var restrictions: List[UInt8]
     var slots: List[Tuple[Int, Int, Int]]   # per W column: (table id, record position, width) of its lookup record;
                                             # (-1, 0, 0) none, (-2, 0, 0) a sorted column, (-3, 0, 0) a record of two lookups
+    var group_base: Dict[String, Int]       # declared row groups (Statement.group): first chain
+    var group_chains: Dict[String, Int]     # and chain count
 
     def __init__(out self, names: List[String], index: Dict[String, Int], kinds: List[Int], groups: List[String],
-                 accs: List[UInt8], tables: List[List[UInt8]], publics: List[UInt8], restrictions: List[UInt8]):
+                 accs: List[UInt8], tables: List[List[UInt8]], publics: List[UInt8], restrictions: List[UInt8],
+                 group_base: Dict[String, Int] = Dict[String, Int](), group_chains: Dict[String, Int] = Dict[String, Int]()):
         self.names = names.copy()
         self.index = index.copy()
         self.kinds = kinds.copy()
@@ -110,6 +122,8 @@ struct Layout(Copyable, Movable):
         self.tables = tables.copy()
         self.publics = publics.copy()
         self.restrictions = restrictions.copy()
+        self.group_base = group_base.copy()
+        self.group_chains = group_chains.copy()
         self.slots = List[Tuple[Int, Int, Int]](length=len(names), fill=(-1, 0, 0))
         for k in range(len(accs) // ACC):
             if acc_kind(accs, k) != KIND_LOOKUP:
@@ -130,6 +144,17 @@ struct Layout(Copyable, Movable):
 
     def columns_w(self) -> Int:
         return len(self.names)
+
+    def selector[p: Params](self, group: String, inner: Bool = False) raises -> List[UInt8]:
+        """The public data of a declared group's selector column (m = 1): 1 on the group's chains, 0 elsewhere;
+        `inner` leaves the group's last chain 0 (the selector of its GATE_2 families)."""
+        if group not in self.group_base:
+            raise Error("unknown group " + group)
+        var v = List[UInt8](length=p.N(), fill=0)
+        for x2 in range(self.group_base[group], self.group_base[group] + self.group_chains[group] - (1 if inner else 0)):
+            for x1 in range(p.h1()):
+                v[x2 * p.h1() + x1] = 1
+        return v^
 
 
 struct Compiled(Movable):
@@ -168,6 +193,10 @@ struct Statement(Movable):
     var factors: List[Tuple[String, Int, Int, Int]]   # public factors: (name, accumulator, slot, chain)
     var zeros: List[Tuple[String, Int]]   # zero rows: (column, FIX_ONE row 0 | FIX_E the last row)
     var pinned: List[UInt8]               # the head of the public inputs
+    var group_names: List[String]         # declared row groups (`group`): chains in declaration order
+    var group_chains: List[Int]
+    var group_sel: List[String]           # the group's selector public column
+    var group_inner: List[String]         # and its inner selector ("" none): the selector of its GATE_2 families
 
     def __init__(out self):
         self.cols = List[String]()
@@ -190,6 +219,10 @@ struct Statement(Movable):
         self.factors = List[Tuple[String, Int, Int, Int]]()
         self.zeros = List[Tuple[String, Int]]()
         self.pinned = List[UInt8]()
+        self.group_names = List[String]()
+        self.group_chains = List[Int]()
+        self.group_sel = List[String]()
+        self.group_inner = List[String]()
 
     def _fresh(self, name: String) raises:
         if name in self.col_index:
@@ -213,6 +246,42 @@ struct Statement(Movable):
         self.cols.append(name)
         self.kinds.append(kind)
         self.col_group.append(group)
+
+    def group(mut self, name: String, chains: Int, selector: String, inner: String = "") raises -> Int:
+        """A row group of `chains` chains at the next free base, returned (`wire`, `public_factor`, `restrict`
+        take absolute chains; `restrict` fixes the grid's first or last chain). `selector` is a public column the gadget declares (m = 1) and fills with 1 on
+        the group's chains and 0 elsewhere (`Layout.selector`); the gadget's other public columns are zero
+        off the group too. Columns declared with group=name share physical columns with the other groups'
+        columns of the same kind (a column that is a zero row, a restriction, the second factor of a
+        quadratic term, a lookup record or a LIMB6 stays its own); a family of the group reads the group's
+        witness columns only and holds under the selector, and a Horner accumulator ingesting the group's
+        columns is selected term by term, so it stays at 0 on the other groups' chains and one accumulator
+        may serve several groups. A GATE_2 family of the group takes `inner` (a public column, 1 on every
+        chain of the group but its last: `Layout.selector(group, inner=True)`) in place of the gate, since
+        its next-chain read on the group's last chain lands in the next group."""
+        if chains < 1:
+            raise Error("group needs at least one chain: " + name)
+        for g in self.group_names:
+            if g == name:
+                raise Error("group in use: " + name)
+        if self._pub_m(selector) != 1 or (inner != "" and self._pub_m(inner) != 1):
+            raise Error("group selector is a declared public column with m = 1: " + name)
+        for n in [selector, inner]:
+            if n == "":
+                continue
+            if n == selector and inner == selector:
+                raise Error("a group's selectors are its own columns: " + name)
+            for i in range(len(self.group_names)):
+                if self.group_sel[i] == n or self.group_inner[i] == n:
+                    raise Error("a group's selectors are its own columns: " + name)
+        var base = 0
+        for c in self.group_chains:
+            base += c
+        self.group_names.append(name)
+        self.group_chains.append(chains)
+        self.group_sel.append(selector)
+        self.group_inner.append(inner)
+        return base
 
     def table(mut self, rows: List[UInt8], width: Int) raises -> Int:
         """Register a lookup table (canonical bytes, `width` per row); returns its id. Rows are distinct (the
@@ -352,6 +421,37 @@ struct Statement(Movable):
         self.order.append((0, len(self.fams)))
         self.fams.append(_Family(name, terms.copy(), gate))
 
+    def _group_of(self, col: String) raises -> Int:
+        """The declared group of witness column `col`, -1 for none (a public name or a label group)."""
+        if col not in self.col_index:
+            return -1
+        var g = self.col_group[self.col_index[col]]
+        for i in range(len(self.group_names)):
+            if self.group_names[i] == g:
+                return i
+        return -1
+
+    def _pub_m(self, name: String) -> Int:
+        """The period parameter m of public column `name`, 0 for no such column."""
+        for i in range(len(self.pub_names)):
+            if self.pub_names[i] == name:
+                return get_u16(self.pubs, i * PUB)
+        return 0
+
+    def _is_record(self, name: String) raises -> Bool:
+        """Whether witness column `name` is a record or sorted column of an accumulator, or a LIMB6 (its range
+        lookup is the builder's): padded with table rows."""
+        if name in self.col_index and self.kinds[self.col_index[name]] == LIMB6:
+            return True
+        for a in self.accs:
+            for n in a.num:
+                if n == name:
+                    return True
+            for n in a.den:
+                if n == name:
+                    return True
+        return False
+
     def _is_pub(self, name: String) -> Bool:
         for n in self.pub_names:
             if n == name:
@@ -388,14 +488,60 @@ struct Statement(Movable):
         ones (degree bound, public bounds, table canonicality, point list)."""
         if len(self.order) + len(self.cols) > 65535:
             raise Error("family index is a u16")
-        var names = self.cols.copy()
-        var index = self.col_index.copy()
-        var kinds = self.kinds.copy()
-        var groups = self.col_group.copy()
+        var total = 0
+        for c in self.group_chains:
+            total += c
+        if total > p.h2():
+            raise Error("the groups' chains exceed h2")
+        # the physical column table: exclusive columns first in declaration order, then the pooled ones, per
+        # kind the k-th pooled column of every group at one physical index
+        var exclusive = List[Bool](length=len(self.cols), fill=False)
+        for i in range(len(self.cols)):
+            exclusive[i] = self._group_of(self.cols[i]) < 0 or self.kinds[i] == LIMB6
+        for z in self.zeros:
+            exclusive[self._wcol(self.col_index, z[0])] = True
+        for n in self.res_names:
+            exclusive[self._wcol(self.col_index, n)] = True
+        for fam in self.fams:
+            for t in fam.terms:
+                if t.b and t.b.value().col in self.col_index:
+                    exclusive[self.col_index[t.b.value().col]] = True
+        for a in self.accs:
+            for n in a.num:
+                exclusive[self._wcol(self.col_index, n)] = True
+            for n in a.den:
+                exclusive[self._wcol(self.col_index, n)] = True
+        var names = List[String]()
+        var index = Dict[String, Int]()
+        var kinds = List[Int]()
+        var groups = List[String]()
+        for i in range(len(self.cols)):
+            if exclusive[i]:
+                index[self.cols[i]] = len(names)
+                names.append(self.cols[i])
+                kinds.append(self.kinds[i])
+                groups.append(self.col_group[i])
+        var pool = List[List[Int]](length=BYTE + 1, fill=List[Int]())   # per kind: the physical indices of the pooled slots
+        var used = List[Int](length=(BYTE + 1) * len(self.group_names), fill=0)   # per (kind, group): slots taken
+        for i in range(len(self.cols)):
+            if exclusive[i]:
+                continue
+            var g = self._group_of(self.cols[i])
+            var k = self.kinds[i]
+            var slot = used[k * len(self.group_names) + g]
+            used[k * len(self.group_names) + g] += 1
+            if slot < len(pool[k]):
+                index[self.cols[i]] = pool[k][slot]
+            else:
+                index[self.cols[i]] = len(names)
+                pool[k].append(len(names))
+                names.append(self.cols[i])
+                kinds.append(k)
+                groups.append(self.col_group[i])
         var tables = self.tables.copy()
         var limbs = List[Int]()
         var limb_table = -1
-        for i in range(len(self.cols)):
+        for i in range(len(names)):
             if kinds[i] == LIMB6:
                 if limb_table < 0:
                     var t = List[UInt8](capacity=LIMB_ROWS)
@@ -404,11 +550,11 @@ struct Statement(Movable):
                     limb_table = len(tables)
                     tables.append(t^)
                 limbs.append(i)
-                self._fresh(self.cols[i] + ".sorted")
-                index[self.cols[i] + ".sorted"] = len(names)
-                names.append(self.cols[i] + ".sorted")
+                self._fresh(names[i] + ".sorted")
+                index[names[i] + ".sorted"] = len(names)
+                names.append(names[i] + ".sorted")
                 kinds.append(BYTE)
-                groups.append(self.col_group[i])
+                groups.append(groups[i])
         var w = len(names)
         var pub_at = w + (len(self.accs) + len(limbs)) * p.e
         var touched = List[Bool](length=w, fill=False)
@@ -420,6 +566,37 @@ struct Statement(Movable):
             var it = self.order[k]
             if it[0] == 0:
                 var fam = self.fams[it[1]].copy()
+                var g = -1                              # the family's group: its witness reads agree
+                for t in fam.terms:
+                    var ga = self._group_of(t.a.col)
+                    var gb = self._group_of(t.b.value().col) if t.b else -1
+                    for gr in [ga, gb]:
+                        if gr >= 0 and g >= 0 and gr != g:
+                            raise Error("family reads columns of two groups: " + fam.name)
+                        if gr >= 0:
+                            g = gr
+                if g >= 0:
+                    var sel = self.group_sel[g]
+                    if fam.gate == GATE_2:               # the gate would not stop at the group's last chain
+                        if self.group_inner[g] == "":
+                            raise Error("a grouped GATE_2 family needs the group's inner selector: " + fam.name)
+                        sel = self.group_inner[g]
+                        fam.gate = GATE_NONE
+                    for ref t in fam.terms:
+                        var ua = t.a.col in self.col_index and self._group_of(t.a.col) < 0
+                        var ub = Bool(t.b) and t.b.value().col in self.col_index and self._group_of(t.b.value().col) < 0
+                        if ua or ub:
+                            raise Error("a grouped family reads an ungrouped witness column (free off the group): " + fam.name)
+                        var wa = t.a.col in self.col_index
+                        var wb = Bool(t.b) and t.b.value().col in self.col_index
+                        if self.fams[it[1]].gate == GATE_2 and (t.b or not wa):
+                            raise Error("a grouped GATE_2 family is linear in the group's witness columns (the inner selector is its only factor): " + fam.name)
+                        if wb and self._is_record(t.b.value().col):
+                            raise Error("a grouped family's quadratic factor is a plain witness column (zero off the group), not a lookup record: " + fam.name)
+                        if (wa and t.a.k2 != 0 and not (sel != self.group_sel[g] and t.a.k2 == 1 and not t.b)) or (wb and t.b.value().k2 != 0):
+                            raise Error("a grouped family reads another chain only in a linear GATE_2 term (k2 = 1, the inner selector masks the group's last chain); other reads land in cells no family constrains: " + fam.name)
+                        if not t.b and t.a.col in self.col_index:   # a public-only term is the gadget's: zero off the group
+                            t.b = Read(sel, 0, 0)
                 for t in fam.terms:
                     var quadratic = Bool(t.b)
                     var ca = self._resolve[p](index, t.a, pub_at, touched, read)
@@ -449,8 +626,15 @@ struct Statement(Movable):
                     touched[c] = True
                     read[c] = True
                     var g = -1
+                    var gr = self._group_of(t.a.col)
                     if t.b:
                         g = self._resolve[p](index, t.b.value(), pub_at, touched, read)
+                    elif gr >= 0:
+                        g = self._resolve[p](index, Read(self.group_sel[gr], 0, 0), pub_at, touched, read)
+                    if gr >= 0 and a.start != 0:
+                        raise Error("a horner accumulator over a group's columns starts at 0 (neutral off the group): " + a.name)
+                    if gr >= 0 and t.b and t.b.value().col != self.group_sel[gr]:
+                        raise Error("a grouped horner term takes the group's selector only: " + a.name)
                     ingest.append((c, t.a.k1, t.coef, t.chal, g))
                 f.horner(k, w + it[1] * p.e, a.start, a.scale, ingest)
             else:
@@ -484,7 +668,7 @@ struct Statement(Movable):
                 touched[i] = True
                 fam_index += 1
         for j in range(len(limbs)):                      # range: the limb is in [64]
-            var s = len(self.cols) + j
+            var s = w - len(limbs) + j
             f.lookup(fam_index, w + (len(self.accs) + j) * p.e, [limbs[j]], [s], limb_table)
             touched[limbs[j]] = True
             touched[s] = True
@@ -517,6 +701,18 @@ struct Statement(Movable):
                 raise Error("column is read by nothing and constrained by nothing: " + names[i])
             if sorted_of[i] >= 0 and (read[i] or acc_uses[i] != 1):   # the sort overwrites it: one lookup's, read by nothing
                 raise Error("a sorted column belongs to one lookup and is read by nothing else: " + names[i])
+        for i in range(len(self.cols)):                  # a pooled column is touched only through a family or a horner term
+            if exclusive[i]:
+                continue
+            var seen = False
+            for fam in self.fams:
+                for t in fam.terms:
+                    seen = seen or t.a.col == self.cols[i] or (Bool(t.b) and t.b.value().col == self.cols[i])
+            for a in self.accs:
+                for t in a.ingest:
+                    seen = seen or t.a.col == self.cols[i]
+            if not seen:
+                raise Error("column is read by nothing and constrained by nothing: " + self.cols[i])
         var wires = List[UInt8]()
         var sigma = List[UInt8]()
         var pubf = List[UInt8]()
@@ -574,8 +770,28 @@ struct Statement(Movable):
             for i in range(nf):
                 pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]], self.factors[i][3]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)
-        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros, self.pinned)
-        var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)
+        var grp = List[UInt8]()
+        var gbase = 0
+        for i in range(len(self.group_names)):
+            var inner_i = NONE
+            for j in range(len(self.pub_names)):
+                if self.pub_names[j] == self.group_inner[i]:
+                    inner_i = j
+            var sel_i = 0
+            for j in range(len(self.pub_names)):
+                if self.pub_names[j] == self.group_sel[i]:
+                    sel_i = j
+            grp.extend(group_record(gbase, self.group_chains[i], sel_i, inner_i))
+            gbase += self.group_chains[i]
+        var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros, self.pinned, grp)
+        var group_base = Dict[String, Int]()
+        var group_chains = Dict[String, Int]()
+        var base = 0
+        for i in range(len(self.group_names)):
+            group_base[self.group_names[i]] = base
+            group_chains[self.group_names[i]] = self.group_chains[i]
+            base += self.group_chains[i]
+        var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res, group_base, group_chains)
         return Compiled(shape^, f.bytes.copy(), layout^)
 
 
@@ -592,7 +808,10 @@ def _row_key(bytes: List[UInt8], off: Int, width: Int) -> Int:
 
 
 def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, live_rows: Int) raises:
-    """Fill rows [live_rows, N) of the group's columns with the neutral value: table row i mod K for a lookup
+    """Fill the group's idle rows with the neutral value: a declared group's are [live_rows, chains h1) of its
+    chain range in every declared group's column (the last declared group's run to the grid's end; another
+    declared group's lookup record columns take table rows over the whole range), a label group's
+    [live_rows, N) in its columns. Table row i mod K for a lookup
     record column (its record position picks the byte), zero otherwise. Z blocks and sorted columns are the
     prover's. Table filler covers the table when the idle rows are at least K (the dummy rule). Neutrality of
     the frontend's own families under this filler (statement-layer decision 1) is the frontend's to arrange:
@@ -603,16 +822,29 @@ def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, 
     if live_rows % p.h1() != 0:
         raise Error("live_rows is whole chains (a multiple of h1): cyclic reads wrap inside a chain")
     var seen = False
+    var first = 0                       # a declared group pads every column over its own chains (its
+    var last = N                        # columns are pooled), the last group to the grid's end
+    if group in layout.group_base:
+        seen = True
+        first = layout.group_base[group] * p.h1()
+        if layout.group_base[group] + layout.group_chains[group] < _chains_total(layout):
+            last = first + layout.group_chains[group] * p.h1()
+        if live_rows > layout.group_chains[group] * p.h1():
+            raise Error("live_rows exceed the group's chains")
     for c in range(layout.columns_w()):
-        if layout.groups[c] != group:
-            continue
+        var own = layout.groups[c] == group
+        if not own and (group not in layout.group_base or layout.groups[c] not in layout.group_base):
+            continue                        # a label group's columns are its own pad_trace call's
         seen = True
         var slot = layout.slots[c]
-        if slot[0] == -2:
+        var lo = first + live_rows          # another declared group's lookup record takes table rows over the whole range
+        if slot[0] != -1 and slot[0] != -2 and not own:
+            lo = first
+        if slot[0] == -2 or lo >= last or (slot[0] == -3 and not own):
             continue
         if slot[0] == -3:
             raise Error("column is a record of two lookups; no single table row pads it: " + layout.names[c])
-        for i in range(live_rows, N):
+        for i in range(lo, last):
             if slot[0] < 0:
                 trace[c * N + i] = 0
             else:
@@ -620,6 +852,13 @@ def pad_trace[p: Params](layout: Layout, mut trace: List[UInt8], group: String, 
                 trace[c * N + i] = layout.tables[slot[0]][(i % rows) * slot[2] + slot[1]]
     if not seen:
         raise Error("unknown group " + group)
+
+
+def _chains_total(layout: Layout) -> Int:
+    var n = 0
+    for e in layout.group_chains.items():
+        n += e.value
+    return n
 
 
 def advice[p: Params](layout: Layout, trace: List[UInt8]) raises -> List[UInt8]:

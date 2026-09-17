@@ -21,7 +21,7 @@ from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, public_value, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -126,6 +126,18 @@ def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inpu
     if len(public) != shape.public_bytes[p]():
         raise Error("public data has the wrong size")
     check_field_bytes(public)
+    for i in range(len(shape.groups) // GRP):        # a group's selectors are its chain indicator, not an input
+        var base = get_u16(shape.groups, i * GRP)
+        var end = base + get_u16(shape.groups, i * GRP + 2)
+        for t in [4, 6]:
+            var c = get_u16(shape.groups, i * GRP + t)
+            if c == NONE:
+                continue
+            for x2 in range(p.h2()):
+                var want = UInt8(1) if base <= x2 and x2 < end - (1 if t == 6 else 0) else UInt8(0)
+                for x1 in range(p.h1()):
+                    if public_value(shape.publics, public, c, x2, x1, p.h1(), p.h2()) != want:
+                        raise Error("a group selector's public data is not its chain indicator")
 
 
 def _one() -> E:
