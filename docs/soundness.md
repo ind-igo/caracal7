@@ -339,7 +339,7 @@ is faithful, and the checks compose as described below. They are not a proof of 
 | `starts_and_zero_rows` | `(accumulators + zero_rows)(h2-1)` | Union allowance for the separate random-z2 line checks in `_boundaries` |
 | `restrictions` | sum of `max(h1, public_line_length)-1` | Separate random-z1 line equalities in `_restrictions` |
 | `horner_identities` | maximum challenge degree of a chain-end term | Coefficient identities after substituting the Horner recurrence; see below |
-| `wire_fingerprints` | maximum challenge degree of an endpoint used as a slot/public factor | Selected unequal underlying values must have unequal fingerprints except on a root event |
+| `wire_fingerprints` | maximum challenge degree of an endpoint used as a slot/public factor | Selected unequal underlying values must have unequal fingerprints except on a root event; with a row-group selector on the ingest (2026-09-17) the map is injective on the selected coordinates only, so the verifier refuses a public factor whose selector is zero on its chain |
 | `wire_product` | `F = slots*h2 + public_factors` | Joint permutation product in the independent `(beta_w, gamma_w)` challenges |
 | `wire_zero_factors` | `2 F` | Union allowance for a zero numerator/denominator factor, conditional on the earlier fingerprint challenges |
 

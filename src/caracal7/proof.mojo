@@ -209,8 +209,10 @@ struct Shape(Writable):
                         raise Error("horner descriptor: the entries before the ingest range are not its transition entries")
                 for i in range(first, first + count):
                     var en = entry(families, i)
-                    if en.col_a >= columns_w or en.col_b != NONE or en.mult != 1 or en.dj2_a != 0 or en.dj1_a % 2 != 0 or en.basis != NO_BASIS or en.basis2 != NO_BASIS or en.family != acc_family(accs, k):
-                        raise Error("horner ingest entries are gated linear reads of witness columns in the accumulator's family")
+                    if en.col_a >= columns_w or en.mult != 1 or en.dj2_a != 0 or en.dj1_a % 2 != 0 or en.basis != NO_BASIS or en.basis2 != NO_BASIS or en.family != acc_family(accs, k):
+                        raise Error("horner ingest entries are gated reads of witness columns in the accumulator's family")
+                    if en.col_b != NONE and (en.col_b < opened or en.col_b >= opened + self.columns_p or en.dj2_b != 0 or en.dj1_b % 2 != 0):
+                        raise Error("a horner ingest entry's selector is a public column read on the same chain")
                 continue
             var w_num = Int(accs[k * ACC + 2]) | Int(accs[k * ACC + 3]) << 8
             var w_den = Int(accs[k * ACC + 4]) | Int(accs[k * ACC + 5]) << 8
@@ -279,9 +281,11 @@ struct Shape(Writable):
             var k = get_u16(pubf, i * PUBF)
             if len(wires) == 0 or k >= len(accs) // ACC or acc_kind(accs, k) != KIND_HORNER:
                 raise Error("public factor names a horner accumulator of a wired statement")
-            for t in range(2, PUBF):
+            for t in range(2, 6):
                 if Int(pubf[i * PUBF + t]) >= 127:
                     raise Error("public factor id and sigma must be canonical field elements (< 127)")
+            if get_u16(pubf, i * PUBF + 6) >= p.h2():
+                raise Error("public factor chain is below h2")
         if slots > 0:                                  # sigma is a permutation of the ids: the slots' cosets kappa^s H2 and the public factors' own
             var ids = Dict[Int, Int]()
             var kappa = f2_primitive()

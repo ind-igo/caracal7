@@ -57,10 +57,11 @@ st.acc("z", KIND_PERM, num=[...], den=[...])   # Z block; KIND_LOOKUP takes tabl
 st.pub("m", m=4)                               # public column, block (d2, h1); d2 = 0 means h2 / m
 st.restrict("s0", FIX_E)                       # a public line on the last chain; count = 0 means h1 coefficients
 st.horner("ra", [Term(1, st.read("a", k1=1))], scale=2, start=0)   # the second Z kind: R(next) = scale R + sum coef chal read; scale, chal are element indices
+st.horner("rg", [Term(1, st.read("a"), st.read("g"))], scale=2)     # an ingest term times a public column: a row-group selector, R stays at start where g is 0
 st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb")), Term(-1, st.read("rc"))], gated=False)   # a family on H2 over accumulators at (e1, X2)
 var sa = st.slot("ra")                         # a wiring slot: the accumulator's chain-end values; slots pair into products
 st.wire(sa, 3, sb, 7)                          # slot sa on chain 3 equals slot sb on chain 7
-st.public_factor("r", "ra", sb, 0)             # a public value fingerprinted by "ra", equal to slot sb on chain 0; its ingest columns follow the restriction lines in the public data
+st.public_factor("r", "ra", sb, 0)             # a public value fingerprinted by "ra" (selectors read on chain 0), equal to slot sb on chain 0; its ingest columns follow the restriction lines in the public data
 st.zero("y03", FIX_E)                          # the column is zero on the last row (FIX_ONE: row 0) of every chain: its opening at (coordinate, z2) vanishes
 st.pin(circuit_bytes)                          # the public inputs must start with these bytes (a description the statement was compiled from)
 var r = st.read("a0", k1=3)                    # cyclic read (omega1^3 x1, x2); k2=1 is the next-chain read

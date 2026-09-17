@@ -56,7 +56,7 @@ comptime HORNER_TRANSITIONS = 2 * E_BYTES   # linear entries Families.horner emi
 # TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
-comptime PUBF = 6       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2
+comptime PUBF = 8       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2, chain u16 (where its public reads are taken)
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -190,12 +190,13 @@ struct Families:
                 self.add(family, 126, z_col + t, col_b=f[j], mult=1, chal=4, basis=t, basis2=j)
         self._descriptor(family, z_col, f, s, KIND_LOOKUP, table)
 
-    def horner(mut self, family: Int, z_col: Int, start: Int, scale: Int, ingest: List[Tuple[Int, Int, Int, Int]]) raises:
+    def horner(mut self, family: Int, z_col: Int, start: Int, scale: Int, ingest: List[Tuple[Int, Int, Int, Int, Int]]) raises:
         """The second Z kind (polynomial-mulmod 5): R(1, X2) = start, R(omega1 x1, x2) = scale R(x1, x2) + sum_i
-        coef_i chal_i c_i(omega1^k1_i x1, x2) with `scale` a stage-1 element index (-1: 1) and `ingest` the
-        terms (column, k1, coef, chal index or -1). The transition (X1 - e1) (R(next) - scale R - sum) is
-        2 e + |ingest| linear entries; the descriptor names the ingest entries by range so the kernel and the
-        residual read one definition."""
+        coef_i chal_i [g_i(x1, x2)] c_i(omega1^k1_i x1, x2) with `scale` a stage-1 element index (-1: 1) and
+        `ingest` the terms (column, k1, coef, chal index or -1, public column index or -1: a selector g that
+        keeps the term off the chains where it is zero). The transition (X1 - e1) (R(next) - scale R - sum) is
+        2 e + |ingest| entries, quadratic where a term has a selector (the axis-1 gate admits that); the
+        descriptor names the ingest entries by range so the kernel and the residual read one definition."""
         if start < 0 or start > 1 or scale < -1 or scale > 254 or len(ingest) == 0 or len(ingest) > 65535:
             raise Error("horner accumulator: start in {0, 1}, scale an element index, at least one ingest term")
         for t in range(E_BYTES):
@@ -203,7 +204,7 @@ struct Families:
             self.add(family, 126, z_col + t, mult=1, chal=scale + 1, basis=t)
         var first = self.count
         for it in ingest:
-            self.add(family, ((-it[2] % 127) + 127) % 127, it[0], k1_a=it[1], mult=1, chal=it[3] + 1)
+            self.add(family, ((-it[2] % 127) + 127) % 127, it[0], k1_a=it[1], col_b=it[4], mult=1, chal=it[3] + 1)
         var a = List[UInt8](length=ACC, fill=0)
         set_u16(a, 0, z_col)
         set_u16(a, 2, first)
@@ -352,17 +353,21 @@ def wire_record(family: Int, col_a: Int, col_b: Int) raises -> List[UInt8]:
     return w^
 
 
-def public_factor_record(acc: Int, id: F2, sigma: F2) raises -> List[UInt8]:
+def public_factor_record(acc: Int, id: F2, sigma: F2, chain: Int) raises -> List[UInt8]:
     """A public value in the copy constraint: a virtual slot with id `id` whose value is the fingerprint of
-    the public data by Horner accumulator `acc` (horner_chain_end), and `sigma` the id it is wired to."""
-    if acc < 0 or acc > 65535:
-        raise Error("public factor: accumulator index is a u16")
-    return [UInt8(acc & 255), UInt8(acc >> 8), id[0], id[1], sigma[0], sigma[1]]
+    the public data by Horner accumulator `acc` (horner_chain_end, its selectors read on `chain`), and
+    `sigma` the id it is wired to."""
+    if acc < 0 or acc > 65535 or chain < 0 or chain > 65535:
+        raise Error("public factor: accumulator index and chain are u16")
+    return [UInt8(acc & 255), UInt8(acc >> 8), id[0], id[1], sigma[0], sigma[1], UInt8(chain & 255), UInt8(chain >> 8)]
 
 
-def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, cols: Span[UInt8, _], chals: Span[UInt8, _]) -> E:
+def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, cols: Span[UInt8, _], chals: Span[UInt8, _],
+                                sel: Span[UInt8, _] = Span[UInt8, ImmStaticOrigin]()) -> E:
     """R(e1) of Horner accumulator k over one chain whose ingest columns are `cols`: entry i of the ingest range
-    reads cols[i h1 + x1]. The verifier's fingerprint of a public value (polynomial-mulmod "Public constants")."""
+    reads cols[i h1 + x1], times sel[i h1 + x1] when `sel` is given (the entry's selector on that chain, 1
+    where the entry has none: `selector_values`). The verifier's fingerprint of a public value
+    (polynomial-mulmod "Public constants")."""
     comptime h1 = p.h1()
     var first = get_u16(accs, k * ACC + 2)
     var count = get_u16(accs, k * ACC + 4)
@@ -375,12 +380,40 @@ def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], 
             var en = entry(families, first + i)
             var v = E(0)
             v[0] = cols[i * h1 + (x1 + en.dj1_a // 2) % h1]
+            if len(sel) > 0:
+                v = f_mul(v, E(sel[i * h1 + x1]))
             v = f_mul(v, E(UInt8(en.coef)))
             if en.chal != 0:
                 v = ext_mul[E_LEVEL](v, list_e(chals, en.chal - 1))
             s = f_add(s, v)
         r = f_sub(ext_mul[E_LEVEL](scale, r), s)
     return r
+
+
+def public_value(publics: Span[UInt8, _], values: Span[UInt8, _], i: Int, x2: Int, x1: Int, h1: Int, h2: Int) -> UInt8:
+    """Public column i at (x1, x2) from the public data (`value_bytes` layout: one period of (h2 / m, h1) values
+    per column in order, x2 major)."""
+    var off = 0
+    for j in range(i):
+        off += h1 * (h2 // get_u16(publics, j * PUB))
+    var period = h2 // get_u16(publics, i * PUB)
+    return values[off + (x2 % period) * h1 + x1]
+
+
+def selector_values[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, publics: Span[UInt8, _], values: Span[UInt8, _],
+                               pub_at: Int, chain: Int) -> List[UInt8]:
+    """The `sel` argument of horner_chain_end for accumulator k on `chain`: per ingest entry, h1 values of its
+    selector (a public column read as col_b, at the entry's shift) or ones."""
+    comptime h1 = p.h1()
+    var first = get_u16(accs, k * ACC + 2)
+    var count = get_u16(accs, k * ACC + 4)
+    var out = List[UInt8](length=count * h1, fill=1)
+    for i in range(count):
+        var en = entry(families, first + i)
+        if en.col_b != NONE:
+            for x1 in range(h1):
+                out[i * h1 + x1] = public_value(publics, values, en.col_b - pub_at, chain, (x1 + en.dj1_b // 2) % h1, h1, p.h2())
+    return out^
 
 
 def lookup_constant(table: Span[UInt8, _], w: Int, chals: Span[UInt8, _]) raises -> E:

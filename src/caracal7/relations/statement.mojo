@@ -247,14 +247,18 @@ struct Statement(Movable):
 
     def horner(mut self, name: String, ingest: List[Term], scale: Int = -1, start: Int = 0) raises:
         """The second Z kind (polynomial-mulmod 5): R(1, X2) = start and R(omega1 x1, x2) = scale R + sum of the
-        ingest terms, each coef chal read of a W column inside the chain (k2 = 0, linear, no basis). `scale` is a
-        stage-1 element index (-1: 1). Chain ends meet in `chain_end` families."""
+        ingest terms, each coef chal read of a W column inside the chain (k2 = 0, no basis), optionally times
+        a public column `b` (a selector: the term is off where it is zero, so the accumulator stays at `start`
+        on the chains of another group). `scale` is a stage-1 element index (-1: 1). Chain ends meet in
+        `chain_end` families."""
         self._fresh(name)
         if len(ingest) == 0 or (start != 0 and start != 1) or scale < -1:
             raise Error("horner accumulator needs ingest terms, start in {0, 1}, and a scale element: " + name)
         for t in ingest:
-            if t.b or t.a.k2 != 0 or t.basis >= 0 or t.basis2 >= 0:
-                raise Error("horner ingest terms are linear same-chain reads without basis factors: " + name)
+            if t.a.k2 != 0 or t.basis >= 0 or t.basis2 >= 0 or (t.b and (t.b.value().k1 != 0 or t.b.value().k2 != 0 or not self._is_pub(t.b.value().col))):
+                raise Error("horner ingest terms are same-chain reads without basis factors, times an unshifted public selector at most: " + name)
+            if t.b and start == 1 and scale != -1:
+                raise Error("a selected ingest term keeps the accumulator at its start only with start 0 or scale 1: " + name)
         self.order.append((1, len(self.accs)))
         self.accs.append(_Acc(name, KIND_HORNER, List[String](), List[String](), -1, start, scale, ingest.copy()))
 
@@ -348,6 +352,12 @@ struct Statement(Movable):
         self.order.append((0, len(self.fams)))
         self.fams.append(_Family(name, terms.copy(), gate))
 
+    def _is_pub(self, name: String) -> Bool:
+        for n in self.pub_names:
+            if n == name:
+                return True
+        return False
+
     def _acc_index(self, name: String) raises -> Int:
         for i in range(len(self.accs)):
             if self.accs[i].name == name:
@@ -431,14 +441,17 @@ struct Statement(Movable):
                     f.chain_end(k, t.coef, w + self._acc_index(t.a.col) * p.e, cb, t.chal, en.gated)
             elif self.accs[it[1]].kind == KIND_HORNER:
                 var a = self.accs[it[1]].copy()
-                var ingest = List[Tuple[Int, Int, Int, Int]]()
+                var ingest = List[Tuple[Int, Int, Int, Int, Int]]()
                 for t in a.ingest:
                     if t.a.k1 < 0 or t.a.k1 >= p.h1():
                         raise Error("read shift: k1 in [0, h1)")
                     var c = self._wcol(index, t.a.col)
                     touched[c] = True
                     read[c] = True
-                    ingest.append((c, t.a.k1, t.coef, t.chal))
+                    var g = -1
+                    if t.b:
+                        g = self._resolve[p](index, t.b.value(), pub_at, touched, read)
+                    ingest.append((c, t.a.k1, t.coef, t.chal, g))
                 f.horner(k, w + it[1] * p.e, a.start, a.scale, ingest)
             else:
                 var a = self.accs[it[1]].copy()
@@ -559,7 +572,7 @@ struct Statement(Movable):
             for n in range(ns * h2):
                 sigma.extend([ids[succ[n]][0], ids[succ[n]][1]])
             for i in range(nf):
-                pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]]))
+                pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]], self.factors[i][3]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)
         var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros, self.pinned)
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res)

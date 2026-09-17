@@ -21,7 +21,7 @@ from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -203,7 +203,15 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
         for t in range(n):
             cols.append(public[off + t])
         off += n
-        var vg = f_add(horner_chain_end[p](families, shape.accs, get_u16(shape.pubf, i * PUBF), cols, stage1), gw)
+        var k = get_u16(shape.pubf, i * PUBF)
+        var sel = selector_values[p](families, shape.accs, k, shape.publics, public, shape.columns_w + shape.columns_z, get_u16(shape.pubf, i * PUBF + 6))
+        var selected = False
+        for t in range(len(sel)):
+            if sel[t] != 0:
+                selected = True
+        if not selected:
+            raise Error("public factor's selector is zero on its chain")
+        var vg = f_add(horner_chain_end[p](families, shape.accs, k, cols, stage1, sel), gw)
         var f_id = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](F2(shape.pubf[i * PUBF + 2], shape.pubf[i * PUBF + 3]))))
         var f_sg = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](F2(shape.pubf[i * PUBF + 4], shape.pubf[i * PUBF + 5]))))
         if f_id.reduce_or() == 0 or f_sg.reduce_or() == 0:

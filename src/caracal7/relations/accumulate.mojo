@@ -7,8 +7,9 @@ column 0 of Z; w_num [2, 4), w_den [4, 6); num columns [6, 22); den columns [22,
 A KIND_HORNER descriptor (polynomial-mulmod 5, the spec's {start, ingest, scale, end}) reuses [2, 8): first
 ingest entry u16 [2, 4), ingest count [4, 6), start u8 [6], scale u8 [7] (0 none, else element + 1). Its
 ingest terms are the family entries themselves (ir.Families.horner), so the kernel and the residual read
-one definition: R(1, x2) = start, R(omega1 x1, x2) = scale R - sum_entries coef chal c(omega1^k1 x1, x2)
-(the entries carry the transition's sign). No Z2, N, or D: chain ends meet in chain-end families
+one definition: R(1, x2) = start, R(omega1 x1, x2) = scale R - sum_entries coef chal [g] c(omega1^k1 x1, x2)
+(the entries carry the transition's sign; g is the entry's col_b when it names a public column, a selector
+that keeps the term off the chains of another row group, so R stays at `start` there). No Z2, N, or D: chain ends meet in chain-end families
 (smallgrid.mojo). ponytail: one thread per (accumulator, chain) for the scan (h1 steps); the segmented
 affine scan of 10.1 if the scan still shows in a profile.
 fp(c) = sum_j c_j b_j is the fingerprint of 6.1 (b_j the unit vector j of E: no multiplication, the
@@ -59,7 +60,7 @@ from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ex
 from caracal7.core.params import Params
 from caracal7.core.backend import BACKEND
 from caracal7.core.bytes import Base, Buf, u16
-from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED, ENT_A, ENT_COEF, ENT_CHAL
+from caracal7.relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED, ENT_A, ENT_B, ENT_COEF, ENT_CHAL
 from caracal7.core.arena import Arena, Bump, ST_ACC, ST_SG
 
 
@@ -262,11 +263,13 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[E_BYTES], wires: Buf[1], sig
     chain_prod.store(base, g * h2 + j, ext_mul[E_LEVEL](n, ext_inv0[E_LEVEL](d)))
 
 
-def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1], chals: Buf[E_BYTES], zval: Buf[E_BYTES], count: Int32):
+def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1], chals: Buf[E_BYTES], zval: Buf[E_BYTES], count: Int32,
+                        pubs: Buf[1], pub_at: Int32):
     """One thread per (accumulator, row), the Horner descriptors of the `count` at `accs` (other kinds skip):
-    the sum over the descriptor's ingest entries of coef chal c_a(omega1^k1 x1, x2), the read cyclic inside
-    the chain (fields of ir.mojo; kappa at [0, e) is not read, it is folded later), into the accumulator's
-    Z block, which k_horner_scan then scans in place."""
+    the sum over the descriptor's ingest entries of coef chal [g] c_a(omega1^k1 x1, x2), the read cyclic inside
+    the chain and g the entry's selector when col_b names a public column (`pubs` holds their values as
+    (column - pub_at, x2, x1); fields of ir.mojo; kappa at [0, e) is not read, it is folded later), into the
+    accumulator's Z block, which k_horner_scan then scans in place."""
     comptime N = p.N()
     comptime h1 = p.h1()
     var t = global_idx.x
@@ -287,6 +290,10 @@ def k_ingest[p: Params](base: Base, trace: Buf[1], families: Buf[1], accs: Buf[1
         var col = u16(base, families.at(o + ENT_A))
         var k1 = u16(base, families.at(o + ENT_A + 2)) // 2
         var v = Float32(Int(trace.load(base, col * N + x2 * h1 + (x1 + k1) % h1))) * Float32(Int(families.load(base, o + ENT_COEF)))
+        var cb = u16(base, families.at(o + ENT_B))
+        if cb != NONE:                                  # 126 * 126 * 126 < 2^21 before the reduce, then below 64
+            var k1b = u16(base, families.at(o + ENT_B + 2)) // 2
+            v = fp_reduce(v * Float32(Int(pubs.load(base, (cb - Int(pub_at)) * N + x2 * h1 + (x1 + k1b) % h1))))
         var chal = Int(families.load(base, o + ENT_CHAL))
         if chal != 0:
             s += fp_reduce(to_f32(chals.load(base, chal - 1)) * v)
@@ -322,12 +329,15 @@ def k_horner_scan[p: Params](base: Base, accs: Buf[1], chals: Buf[E_BYTES], zval
         r = fp_reduce(fp_ext_mul[E_LEVEL](scale_f, r) - ingest)
 
 
-def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, accs: Int, chals: Int, A: AccLayout, count: Int) raises:
+def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: Int, accs: Int, chals: Int, A: AccLayout, count: Int,
+                      pubs: Int, pub_at: Int) raises:
     """Every KIND_HORNER accumulator among the `count` descriptors at `accs`: R into its Z block (row, e),
-    two launches over all of them (a client grid has 13 on 576 chains: one at a time starved the GPU)."""
+    two launches over all of them (a client grid has 13 on 576 chains: one at a time starved the GPU).
+    `pubs` is the public values tile (column, x2, x1) the selected ingest terms read, `pub_at` the index of
+    its first column (columns_w + columns_z)."""
     comptime B = BACKEND.block
     ctx.enqueue_function[k_ingest[p]](arena.buf, Buf[1](trace), Buf[1](families), Buf[1](accs), Buf[E_BYTES](chals), Buf[E_BYTES](A.zval), Int32(count),
-                                      grid_dim=ceildiv(count * p.N(), B), block_dim=B)
+                                      Buf[1](pubs), Int32(pub_at), grid_dim=ceildiv(count * p.N(), B), block_dim=B)
     ctx.enqueue_function[k_horner_scan[p]](arena.buf, Buf[1](accs), Buf[E_BYTES](chals), Buf[E_BYTES](A.zval), Int32(count),
                                            grid_dim=ceildiv(count * p.h2(), B), block_dim=B)
 

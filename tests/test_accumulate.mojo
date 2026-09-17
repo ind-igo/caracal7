@@ -9,7 +9,11 @@ from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_on
 from caracal7.core.params import Params, CLIENT
 from caracal7.core.arena import Arena, Bump
 from caracal7.relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
-from caracal7.relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end
+from caracal7.relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end, selector_values
+from caracal7.relations.statement import Statement, Term, Compiled, BIT, BYTE
+from caracal7.prover import Prover, load_trace, load_public
+from caracal7.verifier import verify
+from caracal7.core.hash import Blake3
 from caracal7.relations.sort import counting_sort
 from caracal7.core.bytes import get_u16, list_e, append_u32
 from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
@@ -215,6 +219,111 @@ def _run(ctx: DeviceContext, accs: List[UInt8], k: Int, var trace: List[UInt8], 
     return (z^, boundary, list_e(dend, h2 - 1))
 
 
+def _selected_statement() raises -> Statement:
+    """horner_statement with every ingest term times the public selector g, a public factor on chain 0 and a wire
+    between chains 3 and 4: the accumulators stay at 0 on the chains where g is 0, so the ungated chain end
+    holds whatever those chains hold."""
+    var st = Statement()
+    st.col("a", BIT)
+    st.col("b", BIT)
+    st.col("c", BYTE)
+    st.pub("g", 1)
+    var dg = st.derived(CHAL_MUL, 1, 2)
+    st.horner("ra", [Term(1, st.read("a", k1=1), st.read("g"))], scale=2)
+    st.horner("rb", [Term(3, st.read("b"), st.read("g"), chal=1)], scale=2)
+    st.horner("rc", [Term(1, st.read("c"), st.read("g"))], scale=2)
+    st.chain_end("mul", [Term(1, st.read("ra"), st.read("rb")), Term(-3, st.read("rc"), chal=dg)])
+    var sc = st.slot("rc")
+    st.wire(sc, 3, sc, 4)
+    st.public_factor("pc", "rc", sc, 0)
+    return st^
+
+
+def _verdict(proof: List[UInt8], c: Compiled, public: List[UInt8]) raises -> String:
+    var fam = c.families.copy()
+    try:
+        _ = verify[p, Blake3](proof.copy(), c.shape, List[UInt8](), fam, public)
+    except e:
+        return String(e)
+    return String("accepted")
+
+
+def test_selected_ingest_masks_the_chains_of_another_group() raises:
+    """The selector g is 1 on the lower half of the chains: the product trace there, garbage above (random
+    bytes in c, the bits left as they are), and the proof is accepted; with g raised on one garbage chain the
+    residual fails; the public factor is fingerprinted with the selector on its own chain."""
+    var ctx = DeviceContext()
+    var c = _selected_statement().compile[p]()
+    var trace = horner_trace[p](1)
+    for col in range(3):                     # chain 4 copies chain 3: the wire
+        for x1 in range(h1):
+            trace[col * N + 4 * h1 + x1] = trace[col * N + 3 * h1 + x1]
+    var s = 7
+    for x2 in range(h2 // 2, h2):
+        for x1 in range(h1):
+            s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+            trace[2 * N + x2 * h1 + x1] = UInt8((s >> 8) % 127)
+    var block = List[UInt8](length=N, fill=0)
+    for x2 in range(h2 // 2):
+        for x1 in range(h1):
+            block[x2 * h1 + x1] = 1
+    var prover = Prover[p, Blake3](ctx, _selected_statement().compile[p]().take_shape(), c.families.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_public[p, Blake3](ctx, prover, block)
+    var proof = prover.prove(ctx, List[UInt8]())
+    var public = block.copy()
+    for x1 in range(h1):
+        public.append(trace[2 * N + x1])          # the factor: c on chain 0
+    assert_equal(_verdict(proof, c, public), "accepted")
+    var raised = public.copy()
+    for x1 in range(h1):
+        raised[(h2 - 1) * h1 + x1] = 1
+    assert_equal(_verdict(proof, c, raised), "residual identity fails at z")
+    var wrong = public.copy()
+    wrong[N + 3] = (wrong[N + 3] + 1) % 127
+    assert_equal(_verdict(proof, c, wrong), "wiring grand product is not the public factor")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+
+
+def test_selected_ingest_device_matches_the_fingerprint() raises:
+    """Device R of the selected accumulators: 0 at every chain end where g is 0, and at chain 0 the verifier's
+    fingerprint of chain 0's column with the selector."""
+    var c = _selected_statement().compile[p]()
+    var chals = _chals(c.shape.chals.copy())
+    var trace = horner_trace[p](1)
+    var block = List[UInt8](length=N, fill=0)
+    for x2 in range(h2 // 2):
+        for x1 in range(h1):
+            block[x2 * h1 + x1] = 1
+    var ctx = DeviceContext()
+    var bump = Bump()
+    var o_trace = bump.alloc(3 * N)
+    var o_fam = bump.alloc(len(c.families))
+    var o_acc = bump.alloc(3 * ACC)
+    var o_chals = bump.alloc(len(chals))
+    var o_pub = bump.alloc(N)
+    var A = AccLayout.__init__[p](bump, 3, 0, 0)
+    var arena = Arena(ctx, bump.used)
+    arena.upload(ctx, o_trace, _host(ctx, trace))
+    arena.upload(ctx, o_fam, _host(ctx, c.families))
+    arena.upload(ctx, o_acc, _host(ctx, c.shape.accs))
+    arena.upload(ctx, o_chals, _host(ctx, chals))
+    arena.upload(ctx, o_pub, _host(ctx, block))
+    var pub_at = c.shape.columns_w + c.shape.columns_z
+    horner[p](ctx, arena, o_trace, o_fam, o_acc, o_chals, A, 3, o_pub, pub_at)
+    for k in range(3):
+        var got = _down(ctx, arena, A.zval_at(k), N * E_BYTES)
+        for x2 in range(h2 // 2, h2):
+            assert_true(list_e(got, x2 * h1 + h1 - 1) == E(0), "R is not neutral on an unselected chain")
+        var cols = List[UInt8]()
+        for x1 in range(h1):
+            cols.append(trace[k * N + x1])
+        var sel = selector_values[p](c.families, c.shape.accs, k, c.shape.publics, block, pub_at, 0)
+        assert_true(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals, sel) == list_e(got, h1 - 1), "fingerprint differs at chain 0 for accumulator " + String(k))
+        assert_true(list_e(got, h1 - 1) != E(0), "vacuous")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
 
@@ -288,7 +397,7 @@ def test_horner_accumulator_matches_host_and_meets_the_chain_end() raises:
     arena.upload(ctx, o_acc, _host(ctx, c.shape.accs))
     arena.upload(ctx, o_chals, _host(ctx, chals))
     var ends = List[E]()
-    horner[p](ctx, arena, o_trace, o_fam, o_acc, o_chals, A, 3)
+    horner[p](ctx, arena, o_trace, o_fam, o_acc, o_chals, A, 3, o_trace, 1 << 15)   # no public columns: the tile is never read
     for k in range(3):
         assert_equal(acc_kind(c.shape.accs, k), KIND_HORNER)
         var got = _down(ctx, arena, A.zval_at(k), N * E_BYTES)

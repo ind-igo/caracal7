@@ -103,7 +103,7 @@ def test_every_check_has_a_failing_case() raises:
         st.horner("bad", [Term(1, st.read("c2"), st.read("c3"))], scale=2)
     except e:
         err = String(e)
-    assert_equal(err, "horner ingest terms are linear same-chain reads without basis factors: bad")
+    assert_equal(err, "horner ingest terms are same-chain reads without basis factors, times an unshifted public selector at most: bad")
     try:
         st.chain_end("bad", [Term(1, st.read("z0", k1=1))])
     except e:

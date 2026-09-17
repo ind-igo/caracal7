@@ -608,7 +608,8 @@ verifier-side factors of its grand product. Decisions:
   their (v + beta_w sigma + gamma_w), so a cycle may cross products. A zero public factor is rejected like a
   zero table factor.
 - **Public factors ride the public-data channel.** A `PUBF` record names the Horner accumulator whose
-  convention fingerprints the value, the virtual slot's id and its sigma. The value's ingest columns (h1
+  convention fingerprints the value, the virtual slot's id and its sigma, and the chain the accumulator's
+  selectors (if any) are read on (2026-09-17). The value's ingest columns (h1
   bytes per ingest entry) come after the restriction lines in the data both sides derive from the public
   inputs (`Workload.public_data`), so the public inputs stay compact and the verifier's fingerprint is
   `horner_chain_end`, 256 E products for a 256-bit value.

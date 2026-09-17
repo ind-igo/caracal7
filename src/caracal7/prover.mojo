@@ -76,7 +76,7 @@ struct LdeLayout(TrivialRegisterPassable):
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
         self.block = 4 * N * 2
-        self.pub_vals = bump.alloc(shape.columns_p * N, ST_LOAD, ST_LOAD)
+        self.pub_vals = bump.alloc(shape.columns_p * N)   # loaded once too: the selected ingest terms read it in every prove's Z stage
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)   # loaded once, must survive repeated proves
         self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * self.block, ST_LOAD, ST_LDE)   # load_public's scratch too
         self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * self.block, ST_LDE, ST_RES)
@@ -466,7 +466,7 @@ struct Prover[p: Params, H: Hash]:
             else:
                 accumulate[Self.p](ctx, self.arena, L.w.enc.trace, L.accs + k * ACC, L.chal.stage1, A, k, S.product_of(k))
         if horners > 0:
-            horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, L.accs, L.chal.stage1, A, S.accumulators())
+            horner[Self.p](ctx, self.arena, L.w.enc.trace, L.families, L.accs, L.chal.stage1, A, S.accumulators(), L.lde.pub_vals, S.columns_w + S.columns_z)
         if S.wiring_products() > 0:
             wiring[Self.p](ctx, self.arena, A, S.wiring_products(), S.wiring_product(0), L.wires, L.sigma, S.columns_w, L.chal.wchal,
                            self.kappa, self.domains.omega2)
