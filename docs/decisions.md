@@ -1970,3 +1970,27 @@ about half of the ALU peak for its E products; the next lever is the E product i
 machine (235 -> about 225 on the quiet one). Proof and verify unchanged. Portable: no threadgroup
 memory, no SIMD-width assumption. Audit (Opus self-review, Codex): clean; Codex checked the pair
 decode exhaustively over the 36 axis combinations.
+
+## The open kernel: ALU-bound on the op itself; a 64-column block for the quotient tree (2026-09-17, M1 Pro)
+
+The E product was the suspect after build_queries: it is at its floor on this GPU. Karatsuba trades
+multiplies for adds, which cost the same on a GPU (the F4 product is 16 base multiplies in about 20
+fused instructions); explicit fma chains with the accumulation folded in measured 4.58 -> 4.29 ms on
+the pair kernel (6%), so Metal's backend was contracting already; and no reordering of the open
+contraction beats its 5 G multiply-adds, since every stored pair must meet every point with an E product.
+
+The open kernel alone (scratchpad openbench.mojo, 20 points, K = 252 in 1,024 splits): 6.0 ms at 49
+columns, 11.2 at 60. Pieces removed: no A staging 5.2, no B staging 4.6, no staging 3.6. Counters on the
+kernel alone: ALU limiter 82%, fp32 utilization 42%, fp16 0.4%, threadgroup loads 9%, occupancy 26%.
+The simdgroup op is fp32 ALU work on the M1 (no matrix hardware before the M5); the padded work,
+448 rows x 56 columns x 256 slots x 1,024 splits = 6.6 G multiply-adds, is 2.9 ms at the measured
+2.3 T MAC/s, so the kernel is at 2x its floor and the rest is staging conversions and address math on
+the same ALUs. Shapes (a generalised copy, byte-identical partials): 128-row blocks 7.7 to 8.4 ms,
+16-slot chunks 8.0, 8-slot 11.5, 64-slot 7.0, 64 columns at 49 columns 7.0 (one more accumulator
+pair); nothing beat the committed 64 x 56 x 32 there. What did: the quotient tree's 60 columns ran a
+second 56-column block for 4 columns; at BN = 64 it is one block, 11.2 -> 7.0 ms. `open` now picks 56
+or 64 by which pads less (`k_open_apple8[BN]`).
+
+**Result.** Paired chain runs on a quiet machine: open 30 -> 23 ms, warm prove median 226 -> 216 ms;
+proof and verify unchanged. Apple-only kernel; the NVIDIA path is untouched. Audit (Opus self-review,
+Codex): clean; Codex enumerated the staging and output coverage at both block widths.

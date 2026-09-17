@@ -308,22 +308,25 @@ def k_sum_splits(base: Base, src: Buf[1], splits: Int32, columns: Int32, points:
     dst.store(base, pt * Int(dst_stride) + c * E_BYTES + i, UInt8(acc % 127))
 
 
-comptime OPEN8_BN = 56        # 7 column tiles per block: the trees have at most 56 columns
 comptime OPEN8_BK = 32        # slots per staging chunk
 comptime OPEN8_BM = 64        # rows per block: 8 simdgroups, one 8-row tile each
 comptime OPEN8_THREADS = 256
 
 
-def k_open_apple8(base: Base, a: Int64, b: Int64, c: Int64, mrows: Int32, columns: Int32, points: Int32, n_total: Int32, kb_: Int32):
+def k_open_apple8[BN: Int](base: Base, a: Int64, b: Int64, c: Int64, mrows: Int32, columns: Int32, points: Int32, n_total: Int32, kb_: Int32):
     """`open` on the 8x8 fp16 simdgroup op (backend.mma8): C[z, n, M'] = sum over the kb_ slots of split z of
     A'[M', k] B[k, n] mod 127. A'[M', k] = base[a + k mrows + M'] is w_z with its (point, lane, plane) bytes as rows,
     so an A tile is contiguous; B[k, n] = base[b + n n_total + k] the stored column; C lands in the partials
-    (s, c, p, e) at c + ((z columns + n) points + M' // e) e + M' % e. A block covers 56 columns (grid z); each simdgroup owns 8 rows x 56 columns
-    (7 accumulator pairs); a chunk stages 64 x 32 A and 32 x 56 B bytes as fp16 in threadgroup memory. Sums of
-    up to 1056 products are exact in fp32: the accumulators reduce to the centered residue every 32 chunks."""
+    (s, c, p, e) at c + ((z columns + n) points + M' // e) e + M' % e. A block covers BN columns (grid z), 56 or 64 (`open`
+    picks the one that pads less); each simdgroup owns 8 rows x BN columns (BN // 8 accumulator pairs); a chunk
+    stages 64 x 32 A and 32 x BN B bytes as fp16 in threadgroup memory. Sums of up to 1056 products are exact
+    in fp32: the accumulators reduce to the centered residue every 32 chunks. Counters (2026-09-17, alone at
+    the chain grid): ALU limiter 82%, fp32 utilization 42%, threadgroup loads 9%: the op is fp32 ALU work on
+    the M1, the padded multiply-adds are 2.9 ms of the 6.0 at the measured 2.3 T MAC/s; 128-row blocks, 16- and
+    64-slot chunks were all slower."""
     comptime BM = OPEN8_BM
-    comptime BN = OPEN8_BN
     comptime BK = OPEN8_BK
+    comptime assert BN % 8 == 0 and BN <= 64, "BN is whole 8-column tiles staged by NT * 32 <= 256 threads"
     comptime NT = BN // 8
     var tid = Int(thread_idx.x)
     var sg = tid // 32
@@ -356,7 +359,7 @@ def k_open_apple8(base: Base, a: Int64, b: Int64, c: Int64, mrows: Int32, column
         var fa = va.cast[DType.float16]()
         comptime for j in range(8):
             As.ptr.unsafe_store((ma + j) * BK + ka, fa[j])
-        # B: thread < 224 -> column tid // 4, slots (tid % 4) 8 .. + 8 of the chunk: 8 contiguous bytes
+        # B: thread < NT * 32 -> column tid // 4, slots (tid % 4) 8 .. + 8 of the chunk: 8 contiguous bytes
         if tid < NT * 8 * 4:
             var nb = n0 + tid // 4
             var kb = (tid % 4) * 8
@@ -403,9 +406,15 @@ def open[p: Params](ctx: DeviceContext, arena: Arena,
     var splits = open_splits[p]()
     var K = N // splits
     comptime if APPLE8:
-        ctx.enqueue_function[k_open_apple8](arena.buf, Int64(w_z), Int64(stored), Int64(partial), Int32(points * e), Int32(columns),
-                                            Int32(points), Int32(N), Int32(K),
-                                            grid_dim=(splits, ceildiv(points * e, OPEN8_BM), ceildiv(columns, OPEN8_BN)), block_dim=OPEN8_THREADS)
+        # 60 columns on 56-column blocks ran a second block for 4 columns: 11.2 -> 7.0 ms alone at BN = 64
+        if ceildiv(columns, 56) * 56 <= ceildiv(columns, 64) * 64:
+            ctx.enqueue_function[k_open_apple8[56]](arena.buf, Int64(w_z), Int64(stored), Int64(partial), Int32(points * e), Int32(columns),
+                                                    Int32(points), Int32(N), Int32(K),
+                                                    grid_dim=(splits, ceildiv(points * e, OPEN8_BM), ceildiv(columns, 56)), block_dim=OPEN8_THREADS)
+        else:
+            ctx.enqueue_function[k_open_apple8[64]](arena.buf, Int64(w_z), Int64(stored), Int64(partial), Int32(points * e), Int32(columns),
+                                                    Int32(points), Int32(N), Int32(K),
+                                                    grid_dim=(splits, ceildiv(points * e, OPEN8_BM), ceildiv(columns, 64)), block_dim=OPEN8_THREADS)
     else:
         launch_gemm_f2[BACKEND, BACKEND.tile, Bytes[kfast_=True], 1](ctx, arena, strided(
             a=w_z, sa_m=2, sa_k=points * e, sa_z=K * points * e, b=stored, sb_k=1, sb_hi=N, sb_lo=0, sb_z=K,
