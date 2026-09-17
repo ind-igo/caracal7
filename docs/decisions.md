@@ -1994,3 +1994,52 @@ or 64 by which pads less (`k_open_apple8[BN]`).
 **Result.** Paired chain runs on a quiet machine: open 30 -> 23 ms, warm prove median 226 -> 216 ms;
 proof and verify unchanged. Apple-only kernel; the NVIDIA path is untouched. Audit (Opus self-review,
 Codex): clean; Codex enumerated the staging and output coverage at both block widths.
+
+## RSA-2048 on the mulmod chain: block products, not a wider chain (2026-09-17, M1 Pro)
+
+The passport plan's first step was "widen mulmod to 2048 bits and bench one RSA verify". Reading the chain
+before widening it changed the step. Two facts about the chain rule out a literal widening:
+
+- The reduction is secp256k1's: the fold uses 2^256 = 2^32 + 977 mod p (`_shifts`, the `lo`/`cp` rows).
+  An RSA modulus n is an arbitrary public 2048-bit number, so a modmul is the integer identity
+  a b = q n + r with q a witness: two raw products and a subtraction, no fold.
+- The coefficient certificate is the bound: a coefficient of A_t B counts bit pairs, so a piece of `a` is at
+  most 95 bits whatever the width of `b` (a coefficient of 127 is 0 in F_127). Columns grow with the pieces,
+  rows with the width: a 2048-bit chain costs 64 times a 256-bit one, not the 8 to 10 the passport page
+  guessed (it counted rows only).
+
+So a 2048-bit product is block products on the existing 144-row chain: 2048 = 8 x 256, and 3-level
+Karatsuba on the blocks is 27 raw products of values below 2^259, which fit the chain's bounds (WIDTH 260;
+the product's top coefficient at weight 519, its bit 6 at slot 525 of 572). One modmul is 54 raw products
+(a b and q n); RSA-2048 with e = 65537 is 17 modmuls, 918 raw products. The recombination is signed
+additions of 256-bit halves on the add lanes.
+
+Measured with `bench/bench_mulmod_scale.mojo`, a squaring chain of n products on the 144 x n grid (ECDSA's
+236 columns), CLIENT profile, warm:
+
+| products | grid | prove | proof | verify |
+|---|---|---|---|---|
+| 576 (ECDSA) | 144 x 576 | 272 ms | 552,905 B | 105 ms |
+| 1152 (one RSA verify, rounded up) | 144 x 1152 | 515 ms | 667,409 B | 157 ms |
+
+Linear in the chains. One RSA-2048 verify is about 0.45 s of products plus its add lanes: call it 0.5 s.
+A passport (two RSA verifies, two SHA-256 groups, predicates) is about 1.1 s in one proof, an order above
+the page's "few hundred ms" and the number the plan is built on.
+
+Two limits found on the way, both structural:
+
+- **Wiring identity space.** A wiring node is kappa^s omega2^j in F2*, so (slots + public-factor cosets)
+  x h2 <= 16,128, and the slot set is the grid's, shared by every chain. The mulmod chain has 11 slots (a, b,
+  f and x, y, z, s per add lane) plus one factor coset: at most 1,344 chains per grid. A raw-product kind
+  adds slots (r as two halves) rather than removing any, since the recombination's add lanes stay on the
+  grid: 12 slots or more, at most 1,152 chains. Two RSA verifies need about 1,900 and do not fit one grid
+  on F2* identities. The options are wiring identities in F4* (127^4 - 1 nodes; the cost of the sigma
+  polynomial and the grand product over F4 is the question) or one proof per RSA verify with the shared
+  values as public inputs. Codex caught both corrections to the first draft of this bound.
+- **Transcript prefix.** A circuit carried in the public inputs (13 bytes per op) pushes the prefix past
+  PREFIX_MAX (64 KB) before 1,344 chains. The passport circuit is pinned in the statement like ECDSA's, so
+  its public inputs are the hashes and keys only; the limit is the generic `Mulmod` workload's.
+
+Not built: the raw-product op kind, the limb adds with carries between limbs (the add lane's q is
+chain-constant bits, not a wired value, so a limb carry has to be a hint witness on both sides), the
+Karatsuba tree. That is the mulmod part of the gadget layer; the number says it is worth building.
