@@ -1949,3 +1949,24 @@ search; the bit count is the soundness ledger's, not a tuning knob.
 
 **Result.** Chain warm prove median 242 -> 235 ms; open previous 0 to 3 from 5 + 2 + 3 + 5 to
 about 2 + 1 + 2 + 1 ms. Audit (Opus self-review, Codex): clean on the rounds and frontier changes.
+
+## Build queries: one thread per slot pair, two E products (2026-09-17, M1 Pro)
+
+`build_queries` was 17 ms on the chain grid against 3 ms on the ECDSA grid. Not a mystery: the kernel
+runs one thread per (point, slot), and the chain has 20 x 258,048 of them against 12 x 82,944, five
+times more at the same 3 ns a slot. The lever is the work per slot. Slots 2k and 2k + 1 hold the
+two F2 coordinates of one c_x(r) (`slot_target`), so they share (x1, x2, r); with the factor table
+as Za = z1^x1 L1(r1), Zb = z2^x2 L2(r2), Pa = P1 L1, Pb = P2 L2 the pair is u = Za Zb, v = Pa Pb,
+weights u + v and i (u - v): two E products a pair where the old kernel took two a slot (a fixed
+pair is two Za Zb). Byte-identical output on random tables at both grids.
+
+Alone (warm, best of 3 x 10): chain 8.8 -> 4.8 ms, ECDSA 1.9 -> 1.1 ms; the factor table 0.3 -> 0.7
+ms at the chain grid (16,192 entries a point instead of 12,255), the point tables 0.6 ms. Writing
+point-fastest (coalesced stores, scattered table reads) was slower, 5.5 ms. The remaining 4.8 ms is
+about half of the ALU peak for its E products; the next lever is the E product itself
+(`fp_e_mul`, 25 F4 schoolbook products), which every ALU-bound stage would share.
+
+**Result.** Paired chain runs: build_queries 17 -> 10 ms, warm prove median 248 -> 237 ms on a noisy
+machine (235 -> about 225 on the quiet one). Proof and verify unchanged. Portable: no threadgroup
+memory, no SIMD-width assumption. Audit (Opus self-review, Codex): clean; Codex checked the pair
+decode exhaustively over the 36 axis combinations.

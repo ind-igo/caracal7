@@ -62,7 +62,7 @@ against Jolt's 0.33 ms per hash on an M5 Max:
 | 224 x 8064 | 875 | 195.3 | 0.22 |
 | 672 x 2688 | 861 | 212.7 | 0.25 |
 
-The M1 Pro proves the 125-hash grid in 235 ms (1.9 ms per hash).
+The M1 Pro proves the 125-hash grid in about 225 ms (1.8 ms per hash).
 
 Mojo only. No Python scaffolding. CPU first for correctness; GPU kernels later behind fixed buffer interfaces.
 
