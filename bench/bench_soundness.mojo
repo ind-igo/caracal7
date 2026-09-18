@@ -104,6 +104,25 @@ def add_numerator(total: Int, term: Int, factor: Int = 1) raises -> Int:
     return total + factor * term
 
 
+def list_bound(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
+    if dimension <= 0 or dimension >= length or eta_inv < 2:
+        raise Error("list bound needs 0 < dimension < length and eta_inv >= 2")
+    return Int(ceil(Float64(eta_inv) / (2.0 * sqrt(Float64(dimension) / Float64(length)))))
+
+
+def tail_list_bound(ref s: Shape, i: Int, regime: Int, eta_inv: Int) raises -> Int:
+    # The next root fixes this list before the current queries. The final clear message is one candidate.
+    if regime != REGIME_JOHNSON or i == len(s.tail):
+        return 1
+    return list_bound(s.tail[i].L, s.tail[i].rows, eta_inv)
+
+
+def bind_numerator(columns: Int, h1: Int, h2: Int, size: Int) raises -> Int:
+    # Unordered candidate pairs; each polynomial difference has total degree <= h1+h2-2.
+    var pairs = add_numerator(0, size, size - 1) // 2
+    return add_numerator(0, add_numerator(0, columns, pairs), h1 + h2 - 2)
+
+
 def field_order(e: Int) -> Float64:
     var order = 1.0
     for _ in range(e):
@@ -124,6 +143,9 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     if p.n_cw() != 1 or p.tail_digits != 3:
         raise Error("ledger covers one codeword per column and three-digit tail folds")
     ref s = c.shape
+    for level in s.tail:
+        if level.codewords != 1:
+            raise Error("ledger does not cover split tail codewords")
     var degrees = challenge_degrees(s.chals)
     var horner = Dict[Int, Int]()       # first coordinate column -> endpoint challenge degree
     var horner_families = List[Int]()
@@ -169,14 +191,21 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
         restrictions += max(p.h1(), get_u16(s.restrictions, i * RES + 4)) - 1
 
     var gap = gap_numerator(p.L(), p.K(), p.regime, p.eta_inv)      # level 1: uniform E^columns fold, block alphabet
+    var size = 1
+    if p.regime == REGIME_JOHNSON:
+        size = list_bound(p.L(), p.K(), p.eta_inv)
+        gap = add_numerator(4, gap, 4)    # four conjugate codes, affine MCA <= (ceil(a)+1)/Q each
     var batch = 0
-    var queries = query_error(p.L(), p.K(), p.queries(), p.regime, p.eta_inv)
+    var sumcheck = 0
+    var queries = Float64(tail_list_bound(s, 0, p.regime, p.eta_inv)) * query_error(p.L(), p.K(), p.queries(), p.regime, p.eta_inv)
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
         gap = add_numerator(gap, gap_numerator(level.L, level.rows, p.regime, p.eta_inv), 3)   # later folds: tensor randomness in three E elements
-        batch += (4 if i == 0 else 1) * previous_queries + 1
-        queries += query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
+        var candidates = tail_list_bound(s, i, p.regime, p.eta_inv)
+        batch = add_numerator(batch, (4 if i == 0 else 1) * previous_queries + 1, candidates)
+        sumcheck = add_numerator(sumcheck, 6, candidates)
+        queries += Float64(tail_list_bound(s, i + 1, p.regime, p.eta_inv)) * query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
         previous_queries = level.queries
     var terms: List[Tuple[String, Int]] = [
         ("alpha_batch", grid_alpha + small_alpha),
@@ -188,11 +217,18 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
         ("wire_fingerprints", wire_degree),
         ("wire_product", factors),
         ("wire_zero_factors", 2 * factors),
+    ]
+    var relations = 0
+    for term in terms:
+        relations = add_numerator(relations, term[1])
+    terms.extend([
+        ("list_relations", add_numerator(0, relations, size - 1)),
         ("pcs_gap", gap),
         ("pcs_batch", batch),
-        ("sumcheck", 6 * len(s.tail)),
-        ("opening_batch", 2),
-    ]
+        ("sumcheck", sumcheck),
+        ("opening_batch", 2 * size),
+        ("list_bind", bind_numerator(s.columns(), p.h1(), p.h2(), size)),
+    ])
     return (terms^, queries)
 
 
@@ -202,13 +238,13 @@ def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
-    var error = query_error(p.L(), p.K(), q1, regime, p.eta_inv)
+    var error = Float64(tail_list_bound(s, 0, regime, p.eta_inv)) * query_error(p.L(), p.K(), q1, regime, p.eta_inv)
     var m1 = (s.columns() - 1) if section4 else 1
     var gap = add_numerator(0, gap_numerator(p.L(), p.K(), regime, p.eta_inv, section4, pairs), m1)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)
         queries += "/" + String(q)
-        error += query_error(s.tail[i].L, s.tail[i].rows, q, regime, p.eta_inv)
+        error += Float64(tail_list_bound(s, i + 1, regime, p.eta_inv)) * query_error(s.tail[i].L, s.tail[i].rows, q, regime, p.eta_inv)
         gap = add_numerator(gap, gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv, section4, pairs), 3)
     var q_err = error / Float64(1 << p.grind_bits)
     print(name, "eta_inv", p.eta_inv, "queries_per_level", queries, "query_bits", bits(q_err), "pcs_gap", gap,
@@ -233,7 +269,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
         print("field_numerator", term[0], term[1])
         if term[0] != "pcs_gap":
             numerator_no_gap = add_numerator(numerator_no_gap, term[1])
-    # Historical BCHKS25 gap projections at the same geometry and query target.
+    # Historical gap projections retain their old scalar charges; the new non-gap list terms remain included.
     projection[p](s, "capacity_conjecture", REGIME_CAPACITY, numerator_no_gap)
     projection[p](s, "johnson_bchks25_1.5_projection", REGIME_JOHNSON, numerator_no_gap, pairs=True)
     projection[p](s, "johnson_bchks25_4.2_4.6_projection", REGIME_JOHNSON, numerator_no_gap, section4=True)
@@ -258,6 +294,9 @@ def self_check() raises:
     with assert_raises():
         _ = add_numerator(9223372036854775807, 1)
     assert_equal(add_numerator(2, 3, 4), 14)
+    assert_equal(list_bound(64, 16, 16), 16)
+    assert_equal(bind_numerator(2, 4, 4, 16), 1440)
+    assert_equal(bind_numerator(2, 4, 4, 1), 0)
     assert_equal(field_order(2), 16129.0)
     assert_equal(bits(1.0 / 256.0 + 1.0 / 256.0), 7.0)  # add errors, not bit counts
     assert_equal(horner_degree(4, 2, 1, 0), 5)  # I0*s^2 + I1*s + I2
@@ -275,8 +314,8 @@ def self_check() raises:
     assert_true(field_order(20) > field_order(16))
     # A compiled two-family 4x4 statement, once clear and once with one committed tail.
     # Hand totals catch omitted final queries, the four-coordinate first batch, and gap accounting.
-    comptime for i in range(2):
-        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32,
+    comptime for i in range(3):
+        comptime p = Params(e=E_BYTES, a1=2, m1=1, a2=2, m2=1, L0=48, m_cosets=1, grind_bits=0, regime=REGIME_JOHNSON if i == 2 else REGIME_UNIQUE, eta_inv=16, tail_rate_inv=32,
                             leaf_bytes=1024, tail_digits=3, tail_clear_max=100 if i == 0 else 0, lambda_bits=3, codewords=1)
         var st = Statement()
         st.col("x", BIT)
@@ -286,16 +325,35 @@ def self_check() raises:
         var numerator = 0
         for term in result[0]:
             numerator = add_numerator(numerator, term[1])
-        # Flat: 1 alpha + 16 grid + 48 gap + 2 openings. Tail: +3*70 gap +17 batch +6 sumcheck.
-        assert_equal(numerator, 67 if i == 0 else 300)
-        var miss = 13.0 / 24.0
-        var expected = miss * miss * miss * miss
-        if i == 1:
-            assert_equal(len(c.shape.tail), 1)
-            assert_equal(c.shape.tail[0].L, 70)
-            miss = 18.0 / 35.0
-            expected += miss * miss * miss * miss
-        assert_true(abs(result[1] - expected) < 1e-15)
+        if i == 2:
+            # Johnson fixture: two queries per level, list sizes 28 (level 1) and 48 (tail).
+            assert_equal(p.queries(), 2)
+            assert_equal(tail_list_bound(c.shape, 0, REGIME_JOHNSON, 16), 48)
+            assert_equal(tail_list_bound(c.shape, 1, REGIME_JOHNSON, 16), 1)
+            for term in result[0]:
+                if term[0] == "pcs_batch":
+                    assert_equal(term[1], 432)   # 48 * (4*2+1)
+                elif term[0] == "sumcheck":
+                    assert_equal(term[1], 288)   # 48 * 6
+                elif term[0] == "list_relations":
+                    assert_equal(term[1], 459)   # (28-1) * (1+16)
+            var first = sqrt(1.0 / 12.0) + 1.0 / 16.0
+            var last = sqrt(1.0 / 35.0) + 1.0 / 16.0
+            assert_true(abs(result[1] - (48.0 * first * first + last * last)) < 1e-12)
+            c.shape.tail[0].codewords = 2
+            with assert_raises():
+                _ = ledger[p](c)
+        else:
+            # Flat: 1 alpha + 16 grid + 48 gap + 2 openings. Tail: +3*70 gap +17 batch +6 sumcheck.
+            assert_equal(numerator, 67 if i == 0 else 300)
+            var miss = 13.0 / 24.0
+            var expected = miss * miss * miss * miss
+            if i == 1:
+                assert_equal(len(c.shape.tail), 1)
+                assert_equal(c.shape.tail[0].L, 70)
+                miss = 18.0 / 35.0
+                expected += miss * miss * miss * miss
+            assert_true(abs(result[1] - expected) < 1e-15)
 
 
 def johnson(tail_rate_inv: Int) -> Profile:

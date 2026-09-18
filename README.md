@@ -26,7 +26,7 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads; the RSA and passport verifies are dominated by deriving their public data, which the next step moves to a product form.
 
-**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 88.52 to 100.67 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
+**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
 ## Statements
 
@@ -110,7 +110,7 @@ The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track
 security budget. The extension is `E = F_(127^20)` and the query target 112 per
 level; the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
 Kopparty, Saraf, Theorem 1.5, p. 9), with the public Haböck MCA allowance
-(Theorem 2, p. 4) and 20 bits of grinding on the query seeds: 88.52 to 100.67
+(Theorem 2, p. 4) and 20 bits of grinding on the query seeds: 87.28 to 99.52
 conditional bits on every case. The reported `security_bits: 112` is
 that query target, not a verified total; the note records the bounds and the outstanding proof and
 verifier obligations.

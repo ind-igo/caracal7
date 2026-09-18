@@ -1,18 +1,18 @@
 # Soundness ledger for the CSP configuration
 
-Status: **conditional analysis, not certification**. Reviewed against prover commit `8f94cc7` on
-2026-09-12; parameters updated 2026-09-13 (`E = F_(127^20)`, query target 112) and 2026-09-14 (Johnson
-regime, tail rate 1/8, decisions.md). The
-executable ledger compiles the current source; the conclusions below require the proof obligations
-and implementation gaps in this note to be closed. A successful calculation or test run does not
-establish a cryptographic security level.
+Status: **conditional analysis, not certification**. The executable ledger
+uses the current source with `E=F_(127^20)` and query target 112. This note
+records checked citations, our proof steps, and the remaining composition
+conditions. A successful calculation or test does not establish a security
+level. Configuration and review history are in `docs/decisions.md`.
 
 The benchmark metadata says `security_bits: 112`. In `core/params.mojo`, 112 is the per-level
-**query target**, met as 92 bits of queries at the Johnson radius `1 - sqrt(rate) - 1/16` (BCHKS25
+**fixed-message query target**, sized as 92 bits of queries at the Johnson radius `1 - sqrt(rate) - 1/16` (BCHKS25
 Theorem 1.5 below) plus 20 bits of grinding on every query seed, with
 `E = F_(127^20)` (20 coordinates; `E16` in `core/field.mojo` rebuilds the old
 16-coordinate tower for measurement). It is not the total soundness budget. Do not use the metadata
-as a verified claim. The upstream
+as a verified claim. The recursive list union factors reduce the query-only
+bound below that target; the ledger includes them. The upstream
 [eligibility rule](https://github.com/ethereum/csp-benchmarks/blob/main/CONTRIBUTING.md#benchmark-eligibility)
 requires at least 96 bits; the project's own goal is more than 100 bits.
 
@@ -32,38 +32,32 @@ The case whitelist mirrors `cli/ffi.mojo` and `cli/main.mojo`. Those routes must
 when adding sizes or changing routing. All dimensions, descriptors, and counts after routing come
 from production compilation; there is no copied table of shape counts or reimplementation of the
 domain/tail planner. The ledger rejects Herder lookup/permutation accumulators (the four benchmark
-workloads have none), other tail arities, and challenge-dependent ordinary families that would need
+workloads have none), split tail codewords, other tail arities, and challenge-dependent ordinary families that would need
 another argument. This is scoped to these workloads, not a generic IR security checker.
 
 Output:
 
-- `field_numerator NAME A` means the candidate error contribution `A / 127^e`.
-- `query_error_per_attempt` is the sum over **all committed levels**, including level 1, of the miss
-  probability of one transcript attempt; `query_error` divides it by `2^grind_bits`, the hashes one
-  attempt costs the prover (see Grinding below).
-- `capacity_conjecture ...` and `johnson_bchks25_1.5_projection ...` are projections of the other two regimes at the
-  same geometry: the queries each level would need at the same per-level target, the query bits at those
-  queries, the `pcs_gap` numerator of that regime, and the `conditional_iop_bits` the switch would compile.
-  `johnson_bchks25_4.2_4.6_projection ...` is the Johnson regime charged as BCHKS25 section 4 states it (J1, J2
-  below): the doubled `m` and the factor `M = words - 1` per code. `Profile.regime` selects the regime;
-  `CLIENT` compiles `REGIME_JOHNSON` since 2026-09-14.
-  - `REGIME_CAPACITY` (radius `1 - rate - eta`, miss `rate + eta`) is the unproven up-to-capacity
-    conjecture. It has no proven field term; the projection keeps the unique `pcs_gap` as a placeholder,
-    so its `conditional_iop_bits` is the query term only. Nothing in this note certifies it.
-  - **Historical pairs charge (superseded by J2 below):** `REGIME_JOHNSON` (radius `1 - sqrt(rate) - eta`, miss `sqrt(rate) + eta`) charges the correlated
-    agreement error of BCHKS25 Theorem 1.5 ([[raw/papers/proximity-gaps-rs-codes]], any domain, any field):
-    `a / |E|` per code with `m = max(ceil(sqrt(rho) / (2 eta)), 3)` and
-    `a = (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho)`, linear in `n`
-    where BCIKS20 1.2 had `n^2`. The theorem is stated for pairs (lines); the ledger applies it in the
-    same places as the unique term (level 1 uniform fold, three tensor elements per tail level). The
-    affine-space (batched columns) form (J1), the mutual form (Haböck 2025, cited there; J2), and the
-    list-regime rewrite of the level 1 close case (spec 12.2; J3) are open obligations before this regime
-    is proven for caracal7; see "Open obligations of the Johnson regime (J1-J3)" below. The constant grows
-    as `rho^-1.5`, so the low-rate tail levels dominate the term.
-- `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)` at the compiled `e`, rounded down to
-  two decimals.
-- `projected_e16_...` and `projected_e20_...` change only the denominator to `127^16` or `127^20` at
-  the same geometry and queries. They are not performance estimates or security certifications.
+- `field_numerator NAME A` means the conditional contribution `A / 127^e`.
+- `query_error_per_attempt` sums every committed level, with the next
+  committed root's list-size factor (one for the final clear message). `query_error` divides it by `2^grind_bits` under the work
+  model in the Grinding paragraph.
+- `REGIME_JOHNSON` uses radius `gamma=1-sqrt(K/n)-eta`. Its main charge is
+  Hab25 Theorem 2, p. 4: `a_H=(m+1/2)^7 n^2/(3 rho_0^1.5)`, where
+  `rho_0=(K-1)/n`, `eta_H=1-sqrt(rho_0)-gamma`, and
+  `m=max(ceil(sqrt(rho_0)/(2 eta_H)),3)`. Level 1 charges `4(ceil(a_H)+1)`;
+  each scalar tail charges `3 ceil(a_H)`. See J2 and J3 for the scope.
+- `list_bind` charges `columns * B(B-1)/2 * (h1+h2-2)`, where
+  `B=ceil(1/(2 eta sqrt(K/n)))`. `opening_batch` charges `2B` in the
+  Johnson regime. `list_relations` adds `(B-1)` times the relation allowances.
+  Batching and sumcheck at a tail root are multiplied by that root's list
+  bound. In the unique regime all list factors are one and Bind is zero.
+- `johnson_bchks25_1.5_projection` and `johnson_bchks25_4.2_4.6_projection`
+  retain the earlier scalar gap charges, rate convention, and curve factor.
+  The new non-gap list terms are included. These comparisons do not supply
+  the packed-alphabet proof. `capacity_conjecture` has no proven gap or list
+  bound; its field terms are placeholders, not a security claim.
+- `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)`, rounded
+  down to two decimals. The e16/e20 projections change only the denominator.
 
 Calculations use Float64 for diagnostic sizing, not interval arithmetic or a machine-checked proof.
 Exit zero means the calculation succeeded. The program always reports unresolved obligations and
@@ -72,40 +66,35 @@ and the gaps below are not assigned zero error; they are **outside this conditio
 
 ### Current results
 
-After the J2 numerator correction, ECDSA has **88.52 conditional IOP bits**
-(before J3's Bind term). This is 19.13 bits below the former 107.65 projection.
-Its `pcs_gap` numerator is 2,676,623,914,570,924, instead of 4,096,994,528.
-The old section-4 curve projection is 95.99 bits. All these totals still assume
-J1/J3 and P1-P5 as specified below. The table below records the earlier charges;
-J3 will replace the current column after its list terms are added.
+These are conditional diagnostic bounds. The local and recursive list arguments are own proofs that need review.
+P1-P5 remain proof-to-code and cryptographic obligations. They are not certified
+security levels or measured attack costs.
 
-These are diagnostic bounds under the assumptions below, not measured attack costs or certified
-security levels. Poseidon sizes sharing a grid have identical ledgers.
+| Workload | Input | Grid | Current Hab25 and list allowances, e = 20 | Earlier pairs projection | Earlier unique, tail rate 1/32 | Earlier e = 16 |
+|---|---:|---:|---:|---:|---:|---:|
+| SHA-256 | 128 B | 32 x 224 | 94.83 | 109.93 | 110.46 | 95.00 |
+| SHA-256 | 256 B | 32 x 336 | 93.92 | 109.68 | 110.70 | 94.51 |
+| SHA-256 | 512 B | 32 x 672 | 91.66 | 109.27 | 110.46 | 93.44 |
+| SHA-256 | 1024 B | 32 x 1152 | 89.92 | 108.51 | 110.26 | 92.64 |
+| SHA-256 | 2048 B | 32 x 2688 | 87.36 | 107.65 | 110.21 | 90.71 |
+| Keccak | 128 B | 64 x 24 | 99.52 | 110.19 | 110.70 | 97.08 |
+| Keccak | 256 B | 64 x 48 | 97.19 | 110.11 | 110.54 | 96.11 |
+| Keccak | 512 B | 64 x 96 | 95.19 | 109.92 | 110.54 | 95.17 |
+| Keccak | 1024 B | 64 x 192 | 93.09 | 109.33 | 110.26 | 94.20 |
+| Keccak | 2048 B | 64 x 384 | 91.09 | 108.86 | 110.15 | 93.20 |
+| Poseidon | 2, 4, 8 elements | 64 x 384 | 91.09 | 108.86 | 110.15 | 93.20 |
+| Poseidon | 12, 16 elements | 64 x 896 | 87.60 | 107.77 | 110.11 | 91.66 |
+| ECDSA | 1 signature | 144 x 576 | 87.28 | 107.65 | 110.58 | 90.69 |
 
-| Workload | Input | Grid | Historical pairs projection, e = 20, Johnson, tail rate 1/8 (2026-09-14) | unique, tail rate 1/32 (2026-09-13) | e = 16, lambda' 103 (before 2026-09-13) |
-|---|---:|---:|---:|---:|---:|
-| SHA-256 | 128 B | 32 x 224 | 109.93 | 110.46 | 95.00 |
-| SHA-256 | 256 B | 32 x 336 | 109.68 | 110.70 | 94.51 |
-| SHA-256 | 512 B | 32 x 672 | 109.27 | 110.46 | 93.44 |
-| SHA-256 | 1024 B | 32 x 1152 | 108.51 | 110.26 | 92.64 |
-| SHA-256 | 2048 B | 32 x 2688 | 107.65 | 110.21 | 90.71 |
-| Keccak | 128 B | 64 x 24 | 110.19 | 110.70 | 97.08 |
-| Keccak | 256 B | 64 x 48 | 110.11 | 110.54 | 96.11 |
-| Keccak | 512 B | 64 x 96 | 109.92 | 110.54 | 95.17 |
-| Keccak | 1024 B | 64 x 192 | 109.33 | 110.26 | 94.20 |
-| Keccak | 2048 B | 64 x 384 | 108.86 | 110.15 | 93.20 |
-| Poseidon | 2, 4, 8 elements | 64 x 384 | 108.86 | 110.15 | 93.20 |
-| Poseidon | 12, 16 elements | 64 x 896 | 107.77 | 110.11 | 91.66 |
-| ECDSA | 1 signature | 144 x 576 | 107.65 | 110.58 | 90.69 |
-
-At `e = 16` only two of the sixteen cases reached 96 bits: the dominant contribution was the PCS
-proximity gap, particularly the first committed tail's large code domain. For ECDSA,
-`A_pcs_gap = 161280 + 3*(645120 + 43008 + 5376) = 2241792`; the full numerator is 2282533, which
-over `127^20` is about 2^-118.7. Increasing query counts cannot reduce that field term; the field
-did. At `e = 20` the query term binds (101 bits at the old target of 103 per level, since four levels
-sum), so the per-level target is 112, met as 92 bits of queries and 20 of grinding, and the total sits
-at 110 to 111 bits. The remaining proof,
-arithmetic, and Fiat-Shamir obligations are unchanged; the table does not by itself justify submitting.
+ECDSA is **87.28 conditional bits**, down **20.37 bits** from the earlier
+107.65 pairs projection. The J2 public numerator accounts for 19.13 bits
+of that loss (88.52 bits before J3). The four-component level-1 charge
+accounts for the remaining displayed loss. Bind and the larger opening batch
+and the list unions are small beside the quadratic gap term, but all are charged. Query counts,
+the field, and proof generation have not changed. More queries do not reduce
+the dominant field term. All three earlier comparison columns are historical. They omit the new
+list terms and are not the current bench projections. The current pairs
+projection gives 105.99 bits for ECDSA after those terms are included.
 
 ## Claim and composition
 
@@ -127,7 +116,8 @@ bit count against a quantum adversary. Zero knowledge is not claimed (`is_zk: fa
 
 ## Commitment-layer bound
 
-Let `Q = |E|`, `L_i` be the code length, `k_i` the message dimension, `s_i` the query count, and
+**Unique-regime comparison.** The Johnson charges are stated in the output
+guide and J3 below. Let `Q = |E|`, `L_i` be the code length, `k_i` the message dimension, `s_i` the query count, and
 `r_i = k_i/L_i`. Level 1 has `k_1 = N/4`; subsequent levels use `TailLevel.rows`.
 
 ```
@@ -180,9 +170,10 @@ lever not taken.
 
 ### Open obligations of the Johnson regime (J1-J3)
 
-These are the three items the paragraph above names. The J2 update below supersedes the historical charge and status above. Each records what the ledger charges today, what
-the cited source actually proves, what is missing, and what evidence would close it. None is a code
-defect; all three are analysis gaps that the `CLIENT` profile now depends on.
+J1 has a checked ordinary CA derivation. J2 has public scalar and transfer
+citations. J3 has local and recursive list arguments with explicit union charges.
+These own proofs need review; P1-P5 remain open. The statuses below supersede the historical
+configuration discussion above.
 
 **J1. Affine-space (batched columns) form: reduction checked.** BCHKS25
 **Theorem 1.5, p. 9**, states the line case. BCIKS20 **section 6.3,
@@ -266,9 +257,9 @@ Thus the three binary tensor factors of an RS code cost
 also use `3 a_B / |E|` with BCHKS25 Theorem 4.6 as the scalar input. These are
 statements about the same RS code in every row. The four conjugate domains of
 `E tensor_F F4` and the protocol's running claim still need the J3/P4 argument.
-The level-1 scalar charge is also still conditional: J1 proves ordinary CA,
-not affine MCA. Jo Theorem 4.7 alone would charge one line numerator per
-column variable. A dimension-free same-set reduction is needed in J3.
+J1 proves ordinary CA, not affine MCA. Jo Theorem 4.7 alone would charge
+one line numerator per column variable. J3 supplies a separate dimension-free
+same-set reduction as an own proof and charges all four conjugate codes.
 
 **Newer source check.** An arbitrary-dimension affine MCA theorem with the pairs
 numerator is **not stated** in the four supplied newer papers. The checked
@@ -294,44 +285,80 @@ statements are:
 MCA transfer are closed by citations. This does not close P4's adaptive protocol
 composition or J3's packed-alphabet and opening argument.
 
-**J3. List-regime rewrite of the level-1 close case (spec 12.2).** `miss_probability` returns
-`sqrt(rate) + eta` per query in `REGIME_JOHNSON`, and the ledger raises it to each level's query
-count. Spec 12.1 derives the unique regime's `(1 + rate)/2` from a case split that uses uniqueness: at
-radius `t = floor((d-1)/2)` there is at most one `X̃` with block distance `Δ(X, G X̃) <= t`, the close
-case compares `G y` against that one `X̃ β`, and `1 - (t+1)/L <= (1 + rate)/2` bounds both branches. At
-`gamma = 1 - sqrt(rho) - eta` the close case yields a list, of size at most about `1 / (2 eta sqrt(rho))` by
-the Johnson list bound (16 at level 1; this is not the `m` of Theorem 1.5, which is 4 there), and the split does not hold as written.
+**J3. List argument and conservative composition: own proof, needs review.** Vault
+spec **12.3** now states the list-regime lemma. All its new reductions are
+**own proof, needs review**. The close list has at most
+`1/(2 eta sqrt(K/n))` members in the joint block metric. The proof counts
+pairs of agreement sets; it does not take a product of column lists.
 
-Spec 12.2 sketches what replaces it, and it is a sketch. The extractor picks one list element instead
-of the unique `X̃`, and mutual correlated agreement (J2) is what decomposes a list element of the
-folded word column by column into list elements of the columns. The choice is then pinned by
-out-of-domain binding: the openings `alpha_{c,z}` at the `z` sampled after the `Q` commitment separate
-two distinct columns of bidegree below `(h1, h2)` except with probability `(h1 + h2)/|E|`, for a Bind
-allowance of about `columns * (list size)^2 * (h1 + h2) / (2 |E|)`. That allowance is quadratic in the
-list size and **is not a ledger term today** - the ledger carries no list-size-dependent numerator at
-all. The checks that must bind the chosen element, rather than "the" decoded word, are
-`verifier._residual`, `_small_grid`, `_boundaries` and `_restrictions` (the P2 row) together with the
-tail's running claim at `r̄_l`.
+The proof extends line MCA to a uniform affine space with error `a/(Q-1)`.
+It averages over a random direction through each bad point. At least
+`1-1/Q` of the directions retain a fixed bad agreement set, and the line
+bound caps the average at `a/Q`. For integer `A>=a`, `A<Q`, charge `(A+1)/Q`.
+Use this once for each of the four conjugate RS codes. This gives the new
+level-1 charge `4(A_H+1)`, rather than one scalar numerator. Jo 2026/891,
+Corollary 4.6, p. 9, handles all codeword splits within each conjugate code.
+For a block-close fold, MCA keeps one common agreement set across every
+column and split. Interpolation on more than `K-1` points makes each decoded
+polynomial F4-rational and makes the four conjugate decodings agree. This
+proves descent without uniqueness and covers `n_cw > 1`. The executable
+still rejects `n_cw != 1`; its workload scope has not been enlarged.
 
-The query error must then be re-derived, not assumed. If the rewrite works, the close case becomes a
-field-size event and the only surviving per-query event is the far case at miss `1 - gamma =
-sqrt(rho) + eta`, which is what `miss_probability` already returns; the ledger therefore charges the
-rewrite's conclusion in advance of the rewrite. The list size enters the field terms and not the
-exponent: the query term stays `(sqrt(rho) + eta)^{|S|}` with no list factor, and a union bound over
-the list in the exponent would be the wrong shape. Note also that `rho = k/n` is off by `1/n` from the
-rate the code reports, which does not move these bit counts at these lengths.
+The extractor selects the candidate that matches the out-of-domain answer.
+The event **Bind** is a collision of two candidates from a list fixed before
+`z=(z1,z2)`. A difference of trace polynomials has total degree at most
+`h1+h2-2`. Thus, with `B=ceil(1/(2 eta sqrt(K/n)))`, the new term is
 
-Finally, the packed four-coordinate descent survives only with a new proof. Step (b) of 12.1 concludes
-that the nearby interleaved codeword is `F4`-rational because Galois conjugation fixes it *by
-uniqueness*, which is the step a list breaks; 12.2 argues instead that the agreement set has more than
-`k` positions, so the close codeword is still `F4`-rational. That is a different argument and has not
-had the adversarial review 12.1 had. Step (c)'s `n_cw > 1` split, which uses "any codeword within `t`
-of it equals `W_q β` since `2t < d`", has no list-regime version at all. Closing J3 means a rewritten
-12.1 over the `E ⊗ F4` alphabet including that split, a stated Bind lemma with its numerator added to
-the ledger as a named field term, and a derivation that the far case is the only query event left.
+```
+A_list_bind = columns * B(B-1)/2 * (h1+h2-2).
+```
 
-**What section 4 as written would compile (2026-09-14).** The `johnson_bchks25_4.2_4.6` projection
-charges Theorems 4.2 and 4.6 exactly as stated, in place of the pairs form: `M * a` at the doubled `m`,
+Off Bind, an answer identifies at most one candidate per column. It need
+not identify any candidate. For each fixed joint candidate with a wrong
+opening, the beta/gamma batch is a nonzero degree-two polynomial. Union over
+the joint list costs `2B/Q`. The ledger therefore changes `opening_batch`
+from 2 to `2B` as well. ECDSA has `B=23`, `columns=556`, `h1=144`, `h2=576`,
+so `list_bind=100,999,624` and `opening_batch=46`.
+
+For a message fixed before the row queries, the proof now has the required
+case split. A far message costs at most `(sqrt(K/n)+eta)^s`; a close wrong
+message is one of the charged field events. There is no list factor for this
+**fixed-message** query statement.
+
+**Conservative composition.** A root fixes a list before the previous-level
+queries, not one member. Spec 12.3 now pays for that choice. If level i has a
+next committed root, its query term is `B_(i+1) miss_i^s_i`. The last clear
+message is fixed before its queries and uses factor one. The factor is
+outside the exponent; the old unmultiplied claim is not proved.
+
+Extract backward from the final clear message. A close scalar fold lifts by
+tensor MCA to one member of its root's joint list, fixed before the three
+sumcheck rounds. For each fixed member, false-claim sumcheck error is `6/Q`
+and the old batching allowance is `A_batch_i/Q`. Union over the list costs
+`B_i(6+A_batch_i)/Q`. Off these events, the chosen member satisfies the
+previous running claim and all previous queried equations. It is one of
+at most B_i messages fixed before those previous queries, so the preceding
+query union applies. Repeat until level 1, then use its four-component MCA,
+`2B_1/Q` opening batch, and Bind. This argument allows selection after the
+queries; it does not assume an earlier unique decoding.
+
+For the relation checks, use the W list before stage-1 challenges, W/Z before
+alpha, and W/Z/Q before z. Each joint list has at most B_1 members. Apply the
+existing fixed-candidate bound at the correct barrier to every candidate,
+then union over the list. The extra term is
+`list_relations=(B_1-1) * sum(the nine relation numerators)`. This handles a
+choice that depends on z; Bind alone did not. The nonzero-polynomial and
+code-mapping contracts of P1-P4 remain required. The extra list-selection
+assumption is removed. The augmented-RS-coordinate sketch in 12.2 is not used.
+
+**Verdict:** J3's list accounting is supplied with conservative union bounds,
+subject to review of this own proof and the existing P1-P5 contracts. The
+ledger charges the unions. A sharper result with no next-list query factor
+is **not proved** here.
+
+**Historical section-4 curve comparison (2026-09-14).** The `johnson_bchks25_4.2_4.6` projection
+retains the earlier Theorem 4.2/4.6 projection (pp. 27-29), including its
+old rate normalization, in place of the pairs form: `M * a` at the doubled `m`,
 with `M = columns - 1` at level 1 (555 for ECDSA; `_level1_symbol` batches the columns only, the
 `gamma` weights are opening claims, not RS words) and `M = 1` for each pair-folding tail challenge.
 This is a number, not a proof: it does not turn the uniform `beta` into a curve, and it supplies none
@@ -419,7 +446,8 @@ sumcheck: `4*s_previous+1` at the first tail level, `s_previous+1` subsequently.
 comes from `_Tail.level`'s four coordinate equations per level-1 query. These use independent
 uniform coefficients, so a sharper batching analysis may reduce this allowance to one per batch;
 the ledger deliberately keeps the larger count. Final clear-vector checks are direct. The initial
-column/point batching gets another `2/Q`.
+column/point batching costs `2B/Q` in the Johnson regime and `2/Q` in the
+unique regime, as derived in J3.
 
 ## Relation numerators
 
@@ -468,14 +496,14 @@ ledger instead of silently using a formula that omits table or zero-denominator 
 
 | ID | Obligation | Evidence / remaining work |
 |---|---|---|
-| P1 | Packed level-1 columns admit the scalar RS guarantee in the block metric | Vault spec 12.1; scalar citation checked above. Independently review descent, reconstruction of F-valued coordinates, and the joint opening claim |
+| P1 | Packed level-1 columns admit the scalar RS guarantee in the block metric | Vault spec 12.1 and the list proof in 12.3; scalar citations checked above. Independently review descent, reconstruction of F-valued coordinates, and the joint opening claim |
 | P2 | Two-grid identities imply all intended row and chain-end constraints | `relations/statement.compile`, `proof.Shape`, `verifier._residual`, `_small_grid`, `_boundaries`, `_restrictions`. Review degree bounds and adaptive transcript composition, including the shared alpha and z |
 | P3 | Integer/curve/hash constraints faithfully express the workloads | `workloads/sha256`, `keccak`, `poseidon`, `mulmod`, `ecdsa`. Check carries, selectors, canonical values, idle rows, hints, and the nonzero-polynomial argument for Horner/wiring; degree counting alone cannot establish it |
 | P4 | The tail is the analyzed scalar tensor-fold protocol | `_Tail.level`, `_Tail.clear`, `pcs/tensor`, `pcs/tail`. Review row basis, mixed digits, four-coordinate first batch, last clear check, and per-round adaptivity |
 | P5 | Cryptographic compilation preserves the required concrete security | `core/hash`, `core/transcript`, `proof.prefix_bytes`. Establish the exact Fiat-Shamir/hash model and losses, including a separate quantum claim if desired |
 | J1 | The batched-column fold admits a dimension-free ordinary CA numerator | **Reduction checked: own proof, needs review.** BCIKS20 section 6.3, printed pp. 28-29, accepts BCHKS25 Theorem 1.5, p. 9, as its line input. The six checked steps below include the linear-span step, monotonicity at the farthest radius, and list size `< Q`. MCA and the packed alphabet remain separate |
 | J2 | Mutual (list) correlated agreement at the Johnson radius | **Source/transfer closed:** Hab25 Theorem 2, p. 4, is public (ePrint 2025/2110). Main ledger charges its quadratic numerator. Jo 2026/891 Corollary 4.6, p. 9, and Theorem 4.7, pp. 10-11, supply the interleaved/tensor transfer. Packed level 1 and adaptive running claims remain J3/P4 |
-| J3 | The level-1 close case binds one list element, so `sqrt(rate) + eta` is the right per-query event | Vault spec 12.2 is a sketch. The out-of-domain Bind allowance (quadratic in the list size) is not a ledger term; 12.1's Galois descent and `n_cw > 1` split need list-regime proofs; `verifier._residual`, `_small_grid`, `_boundaries` and `_restrictions` must bind the chosen element |
+| J3 | The level-1 close case and adaptive list choice have explicit allowances | **Own proof, needs review.** Spec 12.3 gives packed descent, splits, Bind and backward list extraction. The ledger pays next-list query factors, list-scaled batching/sumcheck, `2B` openings, and `list_relations`. The original no-list-factor claim is not proved; P1-P5 contracts remain |
 | I1 | Every adversarial field coordinate obeys the arithmetic contract | **Implemented:** `bytes.check_field_bytes` rejects coordinates >=127. `ProofReader.field_bytes` covers Z2, Q3, openings, every sumcheck, and the clear vector; `pcs.merkle.check_multiproof` checks authenticated W/Z/Q/tail rows; `_check_statement` checks derived public field data |
 | I2 | Optimized arithmetic agrees with the field for all admitted inputs | `core/field` assumes canonical bytes and explicit integer/fp32 bounds; existing scalar/GPU tests cover samples. Audit the bounds and keep differential checks on adversarial canonical values |
 | I3 | Report remains tied to the submitted configuration | Compare the case whitelist with both CLI routes; run against the pinned submission commit. Recompute after changing field, grid, rates, arity, or workloads |
@@ -506,14 +534,16 @@ These are code observations, not substitutes for P5.
 The executable self-check covers a hand-computable query probability, degree propagation, nonzero
 Horner starts, summation of error probabilities, invalid inputs, and monotonicity. Two tiny compiled
 statements also check hand-derived full ledgers with and without a committed tail, including its
-final query error and the four-coordinate first batch. Build it with
-`--Werror`; the existing `run_tests.sh` also compiles every bench file.
+final query error and the four-coordinate first batch. The checks also cover
+the Hab25 constant, integer overflow, list size, and Bind. Build with `--Werror`.
+`run_tests.sh` executes this CPU-only benchmark and compiles the other benches.
 
-For this snapshot, all 16 reports completed and their query errors and displayed bit totals were
-independently reproduced with 80-digit Decimal arithmetic. After the canonical-byte fix,
-`sh run_tests.sh` passed all 106 tests across 23 test files and built all 11 benchmarks with
-`--Werror`. Running the ledger again produced byte-identical output. Native and Claude reviews
-found no implementation defects in the validation change; those reviews do not discharge P1-P5.
+For this update, all 16 workload reports and four tail-rate comparisons ran.
+The build with `--Werror` passed. `sh run_tests.sh` passed 28 test files and
+15 benchmarks, including execution of the soundness self-checks. Independent
+80-digit arithmetic checked the displayed totals and the upward gap charges.
+The per-deliverable review record is in `docs/decisions.md`. These checks do
+not discharge the remaining protocol proof obligations.
 
 Existing adversarial tests already do more than corrupt serialized proofs:
 
@@ -529,9 +559,8 @@ ECDSA's changed-message round trip also exercises its native public-data walk; i
 evidence that malicious slope witnesses are constrained. Review that path separately. No practical
 number of successful random tests measures a failure probability near 2^-96.
 
-Before submission: close P1-P5 and the lowering/code
-obligations with independent cryptographic review, then evaluate the complete claim at the chosen
-target. A better theorem (the list-decoding regime, spec section 12) is the lever on the query term
-and the proof size; adding queries cannot reduce the `A/Q` terms, and the extension is now sized so
-they sit below the query term. Only then treat the `security_bits: 112` metadata as more than a
-query target.
+Before submission, close P1-P5 and review the J1/J3 own proofs
+with independent cryptographic review. Then select parameters for the full
+bound. The present conservative field allowance is dominant and the ECDSA
+conditional total is below 96 bits. More queries cannot reduce an `A/Q`
+term. The `security_bits: 112` metadata remains a query target only.

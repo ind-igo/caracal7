@@ -2234,7 +2234,7 @@ at eight limbs, 1888 chains for 2448 per verify.
 ## J2: use the public MCA bound (2026-09-18)
 
 Haböck's ePrint 2025/2110, Theorem 2, p. 4, is public. Charge its quadratic
-numerator in `bench/bench_soundness.mojo`. Keep BCHKS25 Theorems 1.5 and 4.6
+numerator in `bench/bench_soundness.mojo`. Keep BCHKS25 Theorem 1.5, p. 9, and Theorem 4.6, pp. 28-29,
 as labelled projections. The latter states a sharper linear numerator; this
 change chooses the public proof outline of 2025-11-17, not a claim that the sharper
 published statement is false. ECDSA changes from 107.65 to 88.52 conditional
@@ -2257,8 +2257,8 @@ found no remaining defect in the staged fixes.
 
 ## J1: check the affine-space reduction (2026-09-18)
 
-The independent read confirms the BCIKS20 section 6.3 reduction with BCHKS25
-Theorem 1.5 as its line input. `docs/soundness.md` records all six steps,
+The independent read confirms the BCIKS20 section 6.3 reduction, printed
+pp. 28-29, with BCHKS25 Theorem 1.5, p. 9, as its line input. `docs/soundness.md` records all six steps,
 including the linear-span step omitted from the old summary. This gives
 ordinary CA with no dimension factor. It is our derivation and needs review;
 it does not supply the stronger same-set property needed in J3. No protocol
@@ -2267,3 +2267,47 @@ or ledger value changes in this deliverable.
 The concurrent Opus 5 and read-only Codex reviews found no proof defect in
 this reduction. The code is unchanged from J2; the same warning-free build
 and complete test run cover this documentation commit.
+
+
+## J3: list Bind, packed descent, and conservative composition (2026-09-18)
+
+Spec section 12.3 in the notes vault gives the local list proof. It proves
+uniform-affine MCA with error `a/(Q-1)`, pays for four conjugate codes, descends
+each candidate to F4 by interpolation, and treats all codeword splits in one
+block metric. It also states the quadratic Bind allowance and charges `2B`
+for openings, since the close message can choose among a fixed joint list.
+These are own proofs and need review. J1 and J2 are separate commits
+`85277bf` and `de9e505`.
+
+For ECDSA, `B=23`, `list_bind=100999624`, `opening_batch=46`, and the new
+`pcs_gap=6307003635292025`. The complete field numerator is
+`6307003737221354`; the query union gives 106.48 bits. The conditional total is 87.28 bits, down 20.37
+from the old pairs projection and 1.24 from the J2-only 88.52 result.
+The implementation parameters and query counts do not change.
+
+The first draft left adaptive list selection open. The final argument instead
+pays conservative unions: next-root list factors on query errors, each root's
+list factor on batching and sumcheck, and B_1 on all nine relation allowances.
+Backward extraction starts at the clear message and lifts through each fixed
+root list. This removes the extra early-selection assumptions. It does not
+prove the earlier no-list-factor query estimate. These are own proofs and
+need review; the existing P1-P5 code and cryptographic contracts remain.
+
+Validation: `uv run mojo build --Werror -I src bench/bench_soundness.mojo`
+passed. `sh run_tests.sh` passed 28 test files and 15 benchmarks. An
+independent 80-digit calculation checked all 20 reports and 89 levels,
+including the Bind, relation, batching, sumcheck, query, and total allowances.
+The first parallel Opus 5 and read-only Codex reviews accepted the local
+proof. Opus found a stale global note in the spec; it is corrected. Both
+reviewers were then run in parallel on the final recursive composition.
+Codex found no defect in the final proof or arithmetic. Opus accepted the
+proof and found one scope-check gap: split tail codewords were not rejected.
+The ledger now rejects them, and the compiled self-check tests this path.
+No reported case uses a split tail, so the totals do not change.
+The warning-free build and complete test script passed again after this fix.
+The final ledger output is byte-for-byte equal to the reviewed output.
+
+The notes vault's automatic backups saved the main section 12.3 edits in
+`dd963aa`, `e597a0e`, `82d11d5`, and `c9a8273` while the work was in progress.
+That history was preserved. Vault commit `38bcee0` records the final J3
+ledger-scope note after both reviews and validation.
