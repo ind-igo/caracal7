@@ -124,9 +124,9 @@ pub fn mem_main(target: Target) {
 
 pub const CARACAL7_BENCH_PROPERTIES: BenchProperties = BenchProperties {
     proving_system: Cow::Borrowed("caracal7"),
-    field_curve: Cow::Borrowed("F_127 (bit-layout, 16-coordinate extension)"),
-    iop: Cow::Borrowed("column families over a chain grid, batched quotient, tensor-code tail"),
-    pcs: Some(Cow::Borrowed("Reed-Solomon tensor code with Merkle commitments")),
+    field_curve: Cow::Borrowed("F_127 (bit-layout, 20-coordinate extension)"),
+    iop: Cow::Borrowed("column families over a chain grid, batched quotient, Ligerito tail"),
+    pcs: Some(Cow::Borrowed("Ligerito: Reed-Solomon columns in Blake3 Merkle trees")),
     arithm: Cow::Borrowed("column families over a chain grid"),
     is_zk: false,
     is_zkvm: false,

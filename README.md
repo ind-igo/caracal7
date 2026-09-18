@@ -8,6 +8,10 @@ The idea: a 7-bit field does not make streaming work faster, but it makes matrix
 
 Every relation is compiled to degree-2 constraints on a two-dimensional grid and checked by one quotient argument; there is no sumcheck over the trace and no custom gates. Relations are defined as tables: a family is a row of a table that names the columns it reads, the offsets it reads them at and the coefficients, and a workload is a list of such rows plus a column-major trace. Copy constraints and fingerprints are grand-product and Horner accumulators along chains. The lookup argument, Herder, is a new grand-product construction in the plookup family, specified and not implemented (see below); the hash workloads use bit certificates instead. Wide multiplication mod a prime is a polynomial identity checked at a challenge point, with no product column. The commitment layer is Ligerito: Reed-Solomon columns in Blake3 Merkle trees, a batched partial sumcheck as the tail, queries sized at the Johnson radius with grinding. Blake3 is also the Fiat-Shamir transcript, run on the device. The challenge field is a degree-20 extension of F127.
 
+### Herder lookups (TODO)
+
+Herder is the lookup, permutation and read-write memory argument. The prover commits the lookup records and a copy of them ordered by table position. One grand-product identity over adjacent pairs of the copy proves that the copy walks the public table in order and that it is a permutation of the records, so membership needs no separate permutation argument. The table enters as one constant the verifier computes, not as witness rows. Records are fingerprinted by a fixed injective linear map into the challenge field, with no compression challenge, and repetitions are exponents of factors, not field counters, so the argument holds in characteristic 127. Ordering the copy by address and timestamp gives memory.
+
 ## The prover, component by component
 
 **Fields.** Data lives in `F = F127`. The polynomial domain is `F2 = F127^2` (`i^2 = -1`), the code alphabet is `F4 = F127^4`, and every Fiat-Shamir challenge, accumulator and quotient value lives in `E = F_127^20`, a tower `F4[u] / (u^5 - g)`. Elements are stored as 1, 2, 4 or 20 bytes, one coordinate per byte. The 20 coordinates of `E` give about 116 bits of field soundness.
@@ -23,10 +27,6 @@ Every relation is compiled to degree-2 constraints on a two-dimensional grid and
 **Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads; the RSA and passport verifies are dominated by deriving their public data, which the next step moves to a product form.
 
 **Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 107.7 to 110.2 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
-
-## Herder
-
-Herder is the lookup, permutation and read-write memory argument. The prover commits the lookup records and a copy of them ordered by table position. One grand-product identity over adjacent pairs of the copy proves that the copy walks the public table in order and that it is a permutation of the records, so membership needs no separate permutation argument. The table enters as one constant the verifier computes, not as witness rows. Records are fingerprinted by a fixed injective linear map into the challenge field, with no compression challenge, and repetitions are exponents of factors, not field counters, so the argument holds in characteristic 127. Ordering the copy by address and timestamp gives memory.
 
 ## Statements
 
@@ -124,26 +124,26 @@ non-Rust path; its numbers are about 150 ms higher on the small cases and 260 ms
 Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-process GPU-only times are the
 `warm prove` line of `bench/bench_<target>.mojo`.
 
-**2026-09-16, Apple M1 Pro 16 GB, with the 8x8 simdgroup open kernel (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average 10 to 12 during the run)**
+**2026-09-18, Apple M1 Pro 16 GB (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average about 7 during the run)**
 
 | target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| sha256 | 128 B | 47 | 22 | 174,460 | 77,424 | 47 | 308,224 |
-| sha256 | 256 B | 51 | 29 | 187,600 | 72,956 | 48 | 462,336 |
-| sha256 | 512 B | 60 | 35 | 199,084 | 149,980 | 50 | 924,672 |
-| sha256 | 1024 B | 87 | 34 | 216,924 | 355,956 | 52 | 1,585,152 |
-| sha256 | 2048 B | 145 | 53 | 213,628 | 651,796 | 57 | 3,698,688 |
-| keccak | 128 B | 51 | 28 | 257,028 | 56,652 | 47 | 218,112 |
-| keccak | 256 B | 58 | 29 | 269,024 | 61,972 | 48 | 436,224 |
-| keccak | 512 B | 60 | 33 | 283,656 | 80,724 | 49 | 872,448 |
-| keccak | 1024 B | 91 | 35 | 301,492 | 86,980 | 51 | 1,744,896 |
-| keccak | 2048 B | 100 | 43 | 319,120 | 143,588 | 56 | 3,489,792 |
-| poseidon | 2 | 124 | 40 | 372,373 | 143,588 | 52 | 1,916,928 |
-| poseidon | 4 | 134 | 41 | 373,365 | 143,588 | 52 | 1,916,928 |
-| poseidon | 8 | 123 | 40 | 371,061 | 143,588 | 52 | 1,916,928 |
-| poseidon | 12 | 197 | 49 | 396,245 | 346,120 | 59 | 4,472,832 |
-| poseidon | 16 | 202 | 49 | 394,005 | 346,120 | 59 | 4,472,832 |
-| ecdsa | 1 sig | 407 | 122 | 543,972 | 553,684 | 93 | 19,574,784 |
+| sha256 | 128 B | 34 | 20 | 174,424 | 77,552 | 52 | 308,224 |
+| sha256 | 256 B | 40 | 30 | 186,416 | 72,860 | 54 | 462,336 |
+| sha256 | 512 B | 51 | 35 | 197,864 | 146,076 | 54 | 924,672 |
+| sha256 | 1024 B | 67 | 30 | 216,380 | 336,308 | 55 | 1,585,152 |
+| sha256 | 2048 B | 94 | 48 | 216,380 | 624,212 | 61 | 3,698,688 |
+| keccak | 128 B | 49 | 27 | 254,940 | 46,972 | 52 | 218,112 |
+| keccak | 256 B | 48 | 28 | 265,152 | 52,052 | 53 | 436,224 |
+| keccak | 512 B | 51 | 33 | 283,552 | 70,292 | 54 | 872,448 |
+| keccak | 1024 B | 72 | 36 | 301,908 | 75,204 | 57 | 1,744,896 |
+| keccak | 2048 B | 77 | 44 | 321,296 | 129,252 | 62 | 3,489,792 |
+| poseidon | 2 | 106 | 41 | 371,285 | 129,252 | 57 | 1,916,928 |
+| poseidon | 4 | 104 | 40 | 373,109 | 129,252 | 57 | 1,916,928 |
+| poseidon | 8 | 105 | 40 | 373,845 | 129,252 | 57 | 1,916,928 |
+| poseidon | 12 | 169 | 50 | 397,621 | 321,544 | 64 | 4,472,832 |
+| poseidon | 16 | 164 | 49 | 395,861 | 321,544 | 63 | 4,472,832 |
+| ecdsa | 1 sig | 323 | 121 | 544,516 | 497,940 | 98 | 19,574,784 |
 
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
 session's arena being released); the small rows move a few ms between runs on a loaded machine.
