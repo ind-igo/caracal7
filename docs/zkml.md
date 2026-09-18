@@ -81,8 +81,7 @@ beside it.
 
 1. **Herder.** Specified (`docs/milestone-3-lookup.md`, vault spec section 6), not built. Every
    nonlinearity and every requantize step is a lookup: softmax, GELU or SiLU, RMSNorm's rsqrt, the
-   rescale-round-clip step, all 256-entry tables on int8 inputs. It also builds the post-commit challenge
-   as a relation coefficient, which the matmul relation reuses. Shared dependency with the passport work.
+   rescale-round-clip step, all 256-entry tables on int8 inputs. Shared dependency with the passport work.
 2. **Matmul relation.** A design doc first (`docs/matmul.md`): matrix layout over columns and positions,
    the limb dimension, the round messages in the transcript, the ledger term, the opening-list size.
    Reviewed before code. Then the sumcheck relation in the prover, tail and verifier, and the builder hook.
@@ -104,7 +103,7 @@ beside it.
 6. **Segments.** Sixty-four blocks and a long sequence do not fit one grid. Vault spec section 11 has
    segments. Activations and the attention state cross segment boundaries as committed columns; a
    sequence proof is a chain of proofs with shared roots.
-7. **Ledger and review.** Freivalds and Herder numerators in `docs/soundness.md`, then the same Opus and
+7. **Ledger and review.** Matmul sumcheck and Herder numerators in `docs/soundness.md`, then the same Opus and
    Codex review loop the RSA work got.
 
 ## Fixtures
