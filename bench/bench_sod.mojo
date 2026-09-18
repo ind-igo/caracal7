@@ -1,5 +1,5 @@
 """One passport SOD (workloads/sod.mojo): SHA-256 of DG1 (93 bytes), of the LDS security object (100 bytes)
-and of the signed attributes (73 bytes), and the RSA-2048 verify (e = 65537), 2547 chains on the 144 x 2688
+and of the signed attributes (73 bytes), and the RSA-2048 verify (e = 65537), 1987 chains on the 144 x 2016
 grid. Fixture from OpenSSL (genrsa 2048; dgst -sha256 -sign on the signed attributes). Warm prove, proof
 size, verify."""
 
@@ -49,4 +49,4 @@ def run[p: Params]() raises:
 
 
 def main() raises:
-    run[CLIENT.grid(144, 2688)]()
+    run[CLIENT.grid(144, 2016)]()

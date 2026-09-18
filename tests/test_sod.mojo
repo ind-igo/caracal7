@@ -1,5 +1,5 @@
 """The SOD workload (workloads/sod.mojo): three SHA-256 groups (DG1, eContent, signed attributes of the
-real ASN.1 shape) and a 512-bit RSA verify (2 limbs, e = 3) on a 96-chain grid, 91 chains live. The proof
+real ASN.1 shape) and a 512-bit RSA verify (2 limbs, e = 3) on a 96-chain grid, 89 chains live. The proof
 verifies against public inputs without the messages; a DG1 whose digest the eContent does not carry, and
 signed attributes whose digest is not the signed limb, are refused at the wire. Fixture: OpenSSL genrsa -3
 512, s = m^d mod n for m = (random upper limb || sha256(attrs))."""
@@ -59,7 +59,7 @@ def test_sod_verifies_and_wires_hold() raises:
     assert_equal(m.low(256), Big.from_bytes(sha256(msgs[2])[::-1]))
     var lengths: List[Int] = [len(msgs[0]), len(msgs[1]), len(msgs[2])]
     var embeds: List[Int] = [EMBED_1, EMBED_2]
-    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + chain_count(2, 2), 91)
+    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + chain_count(2, 2), 89)
     var w = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), msgs.copy())
     var inputs = w.public_inputs[p]()
     var proof = prove_workload[p, Blake3, SOD](ctx, w)

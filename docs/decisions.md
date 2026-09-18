@@ -2196,3 +2196,36 @@ to the digest instead of a public factor.
   public columns; hoisted, 1.7 s. The public data is 59 MB (153 full columns, 0.5 s to derive): the
   product form p(X1) q(X2) for the SHA groups' columns is the next verifier cost to cut.
 - **Reviewed:** Codex found the verifier deriving public data from the input head before the pin check (a wrong length indexed out of bounds); the derivation now checks the lengths and offsets against the compiled layout first. Opus confirmed the tl/cy merge (qh and ym never overlap), the shared fingerprint accumulator, the digest-to-cz wire algebra (both Horner end values are -H(zeta), same start and sign) and both fixtures numerically.
+
+## RSA squaring symmetry: a triangle of products, strides as masks (2026-09-18, M1 Pro)
+
+`workloads/rsa.mojo`. Sixteen of the seventeen modmuls of an RSA-2048 verify square their input, and a
+squaring's products a_i a_j with i > j repeat the ones with i < j. The AB block of a squaring now holds
+the products with i <= j only, lo(r) and the passed hi(r) weighted 2 off the diagonal: 37 chains for 72
+at eight limbs, 1888 chains for 2448 per verify.
+
+- **Why the triangle needed a new layout.** The rectangle's running sums read at two constant strides
+  (the diagonal at `limbs`, the chain below at 1) because every anti-diagonal has the same length there. A
+  triangle's diagonals do not, so no chain order gives constant strides. The layout is one tail chain,
+  then the diagonals from the top with i ascending, and every read is a forward stride from a small set
+  (at most ceil(limbs / 2) + 1 values); each stride in use is a public mask (`cl{k}`, `hm{k}`, `rm{k}`
+  carrying the weight, `sq{k}`, `mp{k}` for the compare carry) and a term of the family. The square
+  (i, i) passes its hi to (i, i + 1), the last chain of the next diagonal, in place of the dropped
+  (i + 1, i); the tail takes the last square's hi and heads limb 2 limbs - 1.
+- **One role table.** `_block_cells` computes every chain's role and strides from the (i, j) order (a
+  stride is a lookup, checked forward), and the statement's families and masks, the trace and the public
+  data all read that table: the rectangle is the same code with its own (i, j) order. 12 public columns
+  more than before (52 with kc/k4/kt); the derivation is 0.5 s of the verify, the product form's job.
+- **Widths.** t is below 2^259 now (two doubled halves), so the hi read covers weights 256..259 (the row
+  `hm` masks) and `bu` keeps t below 2^260; a tail's t is bound below 2^256 by `bu` itself, so the top
+  limb cannot hide a carry (the rectangle argued that by descent). The signed 4-bit ripple carry holds the
+  largest pile (8 plus the carry in).
+- **Measured** (warm, `bench_rsa`, `bench_sod`, now on 144 x 2016, the next legal grid below 2688): RSA
+  verify prove 0.82 -> 0.59 s (2688 -> 2016 chains, and 103 queries for 80 at the smaller grid's rate),
+  proof 627 KB, verify 1.1 s (0.5 s of it the public data); SOD prove 2.0 -> 1.7 s, 1.03 MB, verify
+  2.1 s. The 2016 grid holds eight cosets of F2*: room for two more slots.
+- **Reviewed:** Opus replicated the triangle geometry in Python for 1 to 8 limbs (telescoping exact, every
+  hi read by one chain at its own weight, the odd-diagonal square picked up by `sq`, pile at most 7 since
+  `cont` and `sq` exclude each other, carries in [-4, 7]) and found no defect; Codex the same on 1 to 255
+  limbs. Minor items applied: the dead loop in `_heads`, a stale slot comment, the tail bound restored in
+  the docstring.
