@@ -14,12 +14,15 @@ physical columns with the other groups' (per kind), its families are multiplied 
 accumulators are selected term by term, so a grid of several gadgets costs rows times the widest gadget.
 ponytail: one lookup per LIMB6 column (16 Z columns each); a shared range lookup when ECDSA's limb count
 is measured. A column that is the second factor of a quadratic term stays exclusive (zero off its group,
-which makes the term vanish there); pushing the selector into a helper column is the upgrade when a wide
-quadratic gadget (SHA-256) must pool. A next-chain read (k2 > 0) on a group's last chains reads the next
-group's chains, whose pooled cells no family of this group constrains: only a linear GATE_2 term reads the
-next chain, under the group's inner selector (1 on every chain of the group but its last) in place of the
-gate. The selectors are in the shape (`group_record`); the verifier checks their public data is the chain
-indicator. Undeclared groups are labels for `pad_trace` only.
+which makes the term vanish there): a gadget orders its quadratic terms so a vertex cover of its factor
+pairs is the second factors. A read of another chain (k2 > 0) near the group's edge lands in another
+group's chains, whose pooled cells no family of this group constrains: a family reading shifts S takes the
+group's mask for S (`mask`: 1 on the chains y with (y + k) mod h2 in the group for every k in S; the inner selector
+is the mask for [0, 1], a GATE_2 gate counts as shift 1) in place of the selector, in its linear witness
+terms only; a quadratic term reads its own chain. A public column of the group (`pub(group=)`) is zero off
+the group's mask for its shifts, so it may multiply a witness read. The group's public columns are in the
+shape (`group_record`); the verifier checks each one's public data against the mask (equal: selectors and
+masks; zero off it: the others). Undeclared groups are labels for `pad_trace` only.
 """
 
 from caracal7.core.field import F2, f_add, f_pow, ext_mul, ext_pow, E_BYTES
@@ -148,12 +151,27 @@ struct Layout(Copyable, Movable):
     def selector[p: Params](self, group: String, inner: Bool = False) raises -> List[UInt8]:
         """The public data of a declared group's selector column (m = 1): 1 on the group's chains, 0 elsewhere;
         `inner` leaves the group's last chain 0 (the selector of its GATE_2 families)."""
+        var shifts: List[Int] = [0]
+        if inner:
+            shifts.append(1)
+        return self.mask[p](group, shifts)
+
+    def mask[p: Params](self, group: String, shifts: List[Int]) raises -> List[UInt8]:
+        """The public data of a declared group's mask for `shifts` (m = 1): 1 on the chains y with (y + k) mod h2
+        in the group for every shift k, 0 elsewhere."""
         if group not in self.group_base:
             raise Error("unknown group " + group)
+        var base = self.group_base[group]
+        var end = base + self.group_chains[group]
         var v = List[UInt8](length=p.N(), fill=0)
-        for x2 in range(self.group_base[group], self.group_base[group] + self.group_chains[group] - (1 if inner else 0)):
-            for x1 in range(p.h1()):
-                v[x2 * p.h1() + x1] = 1
+        for x2 in range(base, end):
+            var on = True
+            for k in shifts:
+                var y = (x2 + k) % p.h2()
+                on = on and y >= base and y < end
+            if on:
+                for x1 in range(p.h1()):
+                    v[x2 * p.h1() + x1] = 1
         return v^
 
 
@@ -196,7 +214,9 @@ struct Statement(Movable):
     var group_names: List[String]         # declared row groups (`group`): chains in declaration order
     var group_chains: List[Int]
     var group_sel: List[String]           # the group's selector public column
-    var group_inner: List[String]         # and its inner selector ("" none): the selector of its GATE_2 families
+    var pub_group: List[Int]              # per public column: its declared group (-1 none),
+    var pub_shifts: List[List[Int]]       # the shifts of its mask (sorted, with 0),
+    var pub_exact: List[Bool]             # and whether it is that mask (a selector or `mask`) or just zero off it
 
     def __init__(out self):
         self.cols = List[String]()
@@ -222,7 +242,9 @@ struct Statement(Movable):
         self.group_names = List[String]()
         self.group_chains = List[Int]()
         self.group_sel = List[String]()
-        self.group_inner = List[String]()
+        self.pub_group = List[Int]()
+        self.pub_shifts = List[List[Int]]()
+        self.pub_exact = List[Bool]()
 
     def _fresh(self, name: String) raises:
         if name in self.col_index:
@@ -250,15 +272,14 @@ struct Statement(Movable):
     def group(mut self, name: String, chains: Int, selector: String, inner: String = "") raises -> Int:
         """A row group of `chains` chains at the next free base, returned (`wire`, `public_factor`, `restrict`
         take absolute chains; `restrict` fixes the grid's first or last chain). `selector` is a public column the gadget declares (m = 1) and fills with 1 on
-        the group's chains and 0 elsewhere (`Layout.selector`); the gadget's other public columns are zero
-        off the group too. Columns declared with group=name share physical columns with the other groups'
+        the group's chains and 0 elsewhere (`Layout.selector`); `inner` (optional) is its mask for the shifts
+        [0, 1] (`mask`). Columns declared with group=name share physical columns with the other groups'
         columns of the same kind (a column that is a zero row, a restriction, the second factor of a
         quadratic term, a lookup record or a LIMB6 stays its own); a family of the group reads the group's
-        witness columns only and holds under the selector, and a Horner accumulator ingesting the group's
+        witness columns only and holds under the selector, or under the group's mask for the shifts it reads,
+        and a Horner accumulator ingesting the group's
         columns is selected term by term, so it stays at 0 on the other groups' chains and one accumulator
-        may serve several groups. A GATE_2 family of the group takes `inner` (a public column, 1 on every
-        chain of the group but its last: `Layout.selector(group, inner=True)`) in place of the gate, since
-        its next-chain read on the group's last chain lands in the next group."""
+        may serve several groups."""
         if chains < 1:
             raise Error("group needs at least one chain: " + name)
         for g in self.group_names:
@@ -266,22 +287,56 @@ struct Statement(Movable):
                 raise Error("group in use: " + name)
         if self._pub_m(selector) != 1 or (inner != "" and self._pub_m(inner) != 1):
             raise Error("group selector is a declared public column with m = 1: " + name)
-        for n in [selector, inner]:
-            if n == "":
-                continue
-            if n == selector and inner == selector:
-                raise Error("a group's selectors are its own columns: " + name)
-            for i in range(len(self.group_names)):
-                if self.group_sel[i] == n or self.group_inner[i] == n:
-                    raise Error("a group's selectors are its own columns: " + name)
         var base = 0
         for c in self.group_chains:
             base += c
+        var g = len(self.group_names)
+        if self.pub_group[self._pub_index(selector)] >= 0 or inner == selector or (inner != "" and self.pub_group[self._pub_index(inner)] >= 0):
+            raise Error("a group's selectors are its own columns: " + name)      # checked before any claim: a refused group leaves no half group
+        self._claim(g, selector, [0], name)
+        if inner != "":
+            self._claim(g, inner, [0, 1], name)
         self.group_names.append(name)
         self.group_chains.append(chains)
         self.group_sel.append(selector)
-        self.group_inner.append(inner)
         return base
+
+    def mask(mut self, group: String, name: String, shifts: List[Int]) raises:
+        """A public column (m = 1) that is group `group`'s mask for `shifts`: 1 on the chains y with (y + k) mod h2
+        in the group for every k in `shifts` (`Layout.mask`). A family of the group whose reads use these
+        shifts (k2 values; a GATE_2 gate counts as 1) takes it in place of the selector."""
+        self.pub(name, 1)
+        self._claim(self._group_index(group), name, shifts, group)
+
+    def _claim(mut self, g: Int, name: String, shifts: List[Int], group: String) raises:
+        var i = self._pub_index(name)
+        if self.pub_group[i] >= 0:
+            raise Error("a group's selectors are its own columns: " + group)
+        self.pub_group[i] = g
+        self.pub_shifts[i] = _norm_shifts(shifts)
+        self.pub_exact[i] = True
+
+    def _group_index(self, group: String) raises -> Int:
+        for i in range(len(self.group_names)):
+            if self.group_names[i] == group:
+                return i
+        raise Error("unknown group " + group)
+
+    def _pub_index(self, name: String) -> Int:
+        for i in range(len(self.pub_names)):
+            if self.pub_names[i] == name:
+                return i
+        return -1
+
+    def _mask_of(self, g: Int, shifts: List[Int], fam: String) raises -> String:
+        """The group's exact mask for `shifts` (normalized): the selector for [0]."""
+        for i in range(len(self.pub_names)):
+            if self.pub_group[i] == g and self.pub_exact[i] and _same_shifts(self.pub_shifts[i], shifts):
+                return self.pub_names[i]
+        var text = String("")
+        for k in shifts:
+            text += (", " if text.byte_length() > 0 else "") + String(k)
+        raise Error("a grouped family reads shifts [" + text + "] and the group declares no mask for them (Statement.mask): " + fam)
 
     def table(mut self, rows: List[UInt8], width: Int) raises -> Int:
         """Register a lookup table (canonical bytes, `width` per row); returns its id. Rows are distinct (the
@@ -365,16 +420,26 @@ struct Statement(Movable):
             raise Error("public factor fingerprints by a horner accumulator: " + name)
         self.factors.append((name, k, slot, chain))
 
-    def pub(mut self, name: String, m: Int = 1) raises:
+    def pub(mut self, name: String, m: Int = 1, group: String = "", shifts: List[Int] = List[Int]()) raises:
         """A public column (docs/public-columns.md): a polynomial in (X1, X2^m), a column periodic along axis 2
-        with period h2 / m; its public data is one period of values. Indexed after W and Z."""
+        with period h2 / m; its public data is one period of values. Indexed after W and Z. A column of a
+        declared group (m = 1) is zero off the group's mask for `shifts` (the verifier checks), so a family of
+        the group reading those shifts may multiply a witness read by it."""
         self._fresh(name)
         if m < 1 or m > 65535:
             raise Error("public column needs m >= 1, a u16")
+        var g = -1
+        if group != "":
+            g = self._group_index(group)
+            if m != 1:
+                raise Error("a group's public column has m = 1: " + name)
         var b = List[UInt8](length=PUB, fill=0)
         set_u16(b, 0, m)
         self.pubs.extend(b^)
         self.pub_names.append(name)
+        self.pub_group.append(g)
+        self.pub_shifts.append(_norm_shifts(shifts))
+        self.pub_exact.append(False)
 
     def restrict(mut self, name: String, coord: Int, count: Int = 0) raises:
         """Restrict W column `name` on the chain X2 = 1 (FIX_ONE) or e2 (FIX_E) to a public line of degree < count
@@ -504,7 +569,7 @@ struct Statement(Movable):
             exclusive[self._wcol(self.col_index, n)] = True
         for fam in self.fams:
             for t in fam.terms:
-                if t.b and t.b.value().col in self.col_index:
+                if t.b and t.b.value().col in self.col_index and t.a.col in self.col_index:
                     exclusive[self.col_index[t.b.value().col]] = True
         for a in self.accs:
             for n in a.num:
@@ -576,27 +641,41 @@ struct Statement(Movable):
                         if gr >= 0:
                             g = gr
                 if g >= 0:
+                    var shifts: List[Int] = [0]
+                    if fam.gate == GATE_2:
+                        shifts.append(1)
+                    for t in fam.terms:
+                        shifts.append(t.a.k2)
+                        if t.b:
+                            shifts.append(t.b.value().k2)
+                    shifts = _norm_shifts(shifts)
                     var sel = self.group_sel[g]
-                    if fam.gate == GATE_2:               # the gate would not stop at the group's last chain
-                        if self.group_inner[g] == "":
-                            raise Error("a grouped GATE_2 family needs the group's inner selector: " + fam.name)
-                        sel = self.group_inner[g]
-                        fam.gate = GATE_NONE
+                    if len(shifts) > 1:                  # a read leaves the group near its edge: the mask for the shifts
+                        sel = self._mask_of(g, shifts, fam.name)
+                        if fam.gate == GATE_2:
+                            fam.gate = GATE_NONE
+                        for t in fam.terms:              # the mask multiplies the linear terms only: a quadratic term would still bind the masked chains
+                            if t.a.col in self.col_index and t.b and t.b.value().col in self.col_index:
+                                raise Error("a grouped family reading other chains is linear in the witness (the mask does not reach a quadratic term): " + fam.name)
                     for ref t in fam.terms:
-                        var ua = t.a.col in self.col_index and self._group_of(t.a.col) < 0
-                        var ub = Bool(t.b) and t.b.value().col in self.col_index and self._group_of(t.b.value().col) < 0
-                        if ua or ub:
-                            raise Error("a grouped family reads an ungrouped witness column (free off the group): " + fam.name)
                         var wa = t.a.col in self.col_index
                         var wb = Bool(t.b) and t.b.value().col in self.col_index
-                        if self.fams[it[1]].gate == GATE_2 and (t.b or not wa):
-                            raise Error("a grouped GATE_2 family is linear in the group's witness columns (the inner selector is its only factor): " + fam.name)
-                        if wb and self._is_record(t.b.value().col):
-                            raise Error("a grouped family's quadratic factor is a plain witness column (zero off the group), not a lookup record: " + fam.name)
-                        if (wa and t.a.k2 != 0 and not (sel != self.group_sel[g] and t.a.k2 == 1 and not t.b)) or (wb and t.b.value().k2 != 0):
-                            raise Error("a grouped family reads another chain only in a linear GATE_2 term (k2 = 1, the inner selector masks the group's last chain); other reads land in cells no family constrains: " + fam.name)
-                        if not t.b and t.a.col in self.col_index:   # a public-only term is the gadget's: zero off the group
+                        if (wa and self._group_of(t.a.col) < 0) or (wb and self._group_of(t.b.value().col) < 0):
+                            raise Error("a grouped family reads an ungrouped witness column (free off the group): " + fam.name)
+                        if wa and wb:                    # quadratic, k2 = 0 on both (a shifted quadratic is refused above): the exclusive factor vanishes off the group on its own chain
+                            if self._is_record(t.b.value().col):
+                                raise Error("a grouped family's quadratic factor is a plain witness column (zero off the group), not a lookup record: " + fam.name)
+                        elif wa and not t.b:             # linear: the selector or mask
                             t.b = Read(sel, 0, 0)
+                        elif not wa and not wb and t.b:
+                            raise Error("a grouped family multiplies two public columns (fold them into one): " + fam.name)
+                        else:                            # a public factor or a public-only term: one of the group's, zero off the mask
+                            var pr = t.b.value().copy() if wa else t.a.copy()
+                            if pr.k2 != 0:
+                                raise Error("a grouped family reads a public column at k2 = 0: " + fam.name)
+                            var pi = self._pub_index(pr.col)
+                            if pi < 0 or self.pub_group[pi] != g or not _covers(self.pub_shifts[pi], shifts):
+                                raise Error("a grouped family's public column is one of the group's, declared for the family's shifts: " + fam.name)
                 for t in fam.terms:
                     var quadratic = Bool(t.b)
                     var ca = self._resolve[p](index, t.a, pub_at, touched, read)
@@ -633,8 +712,8 @@ struct Statement(Movable):
                         g = self._resolve[p](index, Read(self.group_sel[gr], 0, 0), pub_at, touched, read)
                     if gr >= 0 and a.start != 0:
                         raise Error("a horner accumulator over a group's columns starts at 0 (neutral off the group): " + a.name)
-                    if gr >= 0 and t.b and t.b.value().col != self.group_sel[gr]:
-                        raise Error("a grouped horner term takes the group's selector only: " + a.name)
+                    if gr >= 0 and t.b and (self._pub_index(t.b.value().col) < 0 or self.pub_group[self._pub_index(t.b.value().col)] != gr):
+                        raise Error("a grouped horner term takes a public column of its group: " + a.name)
                     ingest.append((c, t.a.k1, t.coef, t.chal, g))
                 f.horner(k, w + it[1] * p.e, a.start, a.scale, ingest)
             else:
@@ -771,18 +850,15 @@ struct Statement(Movable):
                 pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]], self.factors[i][3]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)
         var grp = List[UInt8]()
+        var gbases = List[Int]()
         var gbase = 0
-        for i in range(len(self.group_names)):
-            var inner_i = NONE
-            for j in range(len(self.pub_names)):
-                if self.pub_names[j] == self.group_inner[i]:
-                    inner_i = j
-            var sel_i = 0
-            for j in range(len(self.pub_names)):
-                if self.pub_names[j] == self.group_sel[i]:
-                    sel_i = j
-            grp.extend(group_record(gbase, self.group_chains[i], sel_i, inner_i))
-            gbase += self.group_chains[i]
+        for c in self.group_chains:
+            gbases.append(gbase)
+            gbase += c
+        for j in range(len(self.pub_names)):
+            var g = self.pub_group[j]
+            if g >= 0:
+                grp.extend(group_record(gbases[g], self.group_chains[g], j, self.pub_exact[j], self.pub_shifts[j]))
         var shape = Shape.__init__[p](w, f.bytes, f.accs, tables, pubs, res, points, self.chals, f.ends, wires, sigma, pubf, zeros, self.pinned, grp)
         var group_base = Dict[String, Int]()
         var group_chains = Dict[String, Int]()
@@ -793,6 +869,39 @@ struct Statement(Movable):
             base += self.group_chains[i]
         var layout = Layout(names, index, kinds, groups, f.accs, tables, pubs, res, group_base, group_chains)
         return Compiled(shape^, f.bytes.copy(), layout^)
+
+
+def _norm_shifts(shifts: List[Int]) -> List[Int]:
+    """Sorted, distinct, with 0."""
+    var out: List[Int] = [0]
+    for k in shifts:
+        var seen = False
+        for v in out:
+            seen = seen or v == k
+        if not seen:
+            out.append(k)
+    sort(out)
+    return out^
+
+
+def _same_shifts(a: List[Int], b: List[Int]) -> Bool:
+    if len(a) != len(b):
+        return False
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            return False
+    return True
+
+
+def _covers(have: List[Int], need: List[Int]) -> Bool:
+    """Whether every shift of `need` is in `have` (the mask for `have` lies inside the mask for `need`)."""
+    for k in need:
+        var seen = False
+        for v in have:
+            seen = seen or v == k
+        if not seen:
+            return False
+    return True
 
 
 # ---- trace helpers ----

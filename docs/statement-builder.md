@@ -55,6 +55,8 @@ var st = Statement()
 st.pub("gk", 1)                                # a group selector: public data 1 on the group's chains (Layout.selector)
 st.pub("gki", 1)                               # its inner selector: 0 on the group's last chain too (Layout.selector(group, inner=True))
 var base = st.group("keccak", 64, "gk", inner="gki")   # a row group: 64 chains from `base`; its columns pool physical columns with the other groups'
+st.mask("keccak", "gk16", [0, 16])             # the group's mask for reads 16 chains ahead: 1 where y and y + 16 are in the group (Layout.mask)
+st.pub("rc", 1, group="keccak", shifts=[0])    # a public column of the group: zero off the group's mask for its shifts (the verifier checks), so it may multiply a witness read
 st.col("a0", BIT, group="keccak")              # W column; kinds BIT, LIMB6, BYTE; the index is the declaration order (pooled by kind across declared groups)
 st.acc("z", KIND_PERM, num=[...], den=[...])   # Z block; KIND_LOOKUP takes table=st.table(rows)
 st.pub("m", m=4)                               # public column, block (d2, h1); d2 = 0 means h2 / m
@@ -76,13 +78,18 @@ var c = st.compile[p]()                        # Compiled: shape, families bytes
 A `Term` is `coef * element(chal) * b_basis * b_basis2 * a * b` with `b` optional; a public read is a read of
 a `pub` name. A declared group's family reads the group's witness columns only (an ungrouped column would be
 free off the group); every linear witness term is multiplied by the group's selector and the second factor of
-a quadratic term keeps an exclusive column, so the family vanishes on other groups' chains; the gadget's own
-public columns must be zero off the group. A next-chain read on the group's last chain lands in the next
-group, in cells no family of this group constrains: only a linear GATE_2 term reads the next chain (k2 = 1), and it
-takes the group's inner selector in place of the gate (SHA-256's `k2 = 16` schedule reads need a mask read at
-the same shift, not built). The selectors are in the shape; the verifier checks their public data is the chain
-indicator. A Horner accumulator ingesting a group's columns is
-selected term by term (start 0, the selector its only public multiplier), so one accumulator can fingerprint a value of each group and a `wire` can join
+a quadratic term keeps an exclusive column, so the family vanishes on other groups' chains. A read of another
+chain (k2 > 0) near the group's edge lands in another group's chains, in cells no family of this group
+constrains: a family reading shifts S (its k2 values, a GATE_2 gate counting as 1) takes the group's mask for
+S (`mask`: 1 where y + k is in the group for every k in S; the inner selector is the mask for [0, 1]) in place
+of the selector and of the gate, and only a linear witness term may read another chain (a quadratic term's
+exclusive factor vanishes on its own chain only). A public column read by a grouped family is one of the
+group's (`pub(group=, shifts=)`), read at k2 = 0, declared for shifts covering the family's: the verifier
+checks its public data is zero off the group's mask for its shifts, so a term public times witness vanishes
+wherever the family is not selected. The selectors, masks and group public columns are in the shape
+(`group_record`); the verifier checks the selectors and masks equal their mask and the others vanish off it.
+A Horner accumulator ingesting a group's columns is
+selected term by term (start 0, a public column of the group its only public multiplier), so one accumulator can fingerprint a value of each group and a `wire` can join
 them; a public factor's ingest bytes are h1 per ingest entry, the off-group entries' bytes ignored. `family` emits one entry per term through `Families.add`, sharing the family index (its position
 among `family` and `acc` calls); `gate` is `mult`. Kinds emit their certificates after the user's families: a
 BIT column its Booleanity family, a LIMB6 column a lookup into the [64] table through a `<name>.sorted` column

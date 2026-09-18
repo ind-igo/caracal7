@@ -57,7 +57,7 @@ comptime HORNER_TRANSITIONS = 2 * E_BYTES   # linear entries Families.horner emi
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
 comptime PUBF = 8       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2, chain u16 (where its public reads are taken)
-comptime GRP = 8        # row group: first chain u16, chain count u16, selector public column u16, inner selector public column u16 (NONE): the verifier checks their public data is the chain indicator
+comptime GRP = 8        # group public column record head: first chain u16, chain count u16, public column u16, exact u8, shift count u8, then the shifts as u16: the column's public data is the group's mask for the shifts (exact) or zero off it (support)
 comptime NONE = 65535
 comptime NO_BASIS = 255
 comptime FIX_ONE = 65534    # a point coordinate fixed at 1
@@ -354,12 +354,43 @@ def wire_record(family: Int, col_a: Int, col_b: Int) raises -> List[UInt8]:
     return w^
 
 
-def group_record(base: Int, chains: Int, selector: Int, inner: Int) raises -> List[UInt8]:
-    """A row group of `chains` chains from `base`: public column `selector` is 1 on them and 0 elsewhere,
-    `inner` (NONE for none) the same but 0 on the group's last chain."""
-    if base < 0 or base > 65535 or chains < 1 or chains > 65535 or selector < 0 or selector > 65535 or inner < 0 or inner > 65535:
-        raise Error("group record: base, chains, selector and inner are u16")
-    return [UInt8(base & 255), UInt8(base >> 8), UInt8(chains & 255), UInt8(chains >> 8), UInt8(selector & 255), UInt8(selector >> 8), UInt8(inner & 255), UInt8(inner >> 8)]
+def group_record(base: Int, chains: Int, col: Int, exact: Bool, shifts: List[Int]) raises -> List[UInt8]:
+    """A group public column: the mask of the group [base, base + chains) for `shifts` is 1 on the chains y
+    with (y + k) mod h2 in the group for every shift k (`group_mask`). Exact: public column `col` is that
+    mask (a selector: shifts [0]; an inner selector: [0, 1]); else it is zero where the mask is."""
+    if base < 0 or base > 65535 or chains < 1 or chains > 65535 or col < 0 or col > 65535 or len(shifts) > 255:
+        raise Error("group record: base, chains and column are u16, at most 255 shifts")
+    var b: List[UInt8] = [UInt8(base & 255), UInt8(base >> 8), UInt8(chains & 255), UInt8(chains >> 8), UInt8(col & 255), UInt8(col >> 8),
+                          UInt8(1) if exact else UInt8(0), UInt8(len(shifts))]
+    for k in shifts:
+        if k < 0 or k > 65535:
+            raise Error("group record: shifts are u16")
+        b.append(UInt8(k & 255))
+        b.append(UInt8(k >> 8))
+    return b^
+
+
+def group_offsets(groups: Span[UInt8, _]) raises -> List[Int]:
+    """The start of each group record in `groups` (whole records, else raises)."""
+    var offs = List[Int]()
+    var off = 0
+    while off < len(groups):
+        if off + GRP > len(groups) or off + GRP + 2 * Int(groups[off + 7]) > len(groups):
+            raise Error("group records are whole")
+        offs.append(off)
+        off += GRP + 2 * Int(groups[off + 7])
+    return offs^
+
+
+def group_mask(groups: Span[UInt8, _], off: Int, x2: Int, h2: Int) -> Bool:
+    """Whether chain x2 is in the mask of the group record at `off`."""
+    var base = get_u16(groups, off)
+    var chains = get_u16(groups, off + 2)
+    for i in range(Int(groups[off + 7])):
+        var y = (x2 + get_u16(groups, off + GRP + 2 * i)) % h2
+        if y < base or y >= base + chains:
+            return False
+    return True
 
 
 def public_factor_record(acc: Int, id: F2, sigma: F2, chain: Int) raises -> List[UInt8]:

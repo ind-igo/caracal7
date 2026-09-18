@@ -25,7 +25,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from caracal7.core.params import Params, domain_for, query_count
 from caracal7.core.arena import Arena
-from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from caracal7.relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
 from caracal7.core.hash import Hash
 from caracal7.core.tables import F2_ORDER, Domains, f2_primitive
 from caracal7.core.field import ext_mul, ext_pow
@@ -101,7 +101,7 @@ struct Shape(Writable):
     var pubf: List[UInt8]       # public factors (PUBF bytes each): virtual slots whose value the verifier fingerprints from the public data
     var zeros: List[UInt8]      # zero rows (ZERO bytes each): a column's opening at (1, z2) or (e1, z2) is zero, part of the artifact
     var pinned: List[UInt8]     # the public inputs must start with these bytes (a circuit description the statement was compiled from), part of the artifact
-    var groups: List[UInt8]     # row groups (GRP bytes each): the verifier checks each selector's public data is its chain indicator, part of the artifact
+    var groups: List[UInt8]     # group public columns (ir.group_record): the verifier checks each one's public data against its group's mask, part of the artifact
     var tail: List[TailLevel]
     var clear_length: Int       # |y_ell|
 
@@ -117,7 +117,7 @@ struct Shape(Writable):
         record width.
         TODO(memory): a KIND_MEMORY descriptor (spec 6.4) has no table and its own column roles; validate here."""
         p.check()
-        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0 or len(wires) % WIRE != 0 or len(pubf) % PUBF != 0 or len(zeros) % ZERO != 0 or len(groups) % GRP != 0:
+        if len(families) % ENTRY != 0 or len(accs) % ACC != 0 or len(publics) % PUB != 0 or len(restrictions) % RES != 0 or len(points) % POINT != 0 or len(chals) % CHAL != 0 or len(ends) % END != 0 or len(wires) % WIRE != 0 or len(pubf) % PUBF != 0 or len(zeros) % ZERO != 0:
             raise Error("family, accumulator, public, restriction, point, challenge, chain-end, wiring, public factor, zero-row or group table is not whole entries")
         self.columns_w = columns_w
         self.columns_z = p.e * (len(accs) // ACC)
@@ -288,17 +288,20 @@ struct Shape(Writable):
                     raise Error("public factor id and sigma must be canonical field elements (< 127)")
             if get_u16(pubf, i * PUBF + 6) >= p.h2():
                 raise Error("public factor chain is below h2")
-        for i in range(len(groups) // GRP):
-            var base = get_u16(groups, i * GRP)
-            var chains = get_u16(groups, i * GRP + 2)
+        for off in group_offsets(groups):
+            var base = get_u16(groups, off)
+            var chains = get_u16(groups, off + 2)
             if chains < 1 or base + chains > p.h2():
                 raise Error("group chains lie below h2")
-            for t in [4, 6]:
-                var c = get_u16(groups, i * GRP + t)
-                if t == 6 and c == NONE:
-                    continue
-                if c >= self.columns_p or get_u16(publics, c * PUB) != 1:
-                    raise Error("group selector is a public column with m = 1")
+            var c = get_u16(groups, off + 4)
+            if c >= self.columns_p or get_u16(publics, c * PUB) != 1 or groups[off + 6] > 1:
+                raise Error("group public column is a public column with m = 1")
+            var n = Int(groups[off + 7])
+            if n < 1 or get_u16(groups, off + GRP) != 0:   # sorted shifts starting at 0: the mask lies inside the group
+                raise Error("group shifts start at 0")
+            for i in range(n):
+                if get_u16(groups, off + GRP + 2 * i) >= p.h2():
+                    raise Error("group shifts lie below h2")
         if slots > 0:                                  # sigma is a permutation of the ids: the slots' cosets kappa^s H2 and the public factors' own
             var ids = Dict[Int, Int]()
             var kappa = f2_primitive()

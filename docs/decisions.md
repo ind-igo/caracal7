@@ -2067,9 +2067,33 @@ and a failing case in tests/test_groups.mojo:
 - `pad_trace` of a declared group pads the group's idle rows in every declared group's column, other
   declared groups' lookup records over the whole range, and leaves label-group columns to their own call.
 
-Not built: a mask read at the same shift for ungated next-chain reads (SHA-256's `k2 = 16` schedule),
-pushing the selector into a helper column so a quadratic factor can pool, an allocator that compares pool
-versus overlay per statement.
+Not built: an allocator that compares pool versus overlay per statement.
+
+Superseded the same day by "Group masks and group public columns" below: the mask for a shift set replaces
+the inner selector, and public columns of a group are verifier-checked instead of trusted.
+
+## Group masks and group public columns (2026-09-18)
+
+Porting SHA-256 to a group needs three things the first row-group layer lacked, and one it did not need:
+
+- **Masks for shift sets.** SHA-256's schedule reads w at k2 = 1, 9, 14, 16 and the block's input state
+  63 chains back. A family reading shifts S now takes the group's mask for S (`Statement.mask(group, name,
+  shifts)`: 1 on the chains y with (y + k) mod h2 in the group for every k in S) in place of the selector and
+  of a GATE_2 gate (the inner selector is the mask for [0, 1]). Only a linear witness term reads another
+  chain; a quadratic term's exclusive factor vanishes on its own chain only.
+- **Group public columns.** A public column read by a grouped family (as a factor of a witness read or
+  alone) must be one of the group's (`pub(name, 1, group=, shifts=)`), read at k2 = 0 and declared for
+  shifts covering the family's. The verifier checks its public data is zero off the group's mask for its
+  shifts, so the term vanishes wherever the family is not selected. Before, the gadget's public columns
+  were trusted to be zero off the group; a grouped family reading an ungrouped public column is now a
+  builder error. A Horner ingest term may take any public column of its group as the multiplier.
+- **The shape record** is variable length: base, chains, column, exact flag, shift count, shifts. Exact
+  records (selectors, masks) must equal the mask; the others must vanish off it. The verifier walks the
+  records once per proof, N bytes each.
+- **Not needed: a helper column for quadratic pooling.** The exclusive-factor rule costs one column per
+  distinct second factor, and a gadget picks a vertex cover of its factor pairs as the second factors:
+  SHA-256's 12 quadratic pairs are covered by six columns (a, e, ab, w, g0m, g1m). A helper column
+  h = selector times b costs the same column and buys nothing.
 
 ## RSA-2048 verify: limb products summed along chains, one proof (2026-09-18, M1 Pro)
 
