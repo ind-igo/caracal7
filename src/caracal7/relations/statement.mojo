@@ -301,6 +301,13 @@ struct Statement(Movable):
         self.group_sel.append(selector)
         return base
 
+    def chains_declared(self) -> Int:
+        """The first chain of the next declared group."""
+        var base = 0
+        for c in self.group_chains:
+            base += c
+        return base
+
     def mask(mut self, group: String, name: String, shifts: List[Int]) raises:
         """A public column (m = 1) that is group `group`'s mask for `shifts`: 1 on the chains y with (y + k) mod h2
         in the group for every k in `shifts` (`Layout.mask`). A family of the group whose reads use these

@@ -2095,6 +2095,42 @@ Porting SHA-256 to a group needs three things the first row-group layer lacked, 
   SHA-256's 12 quadratic pairs are covered by six columns (a, e, ab, w, g0m, g1m). A helper column
   h = selector times b costs the same column and buys nothing.
 
+## SHA-256 group: four rounds per 144-row chain (2026-09-18)
+
+`workloads/sha256g.mojo`. The passport grid is the RSA chain's (h1 = 144: the mulmod ripple needs 525
+weight slots, and no CRT trick fits 32 m1 rows with gcd 1 into 144), so SHA-256 packs four rounds per
+chain in 32-row slots (rows 15 + 32 q + z, bit 31 - z; rows 0..14 and 143 idle, so bit k of slot 3 sits
+k rows above the last row and a Horner scan with scale zeta reads the digest as sum_k H_k zeta^k, the
+mulmod fingerprint's convention). The families are `sha256.mojo`'s; the geometry changes:
+
+- A rotation is a helper column, not a cyclic read: its family reads the row r above on the slot rows z >= r
+  (public row mask `ge{r}`) and the row 32 - r below elsewhere (`qall` less `ge{r}`); ten rotation helpers
+  and the two masked shifts. The state moves inside the chain (`qlt`, 32 rows down) and across it (`q3`, the
+  next chain's slot 0). The schedule's w[t + 1], w[t + 14], w[t + 9] are helpers placed by slot masks, so
+  the ws sum is same-chain; w[t] = ws[t - 16] reads four chains up, off on message rounds. The block's input
+  state comes 15 chains up through eight helpers `bx*`. Message words sit on a block's first four chains.
+- The message is witness (w on message rounds is free); the padding rows (`pfix`, `pv`), the IV (`start`
+  and two nibble columns: a + 2b + 4c + 8d < 16 < 127 decomposes uniquely over bits) and the round
+  constants are public. Every public column of the group is a full N-byte column (a grouped family may
+  read only group public columns): 36 per group, 43 with an embedding, so the verifier's public-data
+  derivation is now the cost to fix (product form p(X1) q(X2), planned). Only the selector and the masks are
+  checked exactly; the rest are the verifier's own derivation, checked zero off their masks.
+- Wires: the digest accumulator's ingest terms (`dsel` on the last live chain's slot 3, coefficient
+  zeta^(32 (7 - i) + digest_shift)) and the embedded digest's (segments A/B/C of the 32 bytes at a byte
+  offset, brought onto one chain by transports t1/t2 one and two chains up and u1/v 13 and 14 chains up for
+  a block-boundary crossing, coefficients zeta^256, zeta^128, 1: zeta^(128 - s0) times the fingerprint,
+  so the producer takes digest_shift = 128 - s0). One accumulator serves every group (a group's selector
+  is zero off it), so the passport's three hashes cost two accumulators.
+- Column cost: 43 + 21 helpers (+ 4 transports) per group, pooled across groups; 11 exclusive (the vertex
+  cover of the quadratic pairs: a13, a22, e11, e25, b, ab, e, w1r18, w14r19, g1m, g0m). The group's last
+  chain is idle (`chains` > 16 blocks): the helpers free near the edge are unused there.
+
+Measured (`tests/test_sha256g.mojo`, 144 x 96, three groups, 67 chains, M1 Pro): the whole test with
+four proofs runs in 1.5 s warm (6.3 s cold). The mask rule bit twice: a group public column declared for shifts S must be
+zero off the mask for S, so `sha256_group_public` multiplies every column by its mask; and masks wrap mod
+h2, so a group ending within 15 chains of the grid's end would see its backward reads wrap into itself and
+over-constrain the honest trace (Codex): the builder refuses such a group.
+
 ## RSA-2048 verify: limb products summed along chains, one proof (2026-09-18, M1 Pro)
 
 `workloads/rsa.mojo`. Measured on the OpenSSL fixture (genrsa 2048, dgst -sha256 -sign; m the PKCS#1 v1.5
