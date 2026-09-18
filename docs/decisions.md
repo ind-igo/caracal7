@@ -2164,3 +2164,35 @@ Why this shape and not Karatsuba block products (the 2026-09-17 estimate of 0.3 
   (Codex, before its filter cut it off); the piece and bound selectors are now per chain and zero there, so
   a = b = 0 off the products and the chain-end identity forces r = 0. Two Opus reviews then checked the
   indexing, the sum-lane invariant, the telescoping, the mod-127 residuals and the public data by hand.
+
+## Passport SOD in one proof: three SHA-256 groups and the RSA verify on one grid (2026-09-18, M1 Pro)
+
+`workloads/sod.mojo`. The first composed statement: SHA-256 of DG1, of the LDS security object (which
+embeds digest 1) and of the signed attributes (which embed digest 2), then the RSA-2048 verify of the
+signed attributes' digest, on the 144 x 2688 grid: 33 + 33 + 33 + 2448 = 2547 chains. The three messages
+are witness; the verifier is given their lengths, the two embedding offsets (pinned with limbs and muls:
+they fix the groups' chains and the embedding masks), s, n and m without its low limb, which is now a wire
+to the digest instead of a public factor.
+
+- **RSA at a base, ungrouped.** `rsa_build` takes a chain base and a statement to build into. The RSA
+  columns stay ungrouped: their families hold on every chain, and off the RSA chains the columns are zero
+  as on the idle chains they already had (every RSA witness term is bound by a per-chain public selector,
+  so a prover cannot fill them on the SHA chains either). The SHA groups take the grid's first chains
+  (the builder's guard: a group ends 15 chains before the grid's end; the RSA chains fill the tail).
+- **One fingerprint accumulator.** A group's digest sits on its last live chain (15 mod 16), an embedded
+  digest's ingest on a message chain (below 4 mod 16), so one Horner accumulator `fp` serves every group's
+  digest and embedding, and the wires digest i -> embedding i + 1 join two chains of the same slot.
+- **Slots are the budget.** A wiring slot costs h2 of the 16128 endpoints of F2* (cosets of H2), the public
+  factors one more coset: on 2688 chains six cosets fit. The RSA verify alone took five slots plus the
+  factors; with `fp` it needed seven. Its `tl` accumulator (lo(t) of the QN heads) and `cy` (the AB heads'
+  bits) never ingest on the same chain, so they are one accumulator now: cy's terms plus t under a new
+  public mask `qh` (QN heads, weights below 256; `ym` already bounds cy to the AB heads). Four RSA slots,
+  five for the SOD. The RSA verify alone gained from it too: 0.90 -> 0.79 s prove, 676 -> 610 KB, 0.96
+  -> 0.86 s verify. Until the squaring symmetry frees chains (2016 is the next legal h2 below 2688), a
+  fifth accumulator on this grid has to share a slot the same way.
+- **Measured** (`bench/bench_sod.mojo`, OpenSSL fixture, warm): prove 2.0 s, proof 1.01 MB, verify
+  1.74 s, prepare 0.6 s. The verify was 9.3 s at first: `_check_statement` recomputed each group column's
+  data offset per cell (a loop over the earlier columns, `public_value`), quadratic in the 124 group
+  public columns; hoisted, 1.7 s. The public data is 59 MB (153 full columns, 0.5 s to derive): the
+  product form p(X1) q(X2) for the SHA groups' columns is the next verifier cost to cut.
+- **Reviewed:** Codex found the verifier deriving public data from the input head before the pin check (a wrong length indexed out of bounds); the derivation now checks the lengths and offsets against the compiled layout first. Opus confirmed the tl/cy merge (qh and ym never overlap), the shared fingerprint accumulator, the digest-to-cz wire algebra (both Horner end values are -H(zeta), same start and sign) and both fixtures numerically.

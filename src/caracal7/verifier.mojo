@@ -21,7 +21,7 @@ from caracal7.core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow
 from caracal7.core.tables import Domains, RsDomain, f2_primitive
 from caracal7.pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, public_value, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from caracal7.relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
 from caracal7.core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -129,12 +129,16 @@ def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inpu
     for off in group_offsets(shape.groups):          # a group's public columns live on the group's mask, not an input
         var c = get_u16(shape.groups, off + 4)
         var exact = shape.groups[off + 6] == 1
+        var start = 0                                 # the column's offset once, not per cell (`public_value` sums per call)
+        for j in range(c):
+            start += p.h1() * (p.h2() // get_u16(shape.publics, j * PUB))
+        var period = p.h2() // get_u16(shape.publics, c * PUB)
         for x2 in range(p.h2()):
             var want = group_mask(shape.groups, off, x2, p.h2())
             if not exact and want:
                 continue
             for x1 in range(p.h1()):
-                var v = public_value(shape.publics, public, c, x2, x1, p.h1(), p.h2())
+                var v = public[start + (x2 % period) * p.h1() + x1]
                 if exact and v != (UInt8(1) if want else UInt8(0)):
                     raise Error("a group selector's public data is not its chain indicator")
                 if not exact and v != 0:

@@ -23,7 +23,8 @@ descent needs hi(t) = 2 on every chain of the column down to row 0, where hi(t) 
 idle row's carry.
 
 The compare lane on the AB heads: u_p = lo(t_ab) + K_p + hi(u_(p-1)) - lo(t_qn) - r_p with K_0 = 2^258 + 4
-and K_p = 2^258 after, lo(t_qn) wired from the QN head (slot cy), r_p a hint (slot cz, zero above limb
+and K_p = 2^258 after, lo(t_qn) wired from the QN head (the cy accumulator ingests cy on the AB heads and
+lo(t) under `qh` on the QN heads: one slot for both ends), r_p a hint (slot cz, zero above limb
 limbs - 1 by `zm`) and the carry read from the previous head (k2 = limbs + 1 or 1, `m9` and `m1`). The
 families force lo(u_p) = 4 on every head and hi(u) = 4 on the last one, which telescopes to
 sum_p (lo(t_ab) - lo(t_qn) - r_p) 2^(256 p) = 0, so a b = q n + r as integers. u stays below 2^259 for any
@@ -32,8 +33,8 @@ not below n: the statement proves s^e = m (mod n) for the public m, which a veri
 
 Wiring: modmul 0 takes s as a and b (public factors on ha and rb); modmul m takes r of m - 1 (the cz hints
 of its heads) as a and b, the last one r as a and s as b. q_i's occurrences are wired to their first; n_j
-is a public factor on every QN chain; the last modmul's r_p are the public factors m_p. Slots: ha, rb, tl
-(lo(t) of a head), cy, cz. Public inputs: limbs, muls, then s, n, m as limbs x 32 bytes little endian
+is a public factor on every QN chain; the last modmul's r_p are the public factors m_p. Slots: ha, rb, cy,
+cz (a slot costs h2 of the 16128 endpoints F2* holds, factors included). Public inputs: limbs, muls, then s, n, m as limbs x 32 bytes little endian
 (pinned head: limbs and muls)."""
 
 from std.memory import unsafe_memcpy
@@ -50,9 +51,8 @@ comptime SCARRY = 4         # signed ripple carry bits: c0 + 2 c1 + 4 c2 - 8 c3
 comptime BIAS = 258         # K = 2^BIAS (+ 4 on head 0): above the two subtracted limbs
 comptime SLOT_HA = 0
 comptime SLOT_RB = 1
-comptime SLOT_TL = 2
-comptime SLOT_CY = 3
-comptime SLOT_CZ = 4
+comptime SLOT_CY = 2
+comptime SLOT_CZ = 3         # four slots: on 2688 chains F2* holds six cosets, the SOD adds one slot and one for the factors, no room for more
 comptime SRC_S = 0          # public factor sources
 comptime SRC_N = 1
 comptime SRC_M = 2
@@ -98,8 +98,14 @@ def _weight_rows(lo: Int, hi: Int, x1: Int) -> Bool:
     return w >= lo and w < hi
 
 
-def _factors(limbs: Int, muls: Int) -> List[Tuple[Int, Int, Int, Int]]:
-    """(chain, slot, source, limb) of every public factor in statement order."""
+def m_chain(limbs: Int, muls: Int, p: Int) -> Int:
+    """The chain (from the base) whose cz accumulator holds limb p of m: the last modmul's head p."""
+    return _chain(limbs, muls - 1, 0, _head_y(limbs, p))
+
+
+def _factors(limbs: Int, muls: Int, m_wired: Bool = False) -> List[Tuple[Int, Int, Int, Int]]:
+    """(chain, slot, source, limb) of every public factor in statement order; `m_wired` leaves limb 0 of m to
+    a wire the caller adds (`m_chain`)."""
     var v = List[Tuple[Int, Int, Int, Int]]()
     for m in range(muls):
         for y in range(_block(limbs)):
@@ -113,8 +119,8 @@ def _factors(limbs: Int, muls: Int) -> List[Tuple[Int, Int, Int, Int]]:
                 v.append((c, SLOT_RB, SRC_S, ij[1]))
             v.append((_chain(limbs, m, 1, y), SLOT_RB, SRC_N, ij[1]))
         if m == muls - 1:
-            for p in range(limbs):
-                v.append((_chain(limbs, m, 0, _head_y(limbs, p)), SLOT_CZ, SRC_M, p))
+            for p in range(1 if m_wired else 0, limbs):
+                v.append((m_chain(limbs, muls, p), SLOT_CZ, SRC_M, p))
     return v^
 
 
@@ -134,7 +140,7 @@ def _wires(limbs: Int, muls: Int) -> List[Tuple[Int, Int, Int, Int]]:
             if ij[1] >= 1:
                 v.append((SLOT_HA, _chain(limbs, m, 1, y), SLOT_HA, _chain(limbs, m, 1, _idx(limbs, ij[0], 0))))
         for p in range(2 * limbs):
-            v.append((SLOT_CY, _chain(limbs, m, 0, _head_y(limbs, p)), SLOT_TL, _chain(limbs, m, 1, _head_y(limbs, p))))
+            v.append((SLOT_CY, _chain(limbs, m, 0, _head_y(limbs, p)), SLOT_CY, _chain(limbs, m, 1, _head_y(limbs, p))))
     return v^
 
 
@@ -168,9 +174,17 @@ def _bound(mut st: Statement, name: String, mask: String) raises:
 
 
 def rsa_statement(limbs: Int, muls: Int) raises -> Statement:
+    var st = Statement()
+    _ = rsa_build(st, limbs, muls)
+    return st^
+
+
+def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: Bool = False) raises -> Int:
+    """The RSA columns, families and wiring on `st`, the chains from `base` (ungrouped: the columns are zero
+    off them, as on the idle chains). `m_wired` leaves limb 0 of m to a wire the caller adds to the cz slot
+    on chain base + `m_chain`(0); the cz slot is returned. Pins limbs and muls."""
     if limbs < 1 or limbs > 255 or muls < 1 or muls > 255:
         raise Error("limbs and muls are bytes, at least 1")
-    var st = Statement()
     product_columns(st)
     for name in ["t", "u", "cy", "cz"]:
         for j in range(Q):
@@ -179,18 +193,18 @@ def rsa_statement(limbs: Int, muls: Int) raises -> Statement:
         for k in range(SCARRY):
             for j in range(Q):
                 st.col(name + String(k) + String(j), BIT)
-    for name in ["lo", "bd", "s0", "s1", "s2", "bu", "cl", "hm", "rm", "ch", "m9", "m1", "mt", "zm", "ym", "um"]:
+    for name in ["lo", "bd", "s0", "s1", "s2", "bu", "cl", "hm", "rm", "ch", "m9", "m1", "mt", "zm", "ym", "um", "qh"]:
         st.pub(name, 1)
     for name in ["kc", "k4", "kt"]:
         for j in range(Q):
             st.pub(name + String(j), 1)
     st.pin([UInt8(limbs), UInt8(muls)])
     var rz = product_certificate(st)
-    var tl = List[Term]()
+    var cy = List[Term]()
     for j in range(Q):
-        tl.append(Term(1, st.read("t" + String(j)), st.read("lo"), chal=rz[j]))
-    st.horner("tl", tl, scale=rz[Q])
-    plain_fingerprint(st, "cy", "cy", rz)
+        cy.append(Term(1, st.read("cy" + String(j)), chal=rz[j]))                        # the AB heads (ym bounds cy to them)
+        cy.append(Term(1, st.read("t" + String(j)), st.read("qh"), chal=rz[j]))          # lo(t) on the QN heads
+    st.horner("cy", cy, scale=rz[Q])
     plain_fingerprint(st, "cz", "cz", rz)
     var sum_terms = List[List[Term]]()
     for j in range(Q):
@@ -217,15 +231,16 @@ def rsa_statement(limbs: Int, muls: Int) raises -> Statement:
     _bound(st, "u", "um")
     _bound(st, "cy", "ym")
     _bound(st, "cz", "zm")
-    for name in ["ha", "rb", "tl", "cy", "cz"]:
-        _ = st.slot(name)
-    var names: List[String] = ["ha", "rb", "tl", "cy", "cz"]
-    var fs = _factors(limbs, muls)
+    var names: List[String] = ["ha", "rb", "cy", "cz"]
+    var slots = List[Int]()
+    for name in names:
+        slots.append(st.slot(name))
+    var fs = _factors(limbs, muls, m_wired)
     for i in range(len(fs)):
-        st.public_factor("f" + String(i), names[fs[i][1]], fs[i][1], fs[i][0])
+        st.public_factor("f" + String(i), names[fs[i][1]], slots[fs[i][1]], base + fs[i][0])
     for w in _wires(limbs, muls):
-        st.wire(w[0], w[1], w[2], w[3])
-    return st^
+        st.wire(slots[w[0]], base + w[1], slots[w[2]], base + w[3])
+    return slots[SLOT_CZ]
 
 
 # ---- host ----
@@ -325,10 +340,11 @@ def _add_bits(mut pile: List[Int], v: Big, sign: Int, shift: Int, limit: Int) ra
             pile[w] += sign
 
 
-def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, m: Big) raises -> List[UInt8]:
+def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, m: Big, base: Int = 0) raises -> List[UInt8]:
+    """The whole grid's W columns, the RSA chains from `base`; the other columns and chains stay zero."""
     comptime h1 = p.h1()
     comptime N = p.N()
-    if h1 != ROWS or chain_count(limbs, muls) > p.h2():
+    if h1 != ROWS or base + chain_count(limbs, muls) > p.h2():
         raise Error("the instance needs " + String(ROWS) + " rows per chain and " + String(chain_count(limbs, muls)) + " chains")
     if s >= n or m >= n or n.bit_length() > LIMB * limbs:
         raise Error("s and m below n, n of at most " + String(LIMB * limbs) + " bits")
@@ -368,10 +384,10 @@ def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, 
 
     @parameter
     def one_chain(x2: Int):
-        if x2 >= chain_count(limbs, muls):
+        if x2 < base or x2 >= base + chain_count(limbs, muls):
             return
-        var k = x2 // (2 * B)
-        var x = x2 % (2 * B)
+        var k = (x2 - base) // (2 * B)
+        var x = (x2 - base) % (2 * B)
         var block = x // B
         var y = x % B
         var ij = _ij(limbs, y)
@@ -428,15 +444,16 @@ def rsa_inputs(limbs: Int, muls: Int, s: Big, n: Big, m: Big) raises -> List[UIn
     return v^
 
 
-def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8]) raises -> List[UInt8]:
-    """The public columns in declaration order (N bytes each, x2 major), then the factors' ingest columns."""
+def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 0, m_wired: Bool = False) raises -> List[UInt8]:
+    """The public columns in declaration order (N bytes each, x2 major), then the factors' ingest columns
+    (`rsa_build`'s base and m_wired)."""
     comptime N = p.N()
     if len(inputs) < 2:
         raise Error("public inputs start with limbs and muls")
     var limbs = Int(inputs[0])
     var muls = Int(inputs[1])
     var lb = LIMB // 8 * limbs
-    if p.h1() != ROWS or len(inputs) != 2 + 3 * lb or chain_count(limbs, muls) > p.h2():
+    if p.h1() != ROWS or len(inputs) != 2 + 3 * lb or base + chain_count(limbs, muls) > p.h2():
         raise Error("public inputs are limbs, muls, then s, n, m of limbs x 32 bytes; the grid holds every chain")
     var vals = List[List[Big]]()
     for k in range(3):
@@ -445,14 +462,14 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8]) raises -> Li
             bytes.append(inputs[2 + k * lb + i])
         vals.append(limbs_of(Big.from_bytes(bytes), limbs))
     var B = _block(limbs)
-    var data = List[UInt8](capacity=(16 + 3 * Q) * N)
+    var data = List[UInt8](capacity=(17 + 3 * Q) * N)
     # per chain role: (block, i, j, head, p), idle chains -1
     var role = List[Tuple[Int, Int, Int, Bool, Int]](length=p.h2(), fill=(-1, 0, 0, False, 0))
-    for x2 in range(chain_count(limbs, muls)):
-        var x = x2 % (2 * B)
+    for c in range(chain_count(limbs, muls)):
+        var x = c % (2 * B)
         var ij = _ij(limbs, x % B)
-        role[x2] = (x // B, ij[0], ij[1], x // B == 0 and _is_head(limbs, ij[0], ij[1]), ij[0] + ij[1])
-    var names: List[String] = ["lo", "bd", "s0", "s1", "s2", "bu", "cl", "hm", "rm", "ch", "m9", "m1", "mt", "zm", "ym", "um"]
+        role[base + c] = (x // B, ij[0], ij[1], x // B == 0 and _is_head(limbs, ij[0], ij[1]), ij[0] + ij[1])
+    var names: List[String] = ["lo", "bd", "s0", "s1", "s2", "bu", "cl", "hm", "rm", "ch", "m9", "m1", "mt", "zm", "ym", "um", "qh"]
     for name in names:
         for x2 in range(p.h2()):
             var rl = role[x2]
@@ -494,6 +511,8 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8]) raises -> Li
                     b = head and pp < limbs and _weight_rows(0, LIMB, x1)
                 elif name == "um":
                     b = head and _weight_rows(0, WIDTH, x1)
+                elif name == "qh":
+                    b = rl[0] == 1 and _is_head(limbs, i, j) and _weight_rows(0, LIMB, x1)
                 data.append(UInt8(1) if b else UInt8(0))
     for name in ["kc", "k4", "kt"]:
         for j in range(Q):
@@ -510,7 +529,7 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8]) raises -> Li
                         else:
                             b = rl[4] == 2 * limbs - 1 and four
                     data.append(UInt8(1) if b else UInt8(0))
-    for f in _factors(limbs, muls):
+    for f in _factors(limbs, muls, m_wired):
         data.extend(_columns(vals[f[2]][f[3]].bits(FOLDED), f[1] == SLOT_HA))
     return data^
 
