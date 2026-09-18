@@ -7,61 +7,41 @@ the real model on the M1. Nothing here is implemented; this file is the pick-up 
 
 ## Why the prover fits
 
-- Quantized inference is integer arithmetic. The prover already has base-127 limbs, carry chains and
-  accumulators along chains. Every field element is below 127, so a base-127 limb needs no range check.
+- Quantized inference is integer arithmetic. The prover has bit-level carry chains and accumulators
+  along chains. A cell is below 127 without a range check, but radix 127 is zero in the field, so
+  integer sums must be carried in bits.
 - The prover commits cells and evaluates relations at GEMM throughput. The plan keeps the multiply-accumulate
   work native and commits only vectors.
-- The weakness is the field size: an int8 dot product of length 768 reaches 24 bits, so a naive
-  multiply-accumulate is several committed cells. The matmul relation below removes that cost.
+- The weakness is the field size: an int8 dot product of length 768 reaches 24 bits, and the field sees
+  each cell modulo 127, so every partial sum must be committed in small digits. The next section is the
+  record of why no relation removes that cost.
 
-## The matmul relation
+## The matmul relation: why there is none
 
-A matrix product is a global contraction over the inner index. A quotient checks one position at a
-time, so every quotient-only encoding commits a running partial sum, k x n cells. A Freivalds vector
-on accumulator chains and the mulmod polynomial identity both come back to that cost. The primitive
-that does not is the Ligerito opening: an evaluation of a committed column at a point, proven by the
-tail. Two layouts use it.
+A matrix product is a global contraction over the inner index. Two ideas looked like they would keep
+the multiply-accumulate work out of the proof: a Freivalds check on accumulator chains, and a sumcheck
+over the inner slot digits ending in openings at multilinear points (the tail's own round kernels on
+prover-held vectors). The design of the second is recorded in `docs/matmul.md`. Both reviews found the
+same hole, and it is the field, not the argument.
 
-**Inner index over columns (no new protocol).** A is k columns, each opened at a point r over the token
-axis; B is k columns, each opened at a point s over the output axis; C is one bivariate column opened at
-(r, s). The verifier multiplies the k pairs of openings, sums, and compares with C's opening. Soundness
-is Schwartz-Zippel in r and s. Only existing machinery, and enough for the matvec milestone. It dies at
-scale: a committed column costs about 600 to 800 bytes of proof in level-1 query rows and openings, so
-k = 5120 is about 8 MB per matmul. The spec's layout rule says it: large matrices live in slots.
+Every check in the prover, quotient or sumcheck, is an identity in characteristic 127, and such an
+identity sees an integer only modulo 127. The relation proves `C = A B mod 127`. One int8 by int8
+product is already above 127, and a carry is a multiple of 127, which is zero in the field. So base-127
+limbs have a free range and a useless radix: no field-linear family can recombine them. The existing
+workloads are not affected, because mulmod, SHA-256 and Keccak accumulate in bits, where the radix is 2.
 
-**Inner index over slot digits (the plan).** A, B, C are few wide columns with the inner index on binary
-slot digits. The claim C(r, s) = sum_k A(r, k) B(k, s) is a sum over those digits of a product of two
-committed values. It reduces by log k rounds of degree-2 polynomials to two ordinary openings, A at
-(r, k*) and B at (k*, s). That is a sumcheck, of the same shape the tail already runs: the same round
-check, three E elements per round, the same transcript pattern. The new objects are the round messages
-over the inner digits, a prover kernel that builds A(r, .) and B(., s) natively and computes the round
-polynomials, and the verifier's round loop. The quotient stays the local check for everything else.
-Layout constraint: the inner index sits on binary digits only; the odd digit of the mixed basis does not
-fold.
+Integer accumulation in this field therefore needs every partial sum held in digits of a radix below 127
+with an explicit range check per digit: bit cells, or lookups. That is O(T k n) committed cells with a
+constant of about one to three cells per MAC for ternary weights and int8 activations, the naive cost the
+plan set out to remove. A prover in a large field spends one field operation per MAC and never commits a
+partial sum; dense matmul is that prover's ground, not this one's.
 
-For C = A B with A (T x k), B (k x n), all integer matrices, committed as base-127 limb columns, C
-computed natively on the GPU:
-
-1. After the commit barrier the verifier samples r (over T) and s (over n), shared by every matmul in
-   the proof.
-2. The rounds over the inner digits reduce each matmul's claim to openings at (r, k*), (k*, s) and (r, s).
-3. Limbs: A and B per limb as separate columns, C per limb pair (a, b) from A_a B_b, and one degree-1
-   carry family per output entry folds the pairs into the canonical limbs of C.
-4. Soundness: the rounds and the points are Schwartz-Zippel terms over 127^20, one union bound over the
-   matmuls in the proof, added to the ledger.
-
-What it buys:
-
-- Committed cells O(T k + k n + T n) instead of O(T k n). No product is ever committed.
-- The prover's native work per matmul is one pass over the weights per proof, not per token. A
-  1000-token prefill costs the same matmul checks as one token. The unit of proof is a whole sequence.
-- Private weights cost the same as public ones. Attention (Q K^T, the value product) uses the same relation.
-- Public weights alone also work without this relation: constants are coefficients in a degree-1 relation
-  row, so a block of 16 products is one row. This is the fallback, not the plan.
-
-Cost to watch: proof size scales with committed cells divided by the grid size, at about 600 to 800
-bytes per column. That is the known weak point against a GKR prover and the reason step 6 (segments)
-must end in aggregation.
+What still holds: the non-matmul parts of a block (norms, activations, requantize) are lookups and
+bit-level relations where the byte field is at home; small models and matvec workloads can be proven at
+the bit-level cost; and the lookup chain itself could become a fraction sum proven by the tail's round
+kernels, which would remove the 16 chain columns per row at the price of committed inverses. None of
+these makes a 27B model competitive. The plan below is kept as written for the record; the build order
+is not started.
 
 ## Quantization formats
 
