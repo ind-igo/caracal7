@@ -14,41 +14,42 @@ the real model on the M1. Nothing here is implemented; this file is the pick-up 
 - The weakness is the field size: an int8 dot product of length 768 reaches 24 bits, so a naive
   multiply-accumulate is several committed cells. The matmul relation below removes that cost.
 
-## The matmul relation (sumcheck over the inner index, openings from Ligerito)
+## The matmul relation (openings against a dense functional)
 
-For C = A B with A (T x k), B (k x n), all integer matrices:
+A matrix product is a global contraction over the inner index, so no quotient-checked local identity
+does it without committing every partial sum (k x n cells). A Freivalds vector on accumulator chains and
+the mulmod polynomial identity both come back to that cost. The Ligerito opening is the primitive that
+does not: `open` contracts every committed column against a functional, and the tail proves the
+contractions. Today the functional is a tensor point; the relation lets it also be a vector the verifier
+holds.
 
-1. The prover commits A, B and C as base-127 limb columns and computes C natively on the GPU.
-2. After the commit barrier the verifier samples tensor-structured points r (over T) and s (over n). The
-   claim C(r, s) = sum_k A(r, k) B(k, s) is a sumcheck over k of a product of two multilinear
-   evaluations: log k rounds, one degree-2 polynomial per round, prover cost O(T k + k n) native field
-   operations to build A(r, .) and B(., s), and O(k) for the rounds.
-3. The sumcheck ends in three evaluation claims, A at (r, k*), B at (k*, s), C at (r, s). Those are what
-   the PCS already proves: `open` contracts every committed column against the opening point, so an
-   evaluation of a matrix at (row point, column point) is a linear combination of per-column openings
-   that the verifier computes itself.
-4. Integer faithfulness: the limb index is one more dimension of the matrix. With A = sum_a 127^a A_a
-   and B = sum_b 127^b B_b, the sumcheck proves C_(a,b) = A_a B_b per limb pair, and one carry chain per
-   output entry, a degree-1 family, folds the pairs into the canonical limbs of C.
-5. Soundness: the sumcheck rounds and the point sampling are Schwartz-Zippel terms over 127^20, added to
-   the ledger. Tensor-structured points across columns interact with the J1 batching question in
-   `docs/soundness.md`; the design doc must settle that before code.
+For C = A B with A (T x k), B (k x n), all integer matrices, committed as base-127 limb columns, C
+computed natively on the GPU:
 
-This is the standard sumcheck matmul (Thaler), not a Freivalds check with accumulator chains: a chain
-that accumulates u B over k commits k x n cells, which is the naive cost again. The saving comes from the
-PCS evaluation primitive, and Ligerito has it.
+1. Open every column of A at a tensor point r sampled after the commit barrier. The k opened values are
+   the vector u = A(r, .).
+2. Open every column of B against the functional u. The n opened values are u B.
+3. Open every column of C at r. The verifier checks per column that the lists of steps 2 and 3 agree.
+4. Limbs: A and B per limb as separate column sets, C per limb pair (a, b) from A_a B_b, and one degree-1
+   carry family per output entry folds the pairs into the canonical limbs of C.
+5. Soundness: the point r and the opening batch are the ledger's existing terms; the new item is the
+   tail's numerator when one functional in the batch is dense (u) rather than a tensor product.
+
+Nothing new in the protocol: no application sumcheck, no round messages. The tail's partial sumcheck does
+the work underneath. The verifier holds u (about 100 KB for k = 5120) and folds it once per tail level
+instead of taking digit products, so verifier cost grows by k per level. The prover's native work is one
+contraction of B against u per matmul, per proof, not per token.
 
 What it buys:
 
 - Committed cells O(T k + k n + T n) instead of O(T k n). No product is ever committed.
-- The prover's native work is one pass over the weights per matmul, per proof, not per token. A
-  1000-token prefill costs the same matmul checks as one token. The right unit of proof is a whole sequence.
+- A 1000-token prefill costs the same matmul checks as one token. The unit of proof is a whole sequence.
 - Private weights cost the same as public ones. Attention (Q K^T, the value product) uses the same relation.
 - Public weights alone also work without this relation: constants are coefficients in a degree-1 relation
   row, so a block of 16 products is one row. This is the fallback, not the plan.
 
-Cost to watch: the opening list carries one E element per committed column per point, so wide matrices
-pay in proof size. The design doc sizes it.
+Cost to watch: the opening list carries one E element per committed column per functional, so wide
+matrices pay in proof size. The design doc sizes it.
 
 ## Quantization formats
 
@@ -83,8 +84,9 @@ beside it.
    nonlinearity and every requantize step is a lookup: softmax, GELU or SiLU, RMSNorm's rsqrt, the
    rescale-round-clip step, all 256-entry tables on int8 inputs. Shared dependency with the passport work.
 2. **Matmul relation.** A design doc first (`docs/matmul.md`): matrix layout over columns and positions,
-   the limb dimension, the round messages in the transcript, the ledger term, the opening-list size.
-   Reviewed before code. Then the sumcheck relation in the prover, tail and verifier, and the builder hook.
+   the limb dimension, what changes in `open`, `tail_materialize` and the tensor-form verifier when one
+   functional is dense, the ledger term, the opening-list size. Reviewed before code. Then the dense
+   functional in the prover, tail and verifier, and the builder hook.
    First milestone: an int8 matvec workload, 256 x 256, committed weights, measured in committed cells per
    MAC and seconds per MAC on the M1 against the published zkML provers. Prediction: well under one
    committed cell per MAC.
@@ -103,7 +105,7 @@ beside it.
 6. **Segments.** Sixty-four blocks and a long sequence do not fit one grid. Vault spec section 11 has
    segments. Activations and the attention state cross segment boundaries as committed columns; a
    sequence proof is a chain of proofs with shared roots.
-7. **Ledger and review.** Matmul sumcheck and Herder numerators in `docs/soundness.md`, then the same Opus and
+7. **Ledger and review.** Dense-functional and Herder numerators in `docs/soundness.md`, then the same Opus and
    Codex review loop the RSA work got.
 
 ## Fixtures
