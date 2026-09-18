@@ -2253,3 +2253,17 @@ Opus 5 confirmed the constants and transfer citations. Its scope corrections
 are applied: level 1 still needs affine MCA, Hab25 is a dated public proof
 outline, and the tensor closure is cited through Jo. The second Codex review
 found no remaining defect in the staged fixes.
+
+
+## J1: check the affine-space reduction (2026-09-18)
+
+The independent read confirms the BCIKS20 section 6.3 reduction with BCHKS25
+Theorem 1.5 as its line input. `docs/soundness.md` records all six steps,
+including the linear-span step omitted from the old summary. This gives
+ordinary CA with no dimension factor. It is our derivation and needs review;
+it does not supply the stronger same-set property needed in J3. No protocol
+or ledger value changes in this deliverable.
+
+The concurrent Opus 5 and read-only Codex reviews found no proof defect in
+this reduction. The code is unchanged from J2; the same warning-free build
+and complete test run cover this documentation commit.

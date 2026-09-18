@@ -184,35 +184,19 @@ These are the three items the paragraph above names. The J2 update below superse
 the cited source actually proves, what is missing, and what evidence would close it. None is a code
 defect; all three are analysis gaps that the `CLIENT` profile now depends on.
 
-**J1. Affine-space (batched columns) form of Theorem 1.5.** `gap_numerator` charges one `a / |E|` per
-code, `a` the pairs numerator of Theorem 1.5 and `|E| = 127^20`, with no factor for the number of
-batched words. Level 1 batches `columns` words under one uniform `beta in E^columns`; each tail level
-charges `3 a / |E|`, one numerator per tensor challenge. In the unique regime that shape is cited to
-BCIKS20 Theorem 1.7, correlated agreement for affine spaces with error `L/Q` **independent of the
-dimension of the space**.
+**J1. Affine-space (batched columns) form: reduction checked.** BCHKS25
+**Theorem 1.5, p. 9**, states the line case. BCIKS20 **section 6.3,
+printed pp. 28-29 (PDF pp. 29-30)** gives a reduction from lines to affine
+spaces. The detailed independent check below confirms that Theorem 1.5 can
+replace its line theorem with no dimension factor. This is **own proof,
+needs review**, not a theorem stated verbatim in either paper.
 
-BCHKS25 does not state that. Theorem 1.5 is the pairs form `u_0 + z u_1`. Section 4.1 generalizes it
-to curves `u_0 + z u_1 + ... + z^M u_M` (Theorem 4.2, up to the Johnson radius): one scalar `z` with
-Vandermonde coefficients, not an arbitrary affine space, and the numerator is not dimension-free. The
-section says the interpolant "requires an `M` times larger bound for `D_Z`, and the final bound for
-`a` again scales by the same factor", and that the multilinear (tensor) combination "can be derived
-from elementary line case covered by Theorem 1.3 and 1.5, with a factor `l` larger bounds [DG25b]".
-Theorem 4.5 is titled "weighted correlated agreement for subspaces", but its subspace is `C' ⊆ C`, a
-constraint on the proximate codewords, not a space of input words. So no statement in the paper gives
-an arbitrary-dimension affine space at the pairs numerator with no dimension factor. The two sources
-each supply one half: BCIKS20 has dimension independence with an `O(n^2 / eta^7)` numerator, BCHKS25
-has the `O(n / eta^5)` numerator with a dimension factor.
-
-To close it, either stop needing the affine form - sample one `z in E` and set `beta_c = z^c`, which
-is exactly Theorem 4.2 with `M = columns - 1`, then charge the scaling the theorem states - or prove
-the affine-space lemma: dimension `n`, radius `1 - sqrt(rho) - eta`, numerator `a` of Theorem 1.5,
-no factor in `n`. The standard line-to-affine-space induction costs a factor `n - 1`, which spec 12.1
-already records for the unique regime. The first route is a protocol change with a known price, read from
-the PDF (page 27): Theorem 4.2 requires `|S| > M * a` with `a` exactly the expression of Theorem 1.5,
-but with `m = max(ceil(sqrt(rho) / (1 - sqrt(rho) - gamma)), 3) = max(ceil(sqrt(rho) / eta), 3)`,
-twice the Theorem 1.5 value. At level 1 (`rho = 1/4`, `eta = 1/16`) `m` goes from 4 to 8 and the
-`(m + 1/2)^5` term costs 4.6 bits; the factor `M = columns - 1` costs a further `log2(M)`. The present
-107.65-bit ECDSA total does not absorb that.
+BCHKS25 **Theorem 4.2, p. 27**, instead uses a power curve, with a factor
+`M` and the doubled `m`. **Theorem 4.5, p. 28**, constrains the decoded
+codewords to a subspace of the code. Neither is the required statement
+about a uniform affine space of input words. The J1 reduction supplies
+ordinary correlated agreement. J3 needs the stronger same-set property
+and must pay for it separately; J1 alone does not justify the old total.
 
 **J2. Mutual correlated agreement: public source and transfer.** The public source is
 Haböck, *A note on mutual correlated agreement for Reed-Solomon codes*,
@@ -357,27 +341,68 @@ the tail rate no longer matters. Of the 11.7 ECDSA bits, 4.28 come from the doub
 103.37) and 7.4 from the factor `M`. The levers if this were the final charge: a larger `eta` (smaller
 `m`, more queries), a larger `e`, or the unique regime at 401 queries. A smaller `eta` only grows `m`.
 
-**J1, the reduction (2026-09-14).** BCIKS20 proves Theorem 1.7 (affine spaces of any dimension,
-same error as the line, up to the Johnson radius) from its line theorem in section 6.3, and the
-proof reads the line theorem as a black box. Lemma 6.3 averages `Pr_z[Delta(u~ + z u', C) <= delta]`
-over the lines of `U` parallel to a direction `u'`; some line beats `epsilon`, so the line theorem
-gives `Delta(u', C) <= delta` for every direction. The proof of 1.7 then takes a farthest point `u*`
-of `U`, its list `v_1*..v_L*` of codewords at that distance, and the sets `U_i` of points of `U`
-whose restriction to the agreement set `D_i'` is a codeword restriction (some codeword, not `v_i*`;
-the line theorem supplies separate codewords for `u*` and `u`); every `u` lies in some `U_i` by the line theorem
-on the line through `u*` and `u`, so pigeonhole puts more than `|U| / q` points in one `U_i`, which
-is an affine subspace and therefore all of `U`. The only facts used are the line theorem itself and
-the list size `L < q`. Substituting BCHKS25 Theorem 1.5 for Theorem 1.4 therefore gives: for an
-affine `U` of any dimension and `gamma < 1 - sqrt(rho)`, if `Pr_{u in U}[Delta(u, C) <= gamma] > a / q`
-with `a` the Theorem 1.5 numerator at `gamma`, then `U` has correlated agreement on a joint set of
-density `1 - gamma`. Two checks: the proof applies the line theorem at `delta* <= gamma`, and `a`
-falls as `gamma` falls (`eta` grows), so `a(gamma) / q` bounds it; and the Guruswami-Sudan list size
-at radius `1 - sqrt(rho) - eta` is far below `q = 127^20`. This is our derivation, not a statement in
-either paper, and it needs an independent read, but it is a two-page check rather than a research
-problem. With it, level 1 keeps the pairs numerator and needs neither the factor `M` nor the doubled
-`m`, which belong to the curve form we do not use. What J1 still does not cover is the same as
-before: the transfer to the four-coordinate `E tensor F4` alphabet (spec 12.1, the P1 row), and the
-mutual property (J2) wherever two agreement sets have to coincide.
+**J1, the reduction: confirmed. Own proof, needs review.** The independent read
+used BCIKS20 **Theorem 1.4, printed p. 3 (PDF p. 4)**, **Theorem 1.7,
+printed p. 4 (PDF p. 5)**, and **section 6.3, printed pp. 28-29 (PDF pp. 29-30)**.
+The replacement line theorem is BCHKS25 **Theorem 1.5, p. 9**. This substitution
+is our proof. Neither paper states the resulting combined theorem.
+
+Let `C = RS_E(D, K-1)`, `rho = (K-1)/n > 0`, and
+`gamma < 1-sqrt(rho)`. Write `a(gamma)` for the numerator in BCHKS25
+Theorem 1.5, with `m=max(ceil(sqrt(rho)/(2(1-sqrt(rho)-gamma))),3)`.
+Assume `a(gamma) < Q` and that the list bound at `gamma` is less than `Q`.
+If a uniform point of an affine space `U` is gamma-close to `C` with
+probability greater than `a(gamma)/Q`, then every generator of `U` agrees
+with a codeword on one common set of at least `(1-gamma)n` positions.
+The error has no factor for the dimension of `U`.
+
+The checked steps are:
+
+1. Put `V=U-U`. For each nonzero `v in V`, partition `U` into parallel
+   lines with direction `v`. Their mean close fraction is the close fraction
+   of `U`. One line exceeds the threshold. The line theorem gives codewords
+   for both its offset and `v` on a common set. Thus every `v in V` is close.
+   This is exactly the argument of BCIKS20 **Lemma 6.3**, whose statement is
+   on printed p. 27 and proof on printed p. 28 (PDF pp. 28-29).
+2. This alone bounds the directions, not all affine points. This missing step
+   in the former summary is needed. If `0 notin U`, `span(U)` is the disjoint
+   union of `V` and the sets `zU` for nonzero `z`. Multiplication by nonzero
+   `z` preserves distance to a linear code. All of `V` is close, and each
+   `zU` has the original close fraction. Apply step 1 again to `span(U)`.
+   It follows that every point of `U` is close. If `0 in U`, the first
+   application already gives this result.
+3. Choose `u* in U` at the maximum distance `gamma* <= gamma` from `C`.
+   If `gamma*=0`, then `U` is contained in `C` and the claim is immediate.
+   Otherwise list all codewords nearest to `u*`. Each has distance exactly
+   `gamma*`. Let their exact agreement sets be `A_i`. No shorter-distance
+   codeword exists. This exact equality is used in step 5.
+4. Define `U_i={u in U: u|A_i in C|A_i}`. It is an affine subspace or empty,
+   since restriction is linear and `C|A_i` is linear. It is nonempty because
+   it contains `u*`. The codeword for `u` can differ from the codeword for
+   `u*`; equality of those two codewords is not required.
+5. For each `u != u*`, every point on their line lies in `U` and is
+   gamma*-close. Theorem 1.5 applies at `gamma*`: its numerator is at most
+   `a(gamma) < Q`. To check monotonicity, fix `rho`; both the ceiling that
+   defines `m` and the positive expression in `m` and `gamma` are
+   nondecreasing in `gamma`. The line theorem gives an agreement set `A`
+   of size at least `(1-gamma*)n` for codewords of `u*` and `u`. The first
+   codeword is on the complete nearest list, so `A ⊆ A_i`. Both sets have
+   the same required size, by step 3; hence `A=A_i`. Therefore `u in U_i`.
+6. Thus fewer than `Q` affine subspaces `U_i` cover `U`. A proper affine
+   subspace has at most `|U|/Q` points. At least one `U_i` must be all of
+   `U`. Its set `A_i` is the required joint agreement set. Its size exceeds
+   `K-1`, so restriction determines each degree-`<K` codeword uniquely.
+
+For the compiled Johnson radii, the list bound is at most
+`1/(2 eta sqrt(K/n))`, far less than `Q=127^20`; the counting proof is in
+spec 12.3. The argument uses a uniform element of `U`, which independent
+uniform column coefficients provide even when columns are dependent.
+There is no coefficient-count factor and no doubled `m` for this CA claim.
+
+**Verdict:** the dimension-free ordinary CA reduction is valid with the stated
+hypotheses. J1 is discharged as a mathematical derivation, subject to review.
+It does not prove MCA on every agreement set, descent for `E tensor F4`,
+or soundness of openings. Those are separate steps in J2/J3 and P1/P4.
 
 **Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
 grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from
@@ -448,7 +473,7 @@ ledger instead of silently using a formula that omits table or zero-denominator 
 | P3 | Integer/curve/hash constraints faithfully express the workloads | `workloads/sha256`, `keccak`, `poseidon`, `mulmod`, `ecdsa`. Check carries, selectors, canonical values, idle rows, hints, and the nonzero-polynomial argument for Horner/wiring; degree counting alone cannot establish it |
 | P4 | The tail is the analyzed scalar tensor-fold protocol | `_Tail.level`, `_Tail.clear`, `pcs/tensor`, `pcs/tail`. Review row basis, mixed digits, four-coordinate first batch, last clear check, and per-round adaptivity |
 | P5 | Cryptographic compilation preserves the required concrete security | `core/hash`, `core/transcript`, `proof.prefix_bytes`. Establish the exact Fiat-Shamir/hash model and losses, including a separate quantum claim if desired |
-| J1 | The batched-column fold admits the Theorem 1.5 numerator with no dimension factor | `gap_numerator` charges one `a` per code. BCHKS25 states only the pairs form (1.5) and curves at `M * a` with `m` doubled (4.2). **Reduction found:** BCIKS20 section 6.3 derives the affine-space form from the line form as a black box plus list size `< q`; with Theorem 1.5 in place of 1.4 the dimension-free numerator follows (paragraph "J1, the reduction"). Needs an independent read; the `E tensor F4` transfer (P1) and the mutual property (J2) stay separate |
+| J1 | The batched-column fold admits a dimension-free ordinary CA numerator | **Reduction checked: own proof, needs review.** BCIKS20 section 6.3, printed pp. 28-29, accepts BCHKS25 Theorem 1.5, p. 9, as its line input. The six checked steps below include the linear-span step, monotonicity at the farthest radius, and list size `< Q`. MCA and the packed alphabet remain separate |
 | J2 | Mutual (list) correlated agreement at the Johnson radius | **Source/transfer closed:** Hab25 Theorem 2, p. 4, is public (ePrint 2025/2110). Main ledger charges its quadratic numerator. Jo 2026/891 Corollary 4.6, p. 9, and Theorem 4.7, pp. 10-11, supply the interleaved/tensor transfer. Packed level 1 and adaptive running claims remain J3/P4 |
 | J3 | The level-1 close case binds one list element, so `sqrt(rate) + eta` is the right per-query event | Vault spec 12.2 is a sketch. The out-of-domain Bind allowance (quadratic in the list size) is not a ledger term; 12.1's Galois descent and `n_cw > 1` split need list-regime proofs; `verifier._residual`, `_small_grid`, `_boundaries` and `_restrictions` must bind the chosen element |
 | I1 | Every adversarial field coordinate obeys the arithmetic contract | **Implemented:** `bytes.check_field_bytes` rejects coordinates >=127. `ProofReader.field_bytes` covers Z2, Q3, openings, every sumcheck, and the clear vector; `pcs.merkle.check_multiproof` checks authenticated W/Z/Q/tail rows; `_check_statement` checks derived public field data |
