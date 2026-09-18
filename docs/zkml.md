@@ -14,42 +14,54 @@ the real model on the M1. Nothing here is implemented; this file is the pick-up 
 - The weakness is the field size: an int8 dot product of length 768 reaches 24 bits, so a naive
   multiply-accumulate is several committed cells. The matmul relation below removes that cost.
 
-## The matmul relation (openings against a dense functional)
+## The matmul relation
 
-A matrix product is a global contraction over the inner index, so no quotient-checked local identity
-does it without committing every partial sum (k x n cells). A Freivalds vector on accumulator chains and
-the mulmod polynomial identity both come back to that cost. The Ligerito opening is the primitive that
-does not: `open` contracts every committed column against a functional, and the tail proves the
-contractions. Today the functional is a tensor point; the relation lets it also be a vector the verifier
-holds.
+A matrix product is a global contraction over the inner index. A quotient checks one position at a
+time, so every quotient-only encoding commits a running partial sum, k x n cells. A Freivalds vector
+on accumulator chains and the mulmod polynomial identity both come back to that cost. The primitive
+that does not is the Ligerito opening: an evaluation of a committed column at a point, proven by the
+tail. Two layouts use it.
+
+**Inner index over columns (no new protocol).** A is k columns, each opened at a point r over the token
+axis; B is k columns, each opened at a point s over the output axis; C is one bivariate column opened at
+(r, s). The verifier multiplies the k pairs of openings, sums, and compares with C's opening. Soundness
+is Schwartz-Zippel in r and s. Only existing machinery, and enough for the matvec milestone. It dies at
+scale: a committed column costs about 600 to 800 bytes of proof in level-1 query rows and openings, so
+k = 5120 is about 8 MB per matmul. The spec's layout rule says it: large matrices live in slots.
+
+**Inner index over slot digits (the plan).** A, B, C are few wide columns with the inner index on binary
+slot digits. The claim C(r, s) = sum_k A(r, k) B(k, s) is a sum over those digits of a product of two
+committed values. It reduces by log k rounds of degree-2 polynomials to two ordinary openings, A at
+(r, k*) and B at (k*, s). That is a sumcheck, of the same shape the tail already runs: the same round
+check, three E elements per round, the same transcript pattern. The new objects are the round messages
+over the inner digits, a prover kernel that builds A(r, .) and B(., s) natively and computes the round
+polynomials, and the verifier's round loop. The quotient stays the local check for everything else.
+Layout constraint: the inner index sits on binary digits only; the odd digit of the mixed basis does not
+fold.
 
 For C = A B with A (T x k), B (k x n), all integer matrices, committed as base-127 limb columns, C
 computed natively on the GPU:
 
-1. Open every column of A at a tensor point r sampled after the commit barrier. The k opened values are
-   the vector u = A(r, .).
-2. Open every column of B against the functional u. The n opened values are u B.
-3. Open every column of C at r. The verifier checks per column that the lists of steps 2 and 3 agree.
-4. Limbs: A and B per limb as separate column sets, C per limb pair (a, b) from A_a B_b, and one degree-1
+1. After the commit barrier the verifier samples r (over T) and s (over n), shared by every matmul in
+   the proof.
+2. The rounds over the inner digits reduce each matmul's claim to openings at (r, k*), (k*, s) and (r, s).
+3. Limbs: A and B per limb as separate columns, C per limb pair (a, b) from A_a B_b, and one degree-1
    carry family per output entry folds the pairs into the canonical limbs of C.
-5. Soundness: the point r and the opening batch are the ledger's existing terms; the new item is the
-   tail's numerator when one functional in the batch is dense (u) rather than a tensor product.
-
-Nothing new in the protocol: no application sumcheck, no round messages. The tail's partial sumcheck does
-the work underneath. The verifier holds u (about 100 KB for k = 5120) and folds it once per tail level
-instead of taking digit products, so verifier cost grows by k per level. The prover's native work is one
-contraction of B against u per matmul, per proof, not per token.
+4. Soundness: the rounds and the points are Schwartz-Zippel terms over 127^20, one union bound over the
+   matmuls in the proof, added to the ledger.
 
 What it buys:
 
 - Committed cells O(T k + k n + T n) instead of O(T k n). No product is ever committed.
-- A 1000-token prefill costs the same matmul checks as one token. The unit of proof is a whole sequence.
+- The prover's native work per matmul is one pass over the weights per proof, not per token. A
+  1000-token prefill costs the same matmul checks as one token. The unit of proof is a whole sequence.
 - Private weights cost the same as public ones. Attention (Q K^T, the value product) uses the same relation.
 - Public weights alone also work without this relation: constants are coefficients in a degree-1 relation
   row, so a block of 16 products is one row. This is the fallback, not the plan.
 
-Cost to watch: the opening list carries one E element per committed column per functional, so wide
-matrices pay in proof size. The design doc sizes it.
+Cost to watch: proof size scales with committed cells divided by the grid size, at about 600 to 800
+bytes per column. That is the known weak point against a GKR prover and the reason step 6 (segments)
+must end in aggregation.
 
 ## Quantization formats
 
@@ -83,10 +95,11 @@ beside it.
 1. **Herder.** Specified (`docs/milestone-3-lookup.md`, vault spec section 6), not built. Every
    nonlinearity and every requantize step is a lookup: softmax, GELU or SiLU, RMSNorm's rsqrt, the
    rescale-round-clip step, all 256-entry tables on int8 inputs. Shared dependency with the passport work.
-2. **Matmul relation.** A design doc first (`docs/matmul.md`): matrix layout over columns and positions,
-   the limb dimension, what changes in `open`, `tail_materialize` and the tensor-form verifier when one
-   functional is dense, the ledger term, the opening-list size. Reviewed before code. Then the dense
-   functional in the prover, tail and verifier, and the builder hook.
+2. **Matmul relation.** A design doc first (`docs/matmul.md`): matrix layout over columns and slot
+   digits, the limb dimension, the round messages in the transcript, the prover kernel for the round
+   polynomials, the verifier loop, the ledger term. Reviewed before code. Then the rounds in the prover,
+   tail and verifier, and the builder hook. Build the slot-digit version directly; the column version is
+   throwaway.
    First milestone: an int8 matvec workload, 256 x 256, committed weights, measured in committed cells per
    MAC and seconds per MAC on the M1 against the published zkML provers. Prediction: well under one
    committed cell per MAC.
@@ -105,7 +118,7 @@ beside it.
 6. **Segments.** Sixty-four blocks and a long sequence do not fit one grid. Vault spec section 11 has
    segments. Activations and the attention state cross segment boundaries as committed columns; a
    sequence proof is a chain of proofs with shared roots.
-7. **Ledger and review.** Dense-functional and Herder numerators in `docs/soundness.md`, then the same Opus and
+7. **Ledger and review.** Matmul rounds and Herder numerators in `docs/soundness.md`, then the same Opus and
    Codex review loop the RSA work got.
 
 ## Fixtures
