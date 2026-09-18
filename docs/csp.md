@@ -1,8 +1,8 @@
 # csp-benchmarks harness
 
-`caracal7/` is the system folder (its basename is the system name in the metrics) for [privacy-ethereum/csp-benchmarks](https://github.com/privacy-ethereum/csp-benchmarks)
+`csp/` is the system folder for [privacy-ethereum/csp-benchmarks](https://github.com/privacy-ethereum/csp-benchmarks)
 (the non-Rust path: `benchmark.sh --system-dir`). `cli/main.mojo` is the binary behind it, one grid per
-target and input size, built by `caracal7/osx_local_setup.sh` into `caracal7/target/caracal7`:
+target and input size, built by `csp/osx_local_setup.sh` into `csp/target/caracal7`:
 
     caracal7 prove|verify <target> <size> <proof-path> <input...>
 
@@ -16,7 +16,9 @@ the message and the generator's digest, so the timed verify never hashes on the 
 
 Local run, from a csp-benchmarks checkout with `cargo build --release -p utils` done:
 
-    BENCH_INPUT_PROFILE=reduced bash ./benchmark.sh --system-dir <this repo>/caracal7 --logging --quick
+    BENCH_INPUT_PROFILE=reduced bash ./benchmark.sh --system-dir <this repo>/csp --logging --quick
+
+The harness takes the system name from the folder basename, so a run from `csp/` labels its metrics `csp`; copy or symlink the folder as `caracal7` for a submission.
 
 ## Rust track (`csp-rust/`)
 

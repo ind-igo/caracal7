@@ -5,18 +5,18 @@ from std.testing import assert_raises, assert_equal, assert_true, assert_false, 
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params, Profile, REGIME_UNIQUE
-from caracal7.core.hash import Blake3
-from caracal7.proof import Shape, ProofReader, tail_schedule
-from caracal7.prover import Prover, ProverLayout, load_trace, load_advice, load_public
-from caracal7.verifier import verify
-from caracal7.relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS
-from caracal7.core.bytes import set_u16
-from caracal7.relations.statement import restriction_line, chain_values
-from caracal7.workload import prove_workload, verify_workload
-from caracal7.workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
-from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
+from core.field import E_BYTES
+from core.params import CLIENT, Params, Profile, REGIME_UNIQUE
+from core.hash import Blake3
+from proof import Shape, ProofReader, tail_schedule
+from prover import Prover, ProverLayout, load_trace, load_advice, load_public
+from verifier import verify
+from relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS
+from core.bytes import set_u16
+from relations.statement import restriction_line, chain_values
+from workload import prove_workload, verify_workload
+from workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
+from workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
 
 comptime SPEC95 = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4, tail_rate_inv=32)   # CLIENT before 2026-09-14: the spec 9.5 worked rows
 comptime FLAT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=2500, lambda_bits=103, grind_bits=0, regime=REGIME_UNIQUE, eta_inv=16, rate_inv=4, tail_rate_inv=32)   # the reference grid stays clear at level 2: the byte-offset tests below rely on it

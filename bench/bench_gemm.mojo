@@ -4,8 +4,8 @@ one F2 MAC = four byte MACs. Tune tiles here; every GEMM-shaped stage inherits t
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.arena import Arena, Bump
-from caracal7.core.backend import BACKEND, F4_TILE, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
+from core.arena import Arena, Bump
+from core.backend import BACKEND, F4_TILE, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
 
 comptime M = 1024
 comptime N = 1024

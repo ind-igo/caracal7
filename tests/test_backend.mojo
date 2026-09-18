@@ -3,9 +3,9 @@
 from std.testing import assert_equal, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import F2, F4, f_add, ext_mul
-from caracal7.core.arena import Arena, Bump
-from caracal7.core.backend import BACKEND, F4_TILE, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
+from core.field import F2, F4, f_add, ext_mul
+from core.arena import Arena, Bump
+from core.backend import BACKEND, F4_TILE, Tile, Strided, Strided4, launch_gemm_f2, launch_gemm_f4, strided
 
 
 def _run[D: Int, T: Tile](M: Int, N: Int, K: Int, batch: Int) raises:

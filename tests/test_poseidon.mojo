@@ -4,14 +4,14 @@ and two chunks, a wrong digest rejected."""
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.relations import entry, ENTRY, NONE, NO_BASIS
-from caracal7.workloads.poseidon import Poseidon, poseidon_m31, poseidon_statement, poseidon_trace, poseidon_public_columns, column_names, ROWS, T, M31
-from caracal7.prover import Prover, load_trace, load_advice, load_public
-from caracal7.relations import value_bytes
-from caracal7.relations.statement import advice
-from caracal7.workload import prove_workload, verify_workload
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from relations import entry, ENTRY, NONE, NO_BASIS
+from workloads.poseidon import Poseidon, poseidon_m31, poseidon_statement, poseidon_trace, poseidon_public_columns, column_names, ROWS, T, M31
+from prover import Prover, load_trace, load_advice, load_public
+from relations import value_bytes
+from relations.statement import advice
+from workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(64, 368)          # 16 segments of 24 rounds: one chunk
 comptime p2 = CLIENT.grid(64, 720)         # 16 segments of 56 rounds: two chunks

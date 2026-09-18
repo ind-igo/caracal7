@@ -7,13 +7,13 @@ signed attributes whose digest is not the signed limb, are refused at the wire. 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.workloads.bigint import Big
-from caracal7.workloads.sha256 import sha256
-from caracal7.workloads.sod import SOD, sha_chains
-from caracal7.workloads.rsa import chain_count
-from caracal7.workload import prove_workload, verify_workload
+from core.params import CLIENT
+from core.hash import Blake3
+from workloads.bigint import Big
+from workloads.sha256 import sha256
+from workloads.sod import SOD, sha_chains
+from workloads.rsa import chain_count
+from workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(144, 96)
 comptime N_HEX = "d7aec95e774314c3f834d5be00b9c3992fd390a8f28efb81eb5b92756aaf3b3760b3b14c60f271756621756bfc55c71ee878fd115d348cf8066a045a4d09aeb7"

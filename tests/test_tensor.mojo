@@ -2,14 +2,14 @@
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from caracal7.core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.tables import Domains
-from caracal7.core.bytes import host_base, list_e, Buf
-from caracal7.pcs.open import slot_weight, host_table
-from caracal7.pcs.encode import pack_index
-from caracal7.pcs.tail import fold8_host
-from caracal7.pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual, f4_trace, f4_frob
+from core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
+from core.params import CLIENT, Params
+from core.tables import Domains
+from core.bytes import host_base, list_e, Buf
+from pcs.open import slot_weight, host_table
+from pcs.encode import pack_index
+from pcs.tail import fold8_host
+from pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual, f4_trace, f4_frob
 
 comptime p = CLIENT.grid(72, 32)      # a1 = 3, m1 = 9, a2 = 5, m2 = 1
 comptime q = CLIENT.grid(64, 24)      # a1 = 6, m1 = 1, a2 = 3, m2 = 3

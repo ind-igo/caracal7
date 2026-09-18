@@ -5,14 +5,14 @@ proves), the three rounds against the verifier's checks, and the fold."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F4, E, f_add, ext_mul, E_LEVEL, E_BYTES
-from caracal7.verifier import encode_at
-from caracal7.core.params import CLIENT
-from caracal7.core.tables import RsDomain, RsTables, build_rs_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.tail import DOM_BYTES, ROUND_ROWS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold, power_table_len, TAIL_F4
-from caracal7.core.bytes import list_e
-from caracal7.pcs.tail import host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
+from core.field import F4, E, f_add, ext_mul, E_LEVEL, E_BYTES
+from verifier import encode_at
+from core.params import CLIENT
+from core.tables import RsDomain, RsTables, build_rs_tables
+from core.arena import Arena, Bump
+from pcs.tail import DOM_BYTES, ROUND_ROWS, domain_bytes, points, tail_encode, tail_materialize, tail_round, tail_fold, power_table_len, TAIL_F4
+from core.bytes import list_e
+from pcs.tail import host_r3, rbar_at, tail_encode_at, fold8_host, quadratic_at
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

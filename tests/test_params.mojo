@@ -1,6 +1,6 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
-from caracal7.core.field import E_BYTES
-from caracal7.core.params import Params, CLIENT, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
+from core.field import E_BYTES
+from core.params import Params, CLIENT, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
 
 
 def test_small_grid() raises:

@@ -4,11 +4,11 @@ sort of the records by advice index, the bins are the exclusive counts with one 
 from std.testing import assert_equal, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.params import Params, CLIENT
-from caracal7.core.arena import Arena, Bump
-from caracal7.core.bytes import append_u32, set_u16
-from caracal7.relations.accumulate import ACC
-from caracal7.relations.sort import counting_sort
+from core.params import Params, CLIENT
+from core.arena import Arena, Bump
+from core.bytes import append_u32, set_u16
+from relations.accumulate import ACC
+from relations.sort import counting_sort
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

@@ -5,12 +5,12 @@ cyclic interpolation against Horner on the coefficients."""
 from std.testing import assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed, ext_inv, E_LEVEL, E_BYTES
-from caracal7.core.params import CLIENT
-from caracal7.core.tables import Domains, TableLayout, build_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.core.bytes import list_e
-from caracal7.relations.smallgrid import SmallGridLayout, small_grid_product, small_grid_values, interp_cyclic
+from core.field import F2, E, f_add, f_sub, ext_mul, ext_pow, ext_embed, ext_inv, E_LEVEL, E_BYTES
+from core.params import CLIENT
+from core.tables import Domains, TableLayout, build_tables
+from core.arena import Arena, Bump
+from core.bytes import list_e
+from relations.smallgrid import SmallGridLayout, small_grid_product, small_grid_values, interp_cyclic
 
 comptime p = CLIENT.grid(72, 32)
 comptime h2 = p.h2()

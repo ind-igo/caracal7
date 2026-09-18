@@ -1,4 +1,4 @@
-"""The csp-benchmarks entry point (docs/csp.md; the caracal7/ folder): one binary, one grid per target and input size.
+"""The csp-benchmarks entry point (docs/csp.md; the csp/ folder): one binary, one grid per target and input size.
 
     caracal7 prove  <target> <size> <proof-path> <input...>
     caracal7 verify <target> <size> <proof-path> <input...>
@@ -12,14 +12,14 @@ from std.sys import exit
 from std.os import getenv
 from std.time import perf_counter_ns
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.workload import Workload, prove_workload, verify_workload
-from caracal7.workloads.sha256 import Sha256
-from caracal7.workloads.keccak import Keccak
-from caracal7.workloads.poseidon import Poseidon
-from caracal7.workloads.ecdsa import Ecdsa, Point
-from caracal7.workloads.bigint import Big
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from workload import Workload, prove_workload, verify_workload
+from workloads.sha256 import Sha256
+from workloads.keccak import Keccak
+from workloads.poseidon import Poseidon
+from workloads.ecdsa import Ecdsa, Point
+from workloads.bigint import Big
 
 
 def _hex(s: String) raises -> List[UInt8]:

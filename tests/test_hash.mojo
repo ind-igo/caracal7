@@ -2,8 +2,8 @@
 
 from std.testing import assert_equal, TestSuite
 
-from caracal7.core.bytes import host_base
-from caracal7.core.hash import Blake3
+from core.bytes import host_base
+from core.hash import Blake3
 
 
 def _pattern(n: Int) -> List[UInt8]:

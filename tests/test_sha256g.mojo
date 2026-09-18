@@ -5,13 +5,13 @@ pinned by a public factor (the oracle)."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.relations.statement import Statement, Compiled
-from caracal7.workloads.sha256 import sha256, WORDS
-from caracal7.workloads.sha256g import ShaGroup, Zeta, ZETA, sha256_group, sha256_group_trace, sha256_group_public, BASE, SLOT, STREAM
-from caracal7.prover import Prover, load_trace, load_public
-from caracal7.verifier import verify
+from core.params import CLIENT
+from core.hash import Blake3
+from relations.statement import Statement, Compiled
+from workloads.sha256 import sha256, WORDS
+from workloads.sha256g import ShaGroup, Zeta, ZETA, sha256_group, sha256_group_trace, sha256_group_public, BASE, SLOT, STREAM
+from prover import Prover, load_trace, load_public
+from verifier import verify
 
 comptime p = CLIENT.grid(144, 96)
 comptime N = p.N()

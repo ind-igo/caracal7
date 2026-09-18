@@ -4,13 +4,13 @@ then profiled by stage; verify on the host."""
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import Params, CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.prover import Prover, load_trace, load_advice, load_public
-from caracal7.relations import value_bytes
-from caracal7.relations.statement import advice
-from caracal7.workloads.sha256 import Sha256
-from caracal7.workload import verify_workload
+from core.params import Params, CLIENT
+from core.hash import Blake3
+from prover import Prover, load_trace, load_advice, load_public
+from relations import value_bytes
+from relations.statement import advice
+from workloads.sha256 import Sha256
+from workload import verify_workload
 
 
 def _ms(t0: Int) -> Int:

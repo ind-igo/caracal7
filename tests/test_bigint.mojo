@@ -1,5 +1,5 @@
 from std.testing import assert_equal, assert_true, TestSuite
-from caracal7.workloads.bigint import Big
+from workloads.bigint import Big
 
 
 def test_arithmetic() raises:

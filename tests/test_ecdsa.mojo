@@ -5,12 +5,12 @@ its proof size, and the proof rejected against a claim with a changed message.""
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.workloads.bigint import Big
-from caracal7.workloads.ecdsa import Curve, Point, Ecdsa, walk
-from caracal7.workloads.mulmod import MUL, chain_count, circuit_values
-from caracal7.workload import prove_workload, verify_workload
+from core.params import CLIENT
+from core.hash import Blake3
+from workloads.bigint import Big
+from workloads.ecdsa import Curve, Point, Ecdsa, walk
+from workloads.mulmod import MUL, chain_count, circuit_values
+from workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(144, 576)
 

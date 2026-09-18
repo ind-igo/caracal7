@@ -3,11 +3,11 @@
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, F4, f_mul, f_add, ext_mul, ext_pow
-from caracal7.core.params import CLIENT
-from caracal7.core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, encode, slot_target, pack_slot, rs_encode_on
+from core.field import F2, F4, f_mul, f_add, ext_mul, ext_pow
+from core.params import CLIENT
+from core.tables import Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables
+from core.arena import Arena, Bump
+from pcs.encode import EncLayout, encode, slot_target, pack_slot, rs_encode_on
 
 comptime p = CLIENT.grid(72, 32)
 comptime COLS = 3

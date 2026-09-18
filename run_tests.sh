@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs every tests/test_*.mojo and builds every bench, warnings as errors, JOBS files at a time (default 4);
 # exits non-zero if any fails and prints that file's log. Extra arguments go to mojo (e.g. -D CARACAL_NVIDIA_MMA).
-# BENCH=0 skips the bench builds. The E16 field switch is the constant in src/caracal7/core/field.mojo.
+# BENCH=0 skips the bench builds. The E16 field switch is the constant in src/core/field.mojo.
 # The cost of a file is its distinct Params shapes: every grid instantiates the whole kernel set again.
 set -u
 JOBS=${JOBS:-4}

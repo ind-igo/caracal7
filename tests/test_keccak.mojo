@@ -4,13 +4,13 @@ the prover round trip on the 64 x 24 grid with a wrong digest rejected."""
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.workloads.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
-from caracal7.prover import Prover, load_trace, load_advice, load_public
-from caracal7.relations import value_bytes
-from caracal7.relations.statement import advice
-from caracal7.workload import prove_workload, verify_workload, check_families
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from workloads.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
+from prover import Prover, load_trace, load_advice, load_public
+from relations import value_bytes
+from relations.statement import advice
+from workload import prove_workload, verify_workload, check_families
 
 comptime p = CLIENT.grid(64, 24)
 

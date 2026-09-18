@@ -6,15 +6,15 @@ on B and Q2, and the coordinate columns as values on H."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL
-from caracal7.core.params import CLIENT
-from caracal7.core.tables import Domains, TableLayout, build_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, to_packed, idft2
-from caracal7.relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_values, tile_values
-from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_values, synthetic_public_value
-from caracal7.relations.residual import lde, residual, quotient, quotient_elems
-from caracal7.core.bytes import list_e
+from core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL
+from core.params import CLIENT
+from core.tables import Domains, TableLayout, build_tables
+from core.arena import Arena, Bump
+from pcs.encode import EncLayout, to_packed, idft2
+from relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_values, tile_values
+from workloads.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_values, synthetic_public_value
+from relations.residual import lde, residual, quotient, quotient_elems
+from core.bytes import list_e
 
 comptime p = CLIENT.grid(72, 32)
 comptime C = SYNTHETIC_COLUMNS

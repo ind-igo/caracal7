@@ -4,12 +4,12 @@ a 48-chain grid, so half the chains are idle. Every bit family holds on the trac
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.relations import entry, ENTRY, NONE, NO_BASIS
-from caracal7.workloads.bigint import Big
-from caracal7.workloads.rsa import RSA, rsa_statement, rsa_trace, rsa_inputs, rsa_public_data, chain_count
-from caracal7.workload import prove_workload, verify_workload
+from core.params import CLIENT
+from core.hash import Blake3
+from relations import entry, ENTRY, NONE, NO_BASIS
+from workloads.bigint import Big
+from workloads.rsa import RSA, rsa_statement, rsa_trace, rsa_inputs, rsa_public_data, chain_count
+from workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(144, 48)
 comptime N = p.N()

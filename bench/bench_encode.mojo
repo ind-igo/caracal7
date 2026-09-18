@@ -3,10 +3,10 @@
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.tables import Domains, TableLayout, build_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, encode, to_packed, rs_encode, idft2, pack
+from core.params import CLIENT, Params
+from core.tables import Domains, TableLayout, build_tables
+from core.arena import Arena, Bump
+from pcs.encode import EncLayout, encode, to_packed, rs_encode, idft2, pack
 
 comptime REPS = 5
 

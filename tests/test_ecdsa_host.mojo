@@ -1,8 +1,8 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 
-from caracal7.workloads.bigint import Big
-from caracal7.workloads.fp import Fp
-from caracal7.workloads.ecdsa import Curve, Point, recode, skew, QW, WINDOWS
+from workloads.bigint import Big
+from workloads.fp import Fp
+from workloads.ecdsa import Curve, Point, recode, skew, QW, WINDOWS
 
 
 def test_group_and_endomorphism() raises:

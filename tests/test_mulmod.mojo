@@ -6,17 +6,17 @@ idle-row carry rejected."""
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.core.field import E, ext_mul, E_LEVEL, E_BYTES
-from caracal7.core.bytes import list_e
-from caracal7.relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from caracal7.workloads.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
-from caracal7.workloads.bigint import Big
-from caracal7.prover import Prover, load_trace, load_public
-from caracal7.relations import value_bytes
-from caracal7.verifier import verify
-from caracal7.workload import prove_workload, verify_workload
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from core.field import E, ext_mul, E_LEVEL, E_BYTES
+from core.bytes import list_e
+from relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
+from workloads.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
+from workloads.bigint import Big
+from prover import Prover, load_trace, load_public
+from relations import value_bytes
+from verifier import verify
+from workload import prove_workload, verify_workload
 
 comptime p = CLIENT.grid(144, 8)
 

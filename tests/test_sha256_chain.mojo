@@ -5,13 +5,13 @@ the host (idle chains included, one lane and three lanes), and the prover round 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.workloads.sha256 import Sha256Chain, sha256, sha256_chain, chain_statement, chain_trace, chain_public_values, hashes_of, chain_hashes, CHAIN_PUBLICS
-from caracal7.prover import Prover, load_trace, load_advice, load_public
-from caracal7.relations import value_bytes
-from caracal7.relations.statement import advice
-from caracal7.workload import prove_workload, verify_workload, check_families
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from workloads.sha256 import Sha256Chain, sha256, sha256_chain, chain_statement, chain_trace, chain_public_values, hashes_of, chain_hashes, CHAIN_PUBLICS
+from prover import Prover, load_trace, load_advice, load_public
+from relations import value_bytes
+from relations.statement import advice
+from workload import prove_workload, verify_workload, check_families
 
 comptime p = CLIENT.grid(32, 193)          # 3 hashes of 64 chains and the settled state: 224 chains
 

@@ -7,18 +7,18 @@ No GPU work, proofs, or cached shape counts. Exit zero means the calculation ran
 from std.math import log2, max, abs, sqrt, ceil
 from std.testing import assert_equal, assert_true, assert_raises
 
-from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT, Params, Profile, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
-from caracal7.core.bytes import get_u16
-from caracal7.relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
-from caracal7.relations.statement import Compiled, Statement, Term, BIT
-from caracal7.workload import Workload
-from caracal7.proof import Shape
-from caracal7.workloads.sha256 import Sha256
-from caracal7.workloads.keccak import Keccak
-from caracal7.workloads.poseidon import Poseidon
-from caracal7.workloads.ecdsa import Ecdsa, Point
-from caracal7.workloads.bigint import Big
+from core.field import E_BYTES
+from core.params import CLIENT, Params, Profile, REGIME_UNIQUE, REGIME_CAPACITY, REGIME_JOHNSON, query_count, miss_probability
+from core.bytes import get_u16
+from relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORNER, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, entry, acc_kind, acc_z_col
+from relations.statement import Compiled, Statement, Term, BIT
+from workload import Workload
+from proof import Shape
+from workloads.sha256 import Sha256
+from workloads.keccak import Keccak
+from workloads.poseidon import Poseidon
+from workloads.ecdsa import Ecdsa, Point
+from workloads.bigint import Big
 
 
 def challenge_degrees(table: List[UInt8]) raises -> List[Int]:

@@ -6,13 +6,13 @@ the groups, a public factor fingerprints one, and the idle tail is padded by the
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.relations.statement import Statement, Term, Compiled, Layout, BIT, LIMB6, BYTE, GATE_2, KIND_LOOKUP, pad_trace
-from caracal7.prover import Prover, load_trace, load_public
-from caracal7.verifier import verify
-from caracal7.proof import Shape
-from caracal7.relations.ir import GRP
+from core.params import CLIENT
+from core.hash import Blake3
+from relations.statement import Statement, Term, Compiled, Layout, BIT, LIMB6, BYTE, GATE_2, KIND_LOOKUP, pad_trace
+from prover import Prover, load_trace, load_public
+from verifier import verify
+from proof import Shape
+from relations.ir import GRP
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

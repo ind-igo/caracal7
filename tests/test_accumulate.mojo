@@ -5,18 +5,18 @@ Z(1, x2) = 1, and the grand product Z2(e2) chain_prod(e2) = 1 (c8 is a permutati
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_one, E_LEVEL, E_BYTES
-from caracal7.core.params import Params, CLIENT
-from caracal7.core.arena import Arena, Bump
-from caracal7.relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
-from caracal7.relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end, selector_values
-from caracal7.relations.statement import Statement, Term, Compiled, BIT, BYTE
-from caracal7.prover import Prover, load_trace, load_public
-from caracal7.verifier import verify
-from caracal7.core.hash import Blake3
-from caracal7.relations.sort import counting_sort
-from caracal7.core.bytes import get_u16, list_e, append_u32
-from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
+from core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_one, E_LEVEL, E_BYTES
+from core.params import Params, CLIENT
+from core.arena import Arena, Bump
+from relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
+from relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end, selector_values
+from relations.statement import Statement, Term, Compiled, BIT, BYTE
+from prover import Prover, load_trace, load_public
+from verifier import verify
+from core.hash import Blake3
+from relations.sort import counting_sort
+from core.bytes import get_u16, list_e, append_u32
+from workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace, horner_statement, horner_trace
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

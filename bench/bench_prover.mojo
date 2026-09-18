@@ -4,11 +4,11 @@ The profiled run is slower in total (it serializes the stream); the split is wha
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import Params, CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.proof import Shape
-from caracal7.prover import Prover, load_trace, load_advice
-from caracal7.workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
+from core.params import Params, CLIENT
+from core.hash import Blake3
+from proof import Shape
+from prover import Prover, load_trace, load_advice
+from workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_advice, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS
 
 
 

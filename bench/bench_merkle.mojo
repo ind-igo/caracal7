@@ -3,10 +3,10 @@
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.merkle import merkle, tree_nodes
+from core.params import CLIENT
+from core.hash import Blake3
+from core.arena import Arena, Bump
+from pcs.merkle import merkle, tree_nodes
 
 comptime p = CLIENT.grid(72, 32)
 comptime LEAVES = p.L0

@@ -9,14 +9,14 @@ y_Q, r, s as 32-byte big-endian words. Targets: 0 sha256, 1 keccak, 2 poseidon, 
 from max.gpu.host import DeviceContext
 from std.ffi import external_call
 
-from caracal7.core.params import CLIENT, Params
-from caracal7.core.hash import Blake3
-from caracal7.workload import Workload, Session
-from caracal7.workloads.sha256 import Sha256
-from caracal7.workloads.keccak import Keccak
-from caracal7.workloads.poseidon import Poseidon
-from caracal7.workloads.ecdsa import Ecdsa, Point
-from caracal7.workloads.bigint import Big
+from core.params import CLIENT, Params
+from core.hash import Blake3
+from workload import Workload, Session
+from workloads.sha256 import Sha256
+from workloads.keccak import Keccak
+from workloads.poseidon import Poseidon
+from workloads.ecdsa import Ecdsa, Point
+from workloads.bigint import Big
 
 comptime OPEN = 0
 comptime PROVE = 1

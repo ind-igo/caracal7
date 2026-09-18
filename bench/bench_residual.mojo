@@ -4,13 +4,13 @@ family table repeated to ENTRIES entries over COLS columns. Small by default."""
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.tables import Domains, TableLayout, build_tables
-from caracal7.core.arena import Arena, Bump
-from caracal7.pcs.encode import EncLayout, to_packed
-from caracal7.relations.ir import ENTRY, Families
-from caracal7.workloads.synthetic import synthetic_statement
-from caracal7.relations.residual import lde, residual, quotient, quotient_elems
+from core.params import CLIENT
+from core.tables import Domains, TableLayout, build_tables
+from core.arena import Arena, Bump
+from pcs.encode import EncLayout, to_packed
+from relations.ir import ENTRY, Families
+from workloads.synthetic import synthetic_statement
+from relations.residual import lde, residual, quotient, quotient_elems
 
 comptime p = CLIENT.grid(72, 32)
 comptime COLS = 64

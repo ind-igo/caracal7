@@ -3,11 +3,11 @@
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.core.arena import Arena, Bump
-from caracal7.core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W, DS_GRIND, STATE_BYTES, grind_word, grind_ok
-from caracal7.core.bytes import host_base
+from core.params import CLIENT
+from core.hash import Blake3
+from core.arena import Arena, Bump
+from core.transcript import TranscriptLayout, HostTranscript, reset, absorb, squeeze_elements, squeeze_positions, DS_PREFIX, DS_TREE_W, DS_GRIND, STATE_BYTES, grind_word, grind_ok
+from core.bytes import host_base
 
 comptime p = CLIENT.grid(72, 32)
 comptime MSG = 85_120     # the Keccak openings: 84 chunks, one block of the tree absorb

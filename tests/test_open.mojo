@@ -6,15 +6,15 @@ a test may do."""
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext, HostBuffer
 
-from caracal7.core.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
-from caracal7.verifier import encode_at
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.proof import Shape
-from caracal7.prover import Prover, load_trace
-from caracal7.relations.ir import shift_points, point_coord
-from caracal7.workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
-from caracal7.core.bytes import list_e
+from core.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
+from verifier import encode_at
+from core.params import CLIENT
+from core.hash import Blake3
+from proof import Shape
+from prover import Prover, load_trace
+from relations.ir import shift_points, point_coord
+from workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
+from core.bytes import list_e
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()

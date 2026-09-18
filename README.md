@@ -4,9 +4,13 @@ Mojo implementation of **Caracal7**, a uniform, GPU native prover over F127 with
 
 The idea: a 7-bit field does not make streaming work faster, but it makes matrix units reachable. Witness values are single bytes, so the encoder and the residual pass become integer or fp16 GEMMs on tensor cores and simdgroup units, a path that is closed to 31-bit fields. The design restructures the prover until GEMMs dominate. The full spec lives in a notes vault outside this repo; implementation decisions are dated in `docs/decisions.md`, and each workload has a design doc in `docs/`.
 
+## Constructions
+
+Every relation is compiled to degree-2 constraints on a two-dimensional grid and checked by one quotient argument; there is no sumcheck over the trace and no custom gates. Relations are defined as tables: a family is a row of a table that names the columns it reads, the offsets it reads them at and the coefficients, and a workload is a list of such rows plus a column-major trace. Copy constraints and fingerprints are grand-product and Horner accumulators along chains. The lookup argument (Herder) is a sorted-copy, grand-product argument in the plookup family, specified but not implemented; the hash workloads use bit certificates instead. Wide multiplication mod a prime is a polynomial identity checked at a challenge point, with no product column. The commitment layer is Ligerito: Reed-Solomon columns in Blake3 Merkle trees, a batched partial sumcheck as the tail, queries sized at the Johnson radius with grinding. Blake3 is also the Fiat-Shamir transcript, run on the device. The challenge field is a degree-20 extension of F127.
+
 ## The prover, component by component
 
-**Fields.** Data lives in `F = F127`. The polynomial domain is `F2 = F127^2` (`i^2 = -1`), the code alphabet is `F4 = F127^4`, and every Fiat-Shamir challenge, accumulator and quotient value lives in `E = F_127^20`, a tower `F4[u] / (u^5 - g)`. Elements are stored as 1, 2, 4 or 20 bytes, one coordinate per byte. Since 2026-09-13 `E` has 20 coordinates for about 116 bits of field soundness.
+**Fields.** Data lives in `F = F127`. The polynomial domain is `F2 = F127^2` (`i^2 = -1`), the code alphabet is `F4 = F127^4`, and every Fiat-Shamir challenge, accumulator and quotient value lives in `E = F_127^20`, a tower `F4[u] / (u^5 - g)`. Elements are stored as 1, 2, 4 or 20 bytes, one coordinate per byte. The 20 coordinates of `E` give about 116 bits of field soundness.
 
 **Grid and chains.** A trace is a bivariate product grid `H1 x H2` of multiplicative subgroups of `F2*` (order 16128). A chain is one row of `H2`: `h1` grid points in linear order, and a statement is a list of chains. The residual grid `G = G1 x G2` doubles each axis, so every degree-2 relation is checked exactly. Grids are legal when each axis order is `2^a * m` with `a` in 2..7 and `m` dividing 63. All benchmarks below use one grid per statement, chosen at compile time.
 
@@ -99,10 +103,10 @@ The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
 ### csp-benchmarks results
 
 The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track the conditional
-security budget. Since 2026-09-13 the extension is `E = F_(127^20)` and the query target 112 per
-level, and since 2026-09-14 the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
+security budget. The extension is `E = F_(127^20)` and the query target 112 per
+level; the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
 Kopparty, Saraf, STOC 2026, Theorem 1.5) with 20 bits of grinding on the query seeds: 107.7 to 110.2
-conditional bits on every case (90.7 to 97.1 before 2026-09-13). The reported `security_bits: 112` is
+conditional bits on every case. The reported `security_bits: 112` is
 that query target, not a verified total; the note records the bounds and the outstanding proof and
 verifier obligations.
 
@@ -111,12 +115,12 @@ Rust harness (`csp-rust/`, a thin crate over the Mojo prover's C ABI): Criterion
 in-process on a prepared session (prover built, tables uploaded, arena filled), the same way the published
 Rust systems are timed, so these are the like-for-like numbers and the ones to submit. Preprocessing is the
 per-grid tables; peak memory is RSS, which excludes the Metal arena. Cells are committed witness cells. The
-shell track (`caracal7/`, whole cold process per run through `benchmark.sh`) is kept for the harness's
+shell track (`csp/`, whole cold process per run through `benchmark.sh`) is kept for the harness's
 non-Rust path; its numbers are about 150 ms higher on the small cases and 260 ms on ECDSA (process start,
 Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-process GPU-only times are the
 `warm prove` line of `bench/bench_<target>.mojo`.
 
-**2026-09-16, Apple M1 Pro 16 GB, commit 335ceca plus the 8x8 simdgroup open kernel (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; the memory pass is the 2026-09-14 one; load average 10 to 12 during the run)**
+**2026-09-16, Apple M1 Pro 16 GB, with the 8x8 simdgroup open kernel (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average 10 to 12 during the run)**
 
 | target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

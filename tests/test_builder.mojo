@@ -4,16 +4,16 @@ a failing case, and a padded trace with a bit, a limb, and a restriction proves 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
 
-from caracal7.core.field import E_BYTES
-from caracal7.core.params import CLIENT
-from caracal7.core.hash import Blake3
-from caracal7.proof import Shape
-from caracal7.prover import Prover, load_trace, load_advice
-from caracal7.verifier import verify
-from caracal7.relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
-from caracal7.relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
-from caracal7.relations.ir import Families
-from caracal7.workloads.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
+from core.field import E_BYTES
+from core.params import CLIENT
+from core.hash import Blake3
+from proof import Shape
+from prover import Prover, load_trace, load_advice
+from verifier import verify
+from relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
+from relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
+from relations.ir import Families
+from workloads.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
 
 comptime p = CLIENT.grid(72, 32)
 

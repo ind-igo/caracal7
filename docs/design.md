@@ -110,7 +110,7 @@ Twiddles are precomputed tables in device memory: the order-`L0` subgroup genera
 ## 7. Layout
 
 ```
-src/caracal7/
+src/
   core/             the substrate every stage imports by module
     params.mojo       Params, derived constants
     field.mojo        F, F2, F4, E

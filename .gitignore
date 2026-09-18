@@ -2,10 +2,10 @@
 *.mojopkg
 __pycache__/
 target/
-caracal7/target/
-caracal7/circuit_sizes.json
-caracal7/*_sizes.json
-caracal7/hyperfine_*.json
-caracal7/*_mem_report.json
-caracal7/.bench_state/
-caracal7/*_metrics.json
+csp/target/
+csp/circuit_sizes.json
+csp/*_sizes.json
+csp/hyperfine_*.json
+csp/*_mem_report.json
+csp/.bench_state/
+csp/*_metrics.json
