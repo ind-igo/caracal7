@@ -14,27 +14,41 @@ the real model on the M1. Nothing here is implemented; this file is the pick-up 
 - The weakness is the field size: an int8 dot product of length 768 reaches 24 bits, so a naive
   multiply-accumulate is several committed cells. The matmul relation below removes that cost.
 
-## The matmul relation (Freivalds over E)
+## The matmul relation (sumcheck over the inner index, openings from Ligerito)
 
 For C = A B with A (T x k), B (k x n), all integer matrices:
 
 1. The prover commits A, B and C as base-127 limb columns and computes C natively on the GPU.
-2. After the commit barrier the verifier samples r in E. The prover commits u = r^T A (k cells over E),
-   an accumulator chain over the rows of A with the challenge powers as multiplier, the same shape as the
-   Herder fingerprint. The relation checks u B = r^T C, a second chain. Both are degree 2.
-3. Integer faithfulness: with A = sum_a 127^a A_a and B = sum_b 127^b B_b, the check runs per limb pair,
-   C_(a,b) = A_a B_b, and one carry chain per output entry folds the pairs into the canonical limbs of C.
-   This is the mulmod polynomial identity applied to matrices.
-4. Soundness: one Schwartz-Zippel term, about n / 127^20, added to the ledger.
+2. After the commit barrier the verifier samples tensor-structured points r (over T) and s (over n). The
+   claim C(r, s) = sum_k A(r, k) B(k, s) is a sumcheck over k of a product of two multilinear
+   evaluations: log k rounds, one degree-2 polynomial per round, prover cost O(T k + k n) native field
+   operations to build A(r, .) and B(., s), and O(k) for the rounds.
+3. The sumcheck ends in three evaluation claims, A at (r, k*), B at (k*, s), C at (r, s). Those are what
+   the PCS already proves: `open` contracts every committed column against the opening point, so an
+   evaluation of a matrix at (row point, column point) is a linear combination of per-column openings
+   that the verifier computes itself.
+4. Integer faithfulness: the limb index is one more dimension of the matrix. With A = sum_a 127^a A_a
+   and B = sum_b 127^b B_b, the sumcheck proves C_(a,b) = A_a B_b per limb pair, and one carry chain per
+   output entry, a degree-1 family, folds the pairs into the canonical limbs of C.
+5. Soundness: the sumcheck rounds and the point sampling are Schwartz-Zippel terms over 127^20, added to
+   the ledger. Tensor-structured points across columns interact with the J1 batching question in
+   `docs/soundness.md`; the design doc must settle that before code.
+
+This is the standard sumcheck matmul (Thaler), not a Freivalds check with accumulator chains: a chain
+that accumulates u B over k commits k x n cells, which is the naive cost again. The saving comes from the
+PCS evaluation primitive, and Ligerito has it.
 
 What it buys:
 
 - Committed cells O(T k + k n + T n) instead of O(T k n). No product is ever committed.
-- The prover's native work is one k x n pass over the weights per matmul, per proof, not per token. A
+- The prover's native work is one pass over the weights per matmul, per proof, not per token. A
   1000-token prefill costs the same matmul checks as one token. The right unit of proof is a whole sequence.
 - Private weights cost the same as public ones. Attention (Q K^T, the value product) uses the same relation.
 - Public weights alone also work without this relation: constants are coefficients in a degree-1 relation
   row, so a block of 16 products is one row. This is the fallback, not the plan.
+
+Cost to watch: the opening list carries one E element per committed column per point, so wide matrices
+pay in proof size. The design doc sizes it.
 
 ## Quantization formats
 
@@ -62,15 +76,19 @@ chains) and the number of lookups in the nonlinearities. Not the weights.
 
 ## Build order
 
-Each step unlocks the next. Steps 3 and 4 can run beside step 1.
+Each step unlocks the next. Step 2 does not need Herder, so it goes first; steps 3 and the fixtures run
+beside it.
 
 1. **Herder.** Specified (`docs/milestone-3-lookup.md`, vault spec section 6), not built. Every
    nonlinearity and every requantize step is a lookup: softmax, GELU or SiLU, RMSNorm's rsqrt, the
    rescale-round-clip step, all 256-entry tables on int8 inputs. It also builds the post-commit challenge
    as a relation coefficient, which the matmul relation reuses. Shared dependency with the passport work.
-2. **Matmul relation.** New relation kind in the statement builder, one ledger term. First milestone: an
-   int8 matvec workload, 256 x 256, committed weights, measured in committed cells per MAC and seconds per
-   MAC on the M1 against the published zkML provers. Prediction: well under one committed cell per MAC.
+2. **Matmul relation.** A design doc first (`docs/matmul.md`): matrix layout over columns and positions,
+   the limb dimension, the round messages in the transcript, the ledger term, the opening-list size.
+   Reviewed before code. Then the sumcheck relation in the prover, tail and verifier, and the builder hook.
+   First milestone: an int8 matvec workload, 256 x 256, committed weights, measured in committed cells per
+   MAC and seconds per MAC on the M1 against the published zkML provers. Prediction: well under one
+   committed cell per MAC.
 3. **Integer reference model, host side.** Python or NumPy model of one Bonsai block with exact integer
    semantics: scales on an integer grid, Hadamard folded, int8 activations, every activation function as
    a fixed table. It defines what the circuit proves and measures accuracy retention before any relation
