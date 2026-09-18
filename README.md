@@ -14,7 +14,7 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 ## The prover, component by component
 
-**Fields.** Data lives in `F = F127`. The polynomial domain is `F2 = F127^2` (`i^2 = -1`), the code alphabet is `F4 = F127^4`, and every Fiat-Shamir challenge, accumulator and quotient value lives in `E = F_127^20`, a tower `F4[u] / (u^5 - g)`. Elements are stored as 1, 2, 4 or 20 bytes, one coordinate per byte. The 20 coordinates of `E` give about 116 bits of field soundness.
+**Fields.** Data lives in `F = F127`. The polynomial domain is `F2 = F127^2` (`i^2 = -1`), the code alphabet is `F4 = F127^4`, and every Fiat-Shamir challenge, accumulator and quotient value lives in `E = F_127^20`, a tower `F4[u] / (u^5 - g)`. Elements are stored as 1, 2, 4 or 20 bytes, one coordinate per byte. The field contribution depends on the code lengths and the theorem used; see the soundness ledger.
 
 **Grid and chains.** A trace is a bivariate product grid `H1 x H2` of multiplicative subgroups of `F2*` (order 16128). A chain is one row of `H2`: `h1` grid points in linear order, and a statement is a list of chains. The residual grid `G = G1 x G2` doubles each axis, so every degree-2 relation is checked exactly. Grids are legal when each axis order is `2^a * m` with `a` in 2..7 and `m` dividing 63. All benchmarks below use one grid per statement, chosen at compile time.
 
@@ -22,11 +22,11 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Relations (layer 3).** Written in the IR, no new protocol: bit certificates (every column that must be a bit, and the fixed bitwise functions of SHA-256 and Keccak); polynomial-identity multiplication mod a 256-bit prime, where `a b = r` is checked as a polynomial identity at a challenge point and no product is ever committed (`docs/mulmod.md`); the copy constraint as a wiring grand product with public factors; public columns of closed form that the verifier evaluates at a point instead of receiving; row groups with masks and selectors, so several statements share one grid (`docs/statement-builder.md`). Herder, the lookup, permutation and memory argument described above, is planned and not built; measured on SHA-256, a lookup channel costs more than the bit columns it would replace.
 
-**Commitment layer (layer 1).** Ligerito as published, with a subfield first round. Every committed column is a Reed-Solomon codeword over `F4` on a domain of one to four cosets of a subgroup of `F4*` (order dividing 161280), rate at most 1/16, and the codeword rows sit in Blake3 Merkle trees with 1024-byte leaves. Three trees: the witness, the accumulators, the quotients. After the opening challenge the folds are not sent; each fold is committed as the next level, and the tail is Ligerito's batched partial sumcheck, three binary digits per level, with the last level in the clear. The verifier opens query rows per level and checks them against the fold. The query count is sized at the Johnson radius (BCHKS25, Theorem 1.5) with 20 bits of grinding on the query seeds, for a per-level target of 112 bits.
+**Commitment layer (layer 1).** Ligerito as published, with a subfield first round. Every committed column is a Reed-Solomon codeword over `F4` on a domain of one to four cosets of a subgroup of `F4*` (order dividing 161280), rate at most 1/16, and the codeword rows sit in Blake3 Merkle trees with 1024-byte leaves. Three trees: the witness, the accumulators, the quotients. After the opening challenge the folds are not sent; each fold is committed as the next level, and the tail is Ligerito's batched partial sumcheck, three binary digits per level, with the last level in the clear. The verifier opens query rows per level and checks them against the fold. The query count is sized at the Johnson radius (BCHKS25, Theorem 1.5, p. 9) with 20 bits of grinding on the query seeds, for a per-level target of 112 bits.
 
 **Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads; the RSA and passport verifies are dominated by deriving their public data, which the next step moves to a product form.
 
-**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 107.7 to 110.2 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
+**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 88.52 to 100.67 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
 ## Statements
 
@@ -109,7 +109,8 @@ The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
 The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track the conditional
 security budget. The extension is `E = F_(127^20)` and the query target 112 per
 level; the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
-Kopparty, Saraf, STOC 2026, Theorem 1.5) with 20 bits of grinding on the query seeds: 107.7 to 110.2
+Kopparty, Saraf, Theorem 1.5, p. 9), with the public Haböck MCA allowance
+(Theorem 2, p. 4) and 20 bits of grinding on the query seeds: 88.52 to 100.67
 conditional bits on every case. The reported `security_bits: 112` is
 that query target, not a verified total; the note records the bounds and the outstanding proof and
 verifier obligations.

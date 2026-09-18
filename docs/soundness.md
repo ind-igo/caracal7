@@ -41,16 +41,16 @@ Output:
 - `query_error_per_attempt` is the sum over **all committed levels**, including level 1, of the miss
   probability of one transcript attempt; `query_error` divides it by `2^grind_bits`, the hashes one
   attempt costs the prover (see Grinding below).
-- `capacity_conjecture ...` and `johnson_bchks25_1.5 ...` are projections of the other two regimes at the
+- `capacity_conjecture ...` and `johnson_bchks25_1.5_projection ...` are projections of the other two regimes at the
   same geometry: the queries each level would need at the same per-level target, the query bits at those
   queries, the `pcs_gap` numerator of that regime, and the `conditional_iop_bits` the switch would compile.
-  `johnson_bchks25_4.2_4.6 ...` is the Johnson regime charged as BCHKS25 section 4 states it (J1, J2
+  `johnson_bchks25_4.2_4.6_projection ...` is the Johnson regime charged as BCHKS25 section 4 states it (J1, J2
   below): the doubled `m` and the factor `M = words - 1` per code. `Profile.regime` selects the regime;
   `CLIENT` compiles `REGIME_JOHNSON` since 2026-09-14.
   - `REGIME_CAPACITY` (radius `1 - rate - eta`, miss `rate + eta`) is the unproven up-to-capacity
     conjecture. It has no proven field term; the projection keeps the unique `pcs_gap` as a placeholder,
     so its `conditional_iop_bits` is the query term only. Nothing in this note certifies it.
-  - `REGIME_JOHNSON` (radius `1 - sqrt(rate) - eta`, miss `sqrt(rate) + eta`) charges the correlated
+  - **Historical pairs charge (superseded by J2 below):** `REGIME_JOHNSON` (radius `1 - sqrt(rate) - eta`, miss `sqrt(rate) + eta`) charges the correlated
     agreement error of BCHKS25 Theorem 1.5 ([[raw/papers/proximity-gaps-rs-codes]], any domain, any field):
     `a / |E|` per code with `m = max(ceil(sqrt(rho) / (2 eta)), 3)` and
     `a = (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho)`, linear in `n`
@@ -72,10 +72,17 @@ and the gaps below are not assigned zero error; they are **outside this conditio
 
 ### Current results
 
+After the J2 numerator correction, ECDSA has **88.52 conditional IOP bits**
+(before J3's Bind term). This is 19.13 bits below the former 107.65 projection.
+Its `pcs_gap` numerator is 2,676,623,914,570,924, instead of 4,096,994,528.
+The old section-4 curve projection is 95.99 bits. All these totals still assume
+J1/J3 and P1-P5 as specified below. The table below records the earlier charges;
+J3 will replace the current column after its list terms are added.
+
 These are diagnostic bounds under the assumptions below, not measured attack costs or certified
 security levels. Poseidon sizes sharing a grid have identical ledgers.
 
-| Workload | Input | Grid | Conditional IOP bits, e = 20, Johnson, tail rate 1/8 (2026-09-14) | unique, tail rate 1/32 (2026-09-13) | e = 16, lambda' 103 (before 2026-09-13) |
+| Workload | Input | Grid | Historical pairs projection, e = 20, Johnson, tail rate 1/8 (2026-09-14) | unique, tail rate 1/32 (2026-09-13) | e = 16, lambda' 103 (before 2026-09-13) |
 |---|---:|---:|---:|---:|---:|
 | SHA-256 | 128 B | 32 x 224 | 109.93 | 110.46 | 95.00 |
 | SHA-256 | 256 B | 32 x 336 | 109.68 | 110.70 | 94.51 |
@@ -157,7 +164,7 @@ proximity result; see Diamond and Gruen,
 Corollary 3.7, and the Ligerito construction. The last committed code is included even though its
 folded message is sent in the clear. There is no extra code or sumcheck after that clear message.
 
-**Johnson regime adopted (2026-09-14).** `CLIENT` compiles `REGIME_JOHNSON` with `eta = 1/16` and the
+**Historical configuration decision (2026-09-14; pairs projection).** `CLIENT` compiles `REGIME_JOHNSON` with `eta = 1/16` and the
 tail rate rule `tail_rate_inv = 8` in place of spec 9.5's 1/32. The ledger's ECDSA sweep over the tail
 rate (all at 74 level-1 queries) is why: at 1/32 the tail levels sit near rate 1/60, where the
 `rho^-1.5` constant of Theorem 1.5 is large, and the field term caps the case at 101.45 bits with
@@ -166,16 +173,14 @@ rate (all at 74 level-1 queries) is why: at 1/32 the tail levels sit near rate 1
 queries against 401, and its tail domains are seven times smaller (level 2: 92,160 against 645,120),
 which the prover's tail encode and the verifier's openings both see. ECDSA measures 545,892 B of proof,
 warm prove 369 ms, verify 116 ms (`bench_ecdsa`, from about 705 KB / 400 ms / 135 ms). The ledger runs
-107.65 to 110.19 bits across the cases. What is charged is the pairs form of Theorem 1.5 in the places
-the unique term was charged; the three obligations J1 (affine-space form), J2 (mutual form) and J3
-(list-regime level 1 argument), written up in "Open obligations of the Johnson regime (J1-J3)" below,
-stay open and are now on the critical path of this note rather than a projection.
+107.65 to 110.19 bits across the cases. Those figures used the pairs form of BCHKS25 Theorem 1.5, p. 9.
+The current J2 charge and J1-J3 status below replace that analysis.
 A per-level `eta` (the tail at rate 1/8 could take `eta = 1/24` with `m` still 3) is a small further
 lever not taken.
 
 ### Open obligations of the Johnson regime (J1-J3)
 
-These are the three items the paragraph above names. Each records what the ledger charges today, what
+These are the three items the paragraph above names. The J2 update below supersedes the historical charge and status above. Each records what the ledger charges today, what
 the cited source actually proves, what is missing, and what evidence would close it. None is a code
 defect; all three are analysis gaps that the `CLIENT` profile now depends on.
 
@@ -209,35 +214,101 @@ twice the Theorem 1.5 value. At level 1 (`rho = 1/4`, `eta = 1/16`) `m` goes fro
 `(m + 1/2)^5` term costs 4.6 bits; the factor `M = columns - 1` costs a further `log2(M)`. The present
 107.65-bit ECDSA total does not absorb that.
 
-**J2. Mutual correlated agreement (Haböck 2025).** The tail is a tensor fold, and the `3 L_i/Q` of the
-unique regime cites Diamond and Gruen for the transfer of a line gap to interleaved and tensor codes.
-Their Theorem 3.1 lifts affine-line proximity gaps from `C` to `C^m`, and Theorem 3.6
-(Angeris-Evans-Roh) turns that into tensor-style gaps with false-witness probability `theta * eps/q`.
-Both are stated for proximity parameter `e in {0, ..., floor((d-1)/2)}`, and Corollary 3.7
-instantiates RS with `eps := n` in that same range. That is the unique-decoding radius. The citation
-says nothing at `1 - sqrt(rho) - eta`.
+**J2. Mutual correlated agreement: public source and transfer.** The public source is
+Haböck, *A note on mutual correlated agreement for Reed-Solomon codes*,
+[ePrint 2025/2110](https://eprint.iacr.org/2025/2110), version of 2025-11-17.
+The author calls it a proof outline. **Theorem 2, p. 4** applies to
+`RS[F_q, D, k]` of dimension `k + 1`, on any set of distinct points `D ⊆ F_q`.
+There is no subgroup, characteristic, or random-domain condition. Set `n = |D|`,
+`rho = k/n`, `m >= 3` an integer, and `gamma_m = 1 - (1 + 1/(2m)) sqrt(rho)`.
+For all but at most
 
-Past the unique radius the fold argument needs the mutual form: the agreement set must be the same
-set for every batched word, not merely one set per word. BCHKS25 does state it - section 4.3, "list
-correlated agreement", also called strong correlated agreement in [Zei24] and mutual correlated
-agreement in [ACFY25] - as Theorem 4.6, up to the Johnson bound, for RS curves `u_0, ..., u_M`. Two
-things checked in the text limit how far that carries. First, the proof is attributed to "[Hab25]
-Ulrich Haböck. A note on mutual correlated agreement. 2025. (Personal communication)". There is no
-eprint number in the bibliography and section 4.3 only sketches the argument; before [Hab25] the
-property was a conjecture for RS ([ACFY25, Conjecture 4.12]). **Not ingested, and possibly not
-publicly available; an ingest attempt is needed.** Second, Theorem 4.6 uses
-`m = max(sqrt(rho) / (1 - sqrt(rho) - gamma), 3) = max(sqrt(rho) / eta, 3)`, twice the
-`m = max(ceil(sqrt(rho) / (2 eta)), 3)` that `gap_numerator` computes. The displayed bound (PDF page 29) is
-`|E| <= M * a` with `a` the Theorem 1.5 expression evaluated at that doubled `m`. Charging the
-Theorem 1.5 numerator for a mutual claim therefore understates it by 4.6 bits at level 1 (`m` 4 to
-8) and 4.5 bits at the tail rate 1/8 (`m` 3 to 6, the ceiling of 5.66), before the factor `M`.
+```
+a_H = (m + 1/2)^7 n^2 / (3 rho^(3/2))
+```
 
-What is missing is therefore the mutual form for the codes the tail actually folds - the first batch
-is four coordinates over `F4`, later levels are `E` - and the numerator to charge for it. Closing it
-means pinning [Hab25] (if it stays a personal communication, the mutual form is unproven, not cited),
-taking Theorem 4.6's bound into `gap_numerator` behind its own constant, and proving a Johnson-radius
-analogue of Diamond and Gruen Theorems 3.1 and 3.6, whose interleaving step assumes `2e < d` and is
-not a rewording away from the list regime.
+scalars `z`, **every** set `A` of at least `(1-gamma_m)n` positions on which
+`f0 + z f1` restricts to a codeword also makes both inputs restrict to codewords.
+This is the same-set form, not only existence of one common agreement set.
+For a target `gamma = 1 - sqrt(K/n) - eta`, where `K` is the code dimension,
+use `rho = (K-1)/n`, `eta_H = 1 - sqrt(rho) - gamma`, and
+`m = max(ceil(sqrt(rho)/(2 eta_H)), 3)`. Then `gamma <= gamma_m` and the theorem
+bounds the target event. Hab25 does **not** use the doubled `m`. Its numerator
+is quadratic in `n`. The note says that multilinear and power combinations can
+be treated in the same way (p. 2, unnumbered remark); an explicit bound for them
+is **not stated** there.
+
+BCHKS25 **Theorem 4.6, pp. 28-29**, states the stronger linear-in-`n` bound
+`M a_B`, with
+
+```
+m_B = max(ceil(sqrt(rho)/(1-sqrt(rho)-gamma)), 3)
+a_B = (2(m_B+1/2)^5 + 3(m_B+1/2)gamma rho)n/(3 rho^(3/2))
+      + (m_B+1/2)/sqrt(rho).
+```
+
+Here `rho=(K-1)/n`; the historical projection instead retains `K/n`.
+It is a theorem for the power curve `sum_{j=0}^M z^j u_j`; its proof is a sketch
+that uses the factor argument from Hab25. Hab25's public proof does not state
+this improved numerator. At nominal rate 1/4 and `eta=1/16`, Hab25 has `m=4`
+and Theorem 4.6 has `m_B=8`; at rate 1/8 they have 3 and 6. The ledger now uses
+`a_H`, with the degree/dimension distinction above. This is a conservative choice
+of a public bound, not a refutation of Theorem 4.6. It retains the old pairs
+charge and the old `section4=True` charge as labelled projections. The latter
+still includes `M = columns-1` at level 1, as a power-curve comparison only.
+The protocol still samples independent column coefficients. Neither projection
+is a proof for that sampler. Historical projections retain their old rate
+normalization. The main Hab25 calculation pads Float64 upward by `1e-12` before
+rounding; this is diagnostic sizing, not interval certification.
+
+**Transfer source found.** Diamond and Gruen **Theorem 3.1, p. 6**, and
+**Corollary 3.7, p. 9**, restrict the radius to unique decoding. The proof uses
+uniqueness in **Lemma 3.2, p. 7** to identify every nearby word with one fixed
+word. That step fails for lists. **Theorem 3.6, p. 9**, itself has no unique-radius
+restriction: it assumes the required line gap for every interleaving. The former
+note incorrectly put the restriction on both theorems.
+
+Jo's supplied [ePrint 2026/1432](https://eprint.iacr.org/2026/1432), p. 5,
+points to a separate public result: *Interleaving Stability for Mutual Correlated
+Agreement and Curve Decodability*, [ePrint 2026/891](https://eprint.iacr.org/2026/891).
+Its **Theorem 4.4 and Corollaries 4.5-4.6, p. 9**, give exact preservation of
+line MCA under any row interleaving, at every radius. Its **Theorem 4.7,
+pp. 10-11**, bounds polynomial-generator MCA by the sum of the univariate
+factor errors. Jo quotes the tensor closure from BCGM25 Lemma 4.4 and
+the linear-change lemma 4.1 on p. 10; this citation uses Jo's stated theorem.
+Thus the three binary tensor factors of an RS code cost
+`3 a_H / |E|`, with no interleaving-width factor. The factors `(1-r,r)` and
+`(1,r)` differ by an invertible linear change of the two input words. One can
+also use `3 a_B / |E|` with BCHKS25 Theorem 4.6 as the scalar input. These are
+statements about the same RS code in every row. The four conjugate domains of
+`E tensor_F F4` and the protocol's running claim still need the J3/P4 argument.
+The level-1 scalar charge is also still conditional: J1 proves ordinary CA,
+not affine MCA. Jo Theorem 4.7 alone would charge one line numerator per
+column variable. A dimension-free same-set reduction is needed in J3.
+
+**Newer source check.** An arbitrary-dimension affine MCA theorem with the pairs
+numerator is **not stated** in the four supplied newer papers. The checked
+statements are:
+
+- Jo 2026/1432, **Theorem 2.3, p. 7**, imports BCHKS25 Theorem 4.6 for lines.
+  **Theorem 3.4, p. 9**, extends a line bound a fixed number of integer steps
+  beyond Johnson; it does not state the requested affine-space form.
+- Chojecki 2026/1463, **Theorem 1.3, pp. 5-6**, imports the same line numerator.
+  **Theorem 1.1, p. 5**, gives a shortening exponent beyond Johnson; it does not
+  state the requested affine-space or tensor form.
+- Chojecki 2026/1479, **Proposition 2.1, p. 5**, concerns line thresholds.
+  Section 2 on that page explicitly says no theorem improves the companion
+  paper's safe threshold. The requested form is **not stated**.
+- Arnon, Boneh, and Fenzi 2026/680 define affine spaces among the possible
+  samplers (pp. 3-4) but focus on lines. Theorem 4.12, p. 19, restates a line bound, with a half-size `m` and a
+  different rate convention from BCHKS25 Theorem 4.6. We do not substitute
+  that restatement for the source formula. A dimension-free affine bound is
+  **not stated** there. The exact later transfer
+  is Jo 2026/891, **Corollary 4.6, p. 9**, as above.
+
+**Verdict.** The missing-public-source issue and the scalar/interleaved/tensor
+MCA transfer are closed by citations. This does not close P4's adaptive protocol
+composition or J3's packed-alphabet and opening argument.
 
 **J3. List-regime rewrite of the level-1 close case (spec 12.2).** `miss_probability` returns
 `sqrt(rate) + eta` per query in `REGIME_JOHNSON`, and the ledger raises it to each level's query
@@ -378,7 +449,7 @@ ledger instead of silently using a formula that omits table or zero-denominator 
 | P4 | The tail is the analyzed scalar tensor-fold protocol | `_Tail.level`, `_Tail.clear`, `pcs/tensor`, `pcs/tail`. Review row basis, mixed digits, four-coordinate first batch, last clear check, and per-round adaptivity |
 | P5 | Cryptographic compilation preserves the required concrete security | `core/hash`, `core/transcript`, `proof.prefix_bytes`. Establish the exact Fiat-Shamir/hash model and losses, including a separate quantum claim if desired |
 | J1 | The batched-column fold admits the Theorem 1.5 numerator with no dimension factor | `gap_numerator` charges one `a` per code. BCHKS25 states only the pairs form (1.5) and curves at `M * a` with `m` doubled (4.2). **Reduction found:** BCIKS20 section 6.3 derives the affine-space form from the line form as a black box plus list size `< q`; with Theorem 1.5 in place of 1.4 the dimension-free numerator follows (paragraph "J1, the reduction"). Needs an independent read; the `E tensor F4` transfer (P1) and the mutual property (J2) stay separate |
-| J2 | Mutual (list) correlated agreement holds at the Johnson radius for the codes the tail folds | BCHKS25 Theorem 4.6 states it for RS curves, proof attributed to Haböck 2025 (personal communication, not ingested); its bound is `M * a` with `m` doubled, 4.5 to 4.6 bits per code above what is charged. Diamond and Gruen Theorems 3.1, 3.6 and Corollary 3.7 hold only for `e <= floor((d-1)/2)`. Pin Hab25, add the doubled-`m` numerator to `gap_numerator`, extend the interleaved/tensor step past the unique radius |
+| J2 | Mutual (list) correlated agreement at the Johnson radius | **Source/transfer closed:** Hab25 Theorem 2, p. 4, is public (ePrint 2025/2110). Main ledger charges its quadratic numerator. Jo 2026/891 Corollary 4.6, p. 9, and Theorem 4.7, pp. 10-11, supply the interleaved/tensor transfer. Packed level 1 and adaptive running claims remain J3/P4 |
 | J3 | The level-1 close case binds one list element, so `sqrt(rate) + eta` is the right per-query event | Vault spec 12.2 is a sketch. The out-of-domain Bind allowance (quadratic in the list size) is not a ledger term; 12.1's Galois descent and `n_cw > 1` split need list-regime proofs; `verifier._residual`, `_small_grid`, `_boundaries` and `_restrictions` must bind the chosen element |
 | I1 | Every adversarial field coordinate obeys the arithmetic contract | **Implemented:** `bytes.check_field_bytes` rejects coordinates >=127. `ProofReader.field_bytes` covers Z2, Q3, openings, every sumcheck, and the clear vector; `pcs.merkle.check_multiproof` checks authenticated W/Z/Q/tail rows; `_check_statement` checks derived public field data |
 | I2 | Optimized arithmetic agrees with the field for all admitted inputs | `core/field` assumes canonical bytes and explicit integer/fp32 bounds; existing scalar/GPU tests cover samples. Audit the bounds and keep differential checks on adversarial canonical values |

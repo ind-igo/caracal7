@@ -2229,3 +2229,27 @@ at eight limbs, 1888 chains for 2448 per verify.
   `cont` and `sq` exclude each other, carries in [-4, 7]) and found no defect; Codex the same on 1 to 255
   limbs. Minor items applied: the dead loop in `_heads`, a stale slot comment, the tail bound restored in
   the docstring.
+
+
+## J2: use the public MCA bound (2026-09-18)
+
+Haböck's ePrint 2025/2110, Theorem 2, p. 4, is public. Charge its quadratic
+numerator in `bench/bench_soundness.mojo`. Keep BCHKS25 Theorems 1.5 and 4.6
+as labelled projections. The latter states a sharper linear numerator; this
+change chooses the public proof outline of 2025-11-17, not a claim that the sharper
+published statement is false. ECDSA changes from 107.65 to 88.52 conditional
+bits before the J3 allowances. Protocol parameters and query counts stay fixed.
+Jo's ePrint 2026/891, Corollary 4.6, p. 9, and Theorem 4.7, pp. 10-11,
+supply the RS interleaving and tensor transfer. The packed alphabet and adaptive
+running claims are separate obligations.
+
+Validation: `mojo build --Werror` and `sh run_tests.sh` passed. The ledger ran
+all 20 reports (16 workload cases and four rate projections). An 80-digit
+calculation checked that all Hab25 charges round upward. The parallel Opus 5
+and read-only Codex reviews were requested before this commit. Codex found
+an overflow in scaled sums and stale README totals; both are fixed. The test
+script now runs the CPU-only soundness bench, including the overflow check.
+Opus 5 confirmed the constants and transfer citations. Its scope corrections
+are applied: level 1 still needs affine MCA, Hab25 is a dated public proof
+outline, and the tensor closure is cited through Jo. The second Codex review
+found no remaining defect in the staged fixes.

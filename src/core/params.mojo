@@ -15,7 +15,7 @@ comptime RATE_INV = 32              # rate rule of spec 9.5 for the tail levels:
 comptime RATE_MIN_INV = 16          # ... or the largest domain (4 x 161280) if that still gives rate <= 1/16
 comptime REGIME_UNIQUE = 0          # proximity radius (1 - rate) / 2: proven (BCIKS20 1.2 / 1.7, the ledger's regime)
 comptime REGIME_CAPACITY = 1        # radius 1 - rate - eta: the up-to-capacity conjecture, unproven (docs/soundness.md)
-comptime REGIME_JOHNSON = 2         # radius 1 - sqrt(rate) - eta: BCHKS25 Theorem 1.5 (pairs; the batched and mutual forms are open, docs/soundness.md)
+comptime REGIME_JOHNSON = 2         # radius 1 - sqrt(rate) - eta; the ledger and remaining proof conditions are in docs/soundness.md
 
 
 def miss_probability(rate: Float64, regime: Int, eta_inv: Int) -> Float64:

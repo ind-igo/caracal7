@@ -62,16 +62,30 @@ def query_error(length: Int, dimension: Int, queries: Int, regime: Int = REGIME_
     return error
 
 
-def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int, section4: Bool = False) raises -> Int:
-    """The correlated-agreement error numerator of one code (error = numerator / |E|): `length` at the
-    unique-decoding radius (BCIKS20 1.2 / 1.7); at the Johnson radius BCHKS25 Theorem 1.5, radius
-    1 - sqrt(rho) - eta with m = max(ceil(sqrt(rho) / (2 eta)), 3):
-    (2 (m + 1/2)^5 + 3 (m + 1/2) gamma rho) / (3 rho^1.5) * n + (m + 1/2) / sqrt(rho), rounded up.
-    `section4` uses the m of Theorems 4.2 (curves) and 4.6 (mutual), max(ceil(sqrt(rho) / eta), 3);
-    those theorems also carry a factor M (words minus one), which the caller multiplies (soundness.md J1, J2).
-    The capacity conjecture has no proven numerator; the ledger keeps `length` there as a placeholder."""
+def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int, section4: Bool = False, pairs: Bool = False) raises -> Int:
+    """Hab25 Theorem 2, p. 4: (m+1/2)^7 n^2 / (3 rho^1.5), rho=(dimension-1)/n.
+    The target radius uses the actual rate dimension/n; the theorem uses degree/n.
+    section4 and pairs retain the old BCHKS25 4.2/4.6 and 1.5 projections, respectively.
+    The capacity conjecture has no proven numerator; length is only a placeholder there.
+    """
     if regime != REGIME_JOHNSON:
         return length
+    if dimension <= 1 or dimension >= length or eta_inv < 2:
+        raise Error("Johnson gap needs 1 < dimension < length and eta_inv >= 2")
+    if not section4 and not pairs:
+        var rate = Float64(dimension) / Float64(length)
+        var rho_h = Float64(dimension - 1) / Float64(length)
+        var gamma_h = 1.0 - sqrt(rate) - 1.0 / Float64(eta_inv)
+        if gamma_h <= 0.0:
+            raise Error("Johnson radius needs sqrt(rate) + eta < 1")
+        var eta_h = 1.0 - sqrt(rho_h) - gamma_h
+        var mh = max(ceil(sqrt(rho_h) / (2.0 * eta_h)), 3.0) + 0.5
+        var ah = mh * mh * mh * mh * mh * mh * mh * Float64(length) * Float64(length) / (3.0 * rho_h * sqrt(rho_h))
+        # Diagnostic Float64 sizing: pad upwards before the integer conversion.
+        ah = ceil(ah * (1.0 + 1e-12))
+        if ah >= 9.0e18:
+            raise Error("Johnson numerator exceeds the diagnostic Int budget")
+        return Int(ah)
     var rho = Float64(dimension) / Float64(length)
     var eta = 1.0 / Float64(eta_inv)
     var gamma = 1.0 - sqrt(rho) - eta
@@ -82,6 +96,12 @@ def gap_numerator(length: Int, dimension: Int, regime: Int, eta_inv: Int, sectio
         m = max(ceil(sqrt(rho) / eta), 3.0) + 0.5
     var a = (2.0 * m * m * m * m * m + 3.0 * m * gamma * rho) / (3.0 * rho * sqrt(rho)) * Float64(length) + m / sqrt(rho)
     return Int(ceil(a))
+
+
+def add_numerator(total: Int, term: Int, factor: Int = 1) raises -> Int:
+    if total < 0 or term < 0 or factor < 0 or (factor > 0 and term > (9223372036854775807 - total) // factor):
+        raise Error("field numerator exceeds the diagnostic Int budget")
+    return total + factor * term
 
 
 def field_order(e: Int) -> Float64:
@@ -154,7 +174,7 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
-        gap += 3 * gap_numerator(level.L, level.rows, p.regime, p.eta_inv)   # later folds: tensor randomness in three E elements
+        gap = add_numerator(gap, gap_numerator(level.L, level.rows, p.regime, p.eta_inv), 3)   # later folds: tensor randomness in three E elements
         batch += (4 if i == 0 else 1) * previous_queries + 1
         queries += query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
         previous_queries = level.queries
@@ -176,23 +196,23 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     return (terms^, queries)
 
 
-def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int, section4: Bool = False) raises:
-    """`section4` charges BCHKS25 Theorems 4.2 / 4.6 as written: the doubled m, and the factor M = words - 1
+def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int, section4: Bool = False, pairs: Bool = False) raises:
+    """`pairs` retains the old 1.5 charge. `section4` retains the old 4.2/4.6 projection: the doubled m, and the factor M = words - 1
     per code (level 1 batches the columns, `_level1_symbol`; a tail challenge folds a pair, M = 1)."""
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
     var error = query_error(p.L(), p.K(), q1, regime, p.eta_inv)
     var m1 = (s.columns() - 1) if section4 else 1
-    var gap = m1 * gap_numerator(p.L(), p.K(), regime, p.eta_inv, section4)
+    var gap = add_numerator(0, gap_numerator(p.L(), p.K(), regime, p.eta_inv, section4, pairs), m1)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)
         queries += "/" + String(q)
         error += query_error(s.tail[i].L, s.tail[i].rows, q, regime, p.eta_inv)
-        gap += 3 * gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv, section4)
+        gap = add_numerator(gap, gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv, section4, pairs), 3)
     var q_err = error / Float64(1 << p.grind_bits)
     print(name, "eta_inv", p.eta_inv, "queries_per_level", queries, "query_bits", bits(q_err), "pcs_gap", gap,
-          "conditional_iop_bits", bits(Float64(numerator_no_gap + gap) / field_order(p.e) + q_err))
+          "conditional_iop_bits", bits(Float64(add_numerator(numerator_no_gap, gap)) / field_order(p.e) + q_err))
 
 
 def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
@@ -201,7 +221,7 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     var result = ledger[p](c)
     var numerator = 0
     for term in result[0]:
-        numerator += term[1]
+        numerator = add_numerator(numerator, term[1])
     print("\ncase", target, size, "grid", p.h1(), p.h2(), "e", p.e, "lambda_queries", p.lambda_bits, "grind_bits", p.grind_bits, "regime", p.regime)
     print("columns W/Z/Q/public", s.columns_w, s.columns_z, s.columns_q, s.columns_p,
           "points", s.points, "entries", s.entries, "horner", s.accumulators(), "wiring_products", s.wiring_products())
@@ -212,13 +232,11 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     for term in result[0]:
         print("field_numerator", term[0], term[1])
         if term[0] != "pcs_gap":
-            numerator_no_gap += term[1]
-    # projections of the other regimes at the same geometry: the queries each level would need at the same
-    # per-level target, the query error at those queries, and (Johnson only) the pcs_gap numerator of
-    # BCHKS25 1.5 in place of the unique one, so the last number is the ledger the switch would compile
+            numerator_no_gap = add_numerator(numerator_no_gap, term[1])
+    # Historical BCHKS25 gap projections at the same geometry and query target.
     projection[p](s, "capacity_conjecture", REGIME_CAPACITY, numerator_no_gap)
-    projection[p](s, "johnson_bchks25_1.5", REGIME_JOHNSON, numerator_no_gap)
-    projection[p](s, "johnson_bchks25_4.2_4.6", REGIME_JOHNSON, numerator_no_gap, section4=True)
+    projection[p](s, "johnson_bchks25_1.5_projection", REGIME_JOHNSON, numerator_no_gap, pairs=True)
+    projection[p](s, "johnson_bchks25_4.2_4.6_projection", REGIME_JOHNSON, numerator_no_gap, section4=True)
     var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
     print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
     print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))
@@ -228,6 +246,18 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
 
 def self_check() raises:
     assert_true(abs(query_error(16, 4, 3) - 125.0 / 512.0) < 1e-15)
+    # rho=16/64=1/4, m=4: exact Hab25 numerator 408146688; +1 from the upward pad.
+    assert_equal(gap_numerator(64, 17, REGIME_JOHNSON, 16), 408146689)
+    assert_true(gap_numerator(64, 17, REGIME_JOHNSON, 16) > gap_numerator(64, 17, REGIME_JOHNSON, 16, section4=True))
+    with assert_raises():
+        _ = gap_numerator(64, 1, REGIME_JOHNSON, 16)
+    var large_level1 = gap_numerator(161280, 20736, REGIME_JOHNSON, 66)
+    var large_tail = gap_numerator(92160, 10368, REGIME_JOHNSON, 66)
+    with assert_raises():
+        _ = add_numerator(large_level1, large_tail, 3)
+    with assert_raises():
+        _ = add_numerator(9223372036854775807, 1)
+    assert_equal(add_numerator(2, 3, 4), 14)
     assert_equal(field_order(2), 16129.0)
     assert_equal(bits(1.0 / 256.0 + 1.0 / 256.0), 7.0)  # add errors, not bit counts
     assert_equal(horner_degree(4, 2, 1, 0), 5)  # I0*s^2 + I1*s + I2
@@ -255,7 +285,7 @@ def self_check() raises:
         var result = ledger[p](c)
         var numerator = 0
         for term in result[0]:
-            numerator += term[1]
+            numerator = add_numerator(numerator, term[1])
         # Flat: 1 alpha + 16 grid + 48 gap + 2 openings. Tail: +3*70 gap +17 batch +6 sumcheck.
         assert_equal(numerator, 67 if i == 0 else 300)
         var miss = 13.0 / 24.0

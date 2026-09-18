@@ -1,5 +1,6 @@
 #!/bin/sh
 # Runs every tests/test_*.mojo and builds every bench, warnings as errors, JOBS files at a time (default 4);
+# Executes the CPU-only soundness bench so its arithmetic assertions run too.
 # exits non-zero if any fails and prints that file's log. Extra arguments go to mojo (e.g. -D CARACAL_NVIDIA_MMA).
 # BENCH=0 skips the bench builds. The E16 field switch is the constant in src/core/field.mojo.
 # The cost of a file is its distinct Params shapes: every grid instantiates the whole kernel set again.
@@ -10,7 +11,7 @@ one() {   # $1 = test or bench file; the rest = mojo args
   f=$1; shift
   t0=$(date +%s)
   case "$f" in
-    tests/*) uv run mojo run --Werror "$@" -I src "$f" ;;
+    tests/*|bench/bench_soundness.mojo) uv run mojo run --Werror "$@" -I src "$f" ;;
     *)       uv run mojo build --Werror "$@" -I src "$f" -o /dev/null ;;
   esac > "$LOG/$(basename "$f").log" 2>&1
   rc=$?; dt=$(( $(date +%s) - t0 ))
