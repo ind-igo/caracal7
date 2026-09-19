@@ -1,0 +1,32 @@
+diff --git a/src/ts/circuits.ts b/src/ts/circuits.ts
+index 7b9e6bc..2ae8b21 100644
+--- a/src/ts/circuits.ts
++++ b/src/ts/circuits.ts
+@@ -101,9 +101,15 @@ export class Circuit {
+         -o ${tempDir}
+       `
+ 
++      const t0 = Date.now()
+       await execAsync(proveCommand, {
+         cwd: tempDir,
+       })
++      const proveMs = Date.now() - t0
++      const t1 = Date.now()
++      await execAsync(`bb verify -t ${verifierTarget} -k ${vkeyPath} -p ${proofPath} -i ${publicInputsPath}`, { cwd: tempDir })
++      const verifyMs = Date.now() - t1
++      console.log(`BENCH ${options?.circuitName} prove_ms=${proveMs} verify_ms=${verifyMs} proof_bytes=${fs.statSync(proofPath).size} public_input_bytes=${fs.statSync(publicInputsPath).size}`)
+ 
+       // Check if proof file was created
+       if (!fs.existsSync(proofPath)) {
+@@ -165,9 +171,11 @@ export class Circuit {
+         -o "${vkeyPath}"
+       `
+ 
++      const tv = Date.now()
+       await execAsync(writeVkCommand, {
+         cwd: tempDir,
+       })
++      console.log(`BENCH write_vk_ms=${Date.now() - tv}`)
+ 
+       // Check if vkey file was created
+       const vkeyFilePath = path.join(vkeyPath, "vk")

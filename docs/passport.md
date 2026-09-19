@@ -53,8 +53,12 @@ verifier checks itself in microseconds.
 4. Done: CSCA registry as a public list on the verifier's side, with the padding and commitment checks of the
    public inputs in `passport_check`. A Merkle path inside the proof would hide the signing CSCA, but the
    disclosed window names the country; it waits for the masking layer.
-5. zkPassport baseline on the same M1: build the Noir circuits, run Barretenberg, sum the subproofs.
-   Do not quote their phone numbers against Mac numbers.
+5. Done: zkPassport baseline on the same M1 (`bench/zkpassport/README.md`): six Honk subproofs of 0.7 to
+   1.2 s each (5.5 s in sum) and the recursive outer proof at 40 s; 14.7 KB per proof, 0.06 to 0.09 s to
+   verify, zero-knowledge. caracal7 in the same hour on the same loaded machine: 3.6 s for both proofs
+   (3.0 s idle), 2.15 MB, 1.5 s verify, not zero-knowledge.
+6. Next candidates: the masking layer (zero knowledge; the baseline's one clear advantage besides proof
+   size), or the deferred optimizations below (one proof instead of two first).
 
 ## Deferred optimizations
 

@@ -2468,3 +2468,22 @@ carries a nullifier; both are public factors on the fingerprint accumulator, no 
   off the list, a flipped padding byte in either proof, two commitments, inputs cut short and malformed lines
   are refused; the id does not change with the limb count; uppercase hex and CRLF parse. `test_dsc`: the
   registry against the real proof's public inputs.
+
+## zkPassport baseline on the M1 Pro (2026-09-19)
+
+- **Setup.** zkPassport `circuits` at 9acc1e0, Noir 1.0.0-beta.22 and bb 5.0.0 (their CI versions) installed
+  beside the system toolchain, their generated fixture passport with a CSCA of RSA-2048 SHA-256 (theirs uses
+  4096 SHA-512; the 2048 circuit exists in their workspace) and a DSC of RSA-2048 SHA-256. Their
+  `outer.test.ts` with `compare_expiry` in place of the nationality inclusion check and a manifest of the six
+  compiled circuits; a patch on `Circuit.prove` times `bb prove` and runs `bb verify`. Recipe, gate counts and
+  tables: `bench/zkpassport/README.md`.
+- **Measured** (load average 12, the machine in use; two runs): subproofs 0.73 to 1.22 s each, sum 5.4 to
+  5.6 s; `outer_count_6` 39.7 s, 39.8 s; every proof 14,656 bytes; verify 0.06 to 0.09 s. caracal7 in the
+  same hour: sod 2.0 s, dsc 1.6 s (3.6 s a passport; 3.0 s idle earlier the same day), verify 1.5 s,
+  2.15 MB.
+- **Reading.** Prove 12x against the outer proof, 1.5x against the sum of subproofs alone. Verify and proof
+  size go the other way by 16x and 150x; Ligero-style proofs are large. Their proofs are zero-knowledge, ours
+  are not. Their subproof cost is mostly the fixed cost of a Honk proof (74 K to 114 K gates each at about
+  0.9 s); the outer proof's 4.6 M gates are the six recursive verifiers.
+- **Not measured.** Witness generation in Node on their side, `Session` preparation on ours; their EVM
+  variant; their phone numbers.

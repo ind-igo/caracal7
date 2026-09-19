@@ -98,7 +98,10 @@ M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench
 
 A passport is the two proofs sharing one commitment digest: 3.0 s prove, 2.15 MB, 1.3 s verify; the SOD proof
 discloses the MRZ fields and a nullifier per scope. The verify is host-side field arithmetic over the proof;
-its public data is under 1 MB (`docs/public-columns.md`).
+its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
+proved with Barretenberg on the same machine, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s
+recursive outer proof) for a 14.7 KB proof that verifies in 0.09 s and is zero-knowledge; the recipe and the
+per-circuit numbers are in `bench/zkpassport/README.md`.
 The next steps are in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA
