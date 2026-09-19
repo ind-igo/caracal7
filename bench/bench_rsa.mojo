@@ -8,7 +8,6 @@ from max.gpu.host import DeviceContext
 from core.params import Params, CLIENT
 from core.hash import Blake3
 from prover import Prover, load_trace, load_advice, load_public
-from relations import value_bytes
 from relations.statement import advice
 from workloads.bigint import Big
 from workloads.rsa import RSA
@@ -30,15 +29,11 @@ def run[p: Params]() raises:
     var t_trace = (perf_counter_ns() - t0) // 1000000
     var inp = w.public_inputs[p]()
     var data = RSA.public_data[p](c.layout, inp)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     var idx = advice[p](c.layout, trace)
     var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     ctx.synchronize()
     _ = prover.prove(ctx, inp)
     _ = prover.prove(ctx, inp)

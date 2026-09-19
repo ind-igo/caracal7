@@ -128,3 +128,28 @@ the point (`eval_values`, the period's interpolant on <omega2^m> at x2^m). `Publ
 the degree rule, `expand_blocks`, `eval_block`, and the host interpolation helpers are deleted. The
 "factored form" of the sizes table is not needed: the verifier's cost is one product per public value,
 linear in the message. See decisions.md, "Public columns as values".
+
+## Status (2026-09-19): term form
+
+Measured on the passport SOD, the values form was half the verify: 153 columns of 290,304 values, 48.6 MB,
+0.5 s to derive from the public inputs (a per-cell rule with string compares), 0.4 s to interpolate at the
+opening points, and a per-cell check of every group column against its mask. The public columns of a row group
+are structured: a row pattern over the four slots on all chains of the group, or on the live chains, or on one
+chain, and the round constants on the sixteen chain classes of a block. So a column's public data is now a
+**term list**: `PubTerm` is a row vector (h1 F values) and a chain list (indices in the column's period); the
+column is the sum over its terms of row(x1) times [x2 in chains]. `pack_terms` encodes it, marked by a first
+byte `TERMS` (255, which no F value is); a dense period (first byte below 127) is still accepted, so the
+workloads that build dense columns are unchanged.
+
+- **Verifier.** `column_offsets` parses and validates the columns once (bounds, F values, chains below the
+  period) and returns each column's offset; the group checks walk terms (exact: one term of ones on the mask's
+  chains in order; else every chain in the mask). A term column at a point is `eval_terms`: the row against
+  the axis-1 Lagrange values (cached per point) times the sum of the axis-2 Lagrange values over the chains
+  (cached per point and m). The public factor's selector reads a chain through `column_chain`.
+- **Prover.** `load_public` takes the whole public data and tiles either form to H (`tile_values`); the
+  `idft2` and the LDE are as before. Nothing on the device changed.
+- **Producers.** `Layout.selector` and `Layout.mask` are one term each (`mask_chains`); `sha256_group_public`
+  and `rsa_public_data` build terms directly (RSA: one term per distinct value and weight range of the role
+  table). Keccak, SHA-256, Poseidon, mulmod, ECDSA and the synthetic instance stay dense.
+- **Soundness.** Unchanged: the verifier still derives the data from the hashed public inputs and evaluates the
+  same polynomial, the interpolant of a sum of products being the sum of the products' interpolants.

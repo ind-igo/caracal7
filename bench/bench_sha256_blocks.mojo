@@ -10,7 +10,6 @@ from max.gpu.host import DeviceContext
 from core.params import Params, CLIENT
 from core.hash import Blake3
 from prover import Prover, load_trace, load_advice, load_public
-from relations import value_bytes
 from relations.statement import advice
 from workloads.sha256 import Sha256, blocks
 from workload import verify_workload
@@ -33,16 +32,12 @@ def run[p: Params](bytes: Int) raises:
     var trace = w.trace[p](c.layout)
     var inputs = w.public_inputs[p]()
     var data = Sha256.public_data[p](c.layout, inputs)
-    var pub_bytes = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var pub = List[UInt8](capacity=pub_bytes)
-    for i in range(pub_bytes):
-        pub.append(data[i])
     var idx = advice[p](c.layout, trace)
     var t0 = perf_counter_ns()
     var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, pub)
+    load_public[p, Blake3](ctx, prover, data)
     ctx.synchronize()
     var setup = _ms(t0)
     _ = prover.prove(ctx, inputs)          # cold: kernel compilation

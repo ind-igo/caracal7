@@ -29,7 +29,7 @@ from core.field import F2, f_add, f_pow, ext_mul, ext_pow, E_BYTES
 from core.params import Params
 from core.tables import Domains
 from core.bytes import set_u16, get_u16, append_u32
-from relations.ir import Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, group_record, NONE, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
+from relations.ir import PubTerm, pack_terms, Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, group_record, NONE, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
 from core.field import F2, ext_mul, ext_pow
 from core.tables import Domains, f2_primitive, F2_ORDER
 from proof import Shape
@@ -149,29 +149,31 @@ struct Layout(Copyable, Movable):
         return len(self.names)
 
     def selector[p: Params](self, group: String, inner: Bool = False) raises -> List[UInt8]:
-        """The public data of a declared group's selector column (m = 1): 1 on the group's chains, 0 elsewhere;
-        `inner` leaves the group's last chain 0 (the selector of its GATE_2 families)."""
+        """The public data of a declared group's selector column (m = 1, one term): 1 on the group's chains, 0
+        elsewhere; `inner` leaves the group's last chain 0 (the selector of its GATE_2 families)."""
         var shifts: List[Int] = [0]
         if inner:
             shifts.append(1)
         return self.mask[p](group, shifts)
 
     def mask[p: Params](self, group: String, shifts: List[Int]) raises -> List[UInt8]:
-        """The public data of a declared group's mask for `shifts` (m = 1): 1 on the chains y with (y + k) mod h2
-        in the group for every shift k, 0 elsewhere."""
+        """The public data of a declared group's mask for `shifts` (m = 1, one term of ones on `mask_chains`)."""
+        return pack_terms([PubTerm(List[UInt8](length=p.h1(), fill=1), self.mask_chains[p](group, shifts))], p.h1())
+
+    def mask_chains[p: Params](self, group: String, shifts: List[Int]) raises -> List[Int]:
+        """The chains y, ascending, with (y + k) mod h2 in the declared group for every shift k."""
         if group not in self.group_base:
             raise Error("unknown group " + group)
         var base = self.group_base[group]
         var end = base + self.group_chains[group]
-        var v = List[UInt8](length=p.N(), fill=0)
+        var v = List[Int]()
         for x2 in range(base, end):
             var on = True
             for k in shifts:
                 var y = (x2 + k) % p.h2()
                 on = on and y >= base and y < end
             if on:
-                for x1 in range(p.h1()):
-                    v[x2 * p.h1() + x1] = 1
+                v.append(x2)
         return v^
 
 

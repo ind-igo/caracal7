@@ -6,7 +6,7 @@ from max.gpu.host import DeviceContext
 
 from core.params import CLIENT
 from core.hash import Blake3
-from relations import entry, ENTRY, NONE, NO_BASIS
+from relations import entry, ENTRY, NONE, NO_BASIS, tile_values
 from workloads.bigint import Big
 from workloads.rsa import RSA, rsa_statement, rsa_trace, rsa_inputs, rsa_public_data, chain_count
 from workload import prove_workload, verify_workload
@@ -72,7 +72,7 @@ def test_families_hold_and_proof_verifies() raises:
     var w = RSA(2, 2, s, n, m)
     var c = rsa_statement(2, 2).compile[p]()
     var trace = rsa_trace[p](c.layout, 2, 2, s, n, m)
-    var data = rsa_public_data[p](c.layout, rsa_inputs(2, 2, s, n, m))
+    var data = tile_values(c.layout.publics, rsa_public_data[p](c.layout, rsa_inputs(2, 2, s, n, m)), h1, p.h2())
     assert_true(_families_hold(c.families, c.shape.columns_z, c.layout.columns_w(), trace, data) > 200)
     var proof = prove_workload[p, Blake3, RSA](ctx, w)
     assert_true(verify_workload[p, Blake3, RSA](proof.copy(), w, w.public_inputs[p]()))

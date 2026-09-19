@@ -30,7 +30,7 @@ real family list exists; the kernel does not care.
 """
 
 from core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv, E_LEVEL, E_BYTES
-from core.bytes import get_u16, set_u16, list_e
+from core.bytes import get_u16, set_u16, list_e, check_field_bytes
 from core.params import Params
 
 comptime ENTRY = 48
@@ -430,29 +430,113 @@ def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], 
     return r
 
 
-def public_value(publics: Span[UInt8, _], values: Span[UInt8, _], i: Int, x2: Int, x1: Int, h1: Int, h2: Int) -> UInt8:
-    """Public column i at (x1, x2) from the public data (`value_bytes` layout: one period of (h2 / m, h1) values
-    per column in order, x2 major)."""
+comptime TERMS = 0xFF   # first byte of a public column's data in term form (a dense period starts with an F byte)
+
+
+@fieldwise_init
+struct PubTerm(Copyable, Movable):
+    """One term of a public column: `row` (h1 F values) on every chain of `chains` (indices in the column's
+    period), zero elsewhere. A column is the sum of its terms; a chain in two terms adds."""
+    var row: List[UInt8]
+    var chains: List[Int]
+
+
+def pack_terms(terms: List[PubTerm], h1: Int) raises -> List[UInt8]:
+    """A public column in term form: TERMS, u16 term count, then per term the row (h1 values), u16 chain count,
+    u16 chains."""
+    if len(terms) > 65535:
+        raise Error("a public column holds at most 65535 terms")
+    var out: List[UInt8] = [UInt8(TERMS), UInt8(len(terms) & 255), UInt8(len(terms) >> 8)]
+    for t in terms:
+        if len(t.row) != h1:
+            raise Error("a term's row has h1 values")
+        out.extend(t.row.copy())
+        if len(t.chains) > 65535:
+            raise Error("a term lists at most 65535 chains")
+        out.append(UInt8(len(t.chains) & 255))
+        out.append(UInt8(len(t.chains) >> 8))
+        for c in t.chains:
+            if c < 0 or c > 65535:
+                raise Error("term chains are u16")
+            out.append(UInt8(c & 255))
+            out.append(UInt8(c >> 8))
+    return out^
+
+
+def column_offsets(publics: Span[UInt8, _], data: Span[UInt8, _], h1: Int, h2: Int) raises -> List[Int]:
+    """Where each public column's data starts in `data`, and where the columns end (one entry more than
+    columns). A column is one dense period, (h2 / m, h1) F bytes, or a term list (`pack_terms`, marked by
+    TERMS). Validates every byte it indexes: F values below 127, chains below the period, whole records."""
+    var offs = List[Int](capacity=len(publics) // PUB + 1)
     var off = 0
-    for j in range(i):
-        off += h1 * (h2 // get_u16(publics, j * PUB))
+    for i in range(len(publics) // PUB):
+        offs.append(off)
+        var period = h2 // get_u16(publics, i * PUB)
+        if off >= len(data):
+            raise Error("public data ends before its columns")
+        if data[off] != TERMS:
+            if off + period * h1 > len(data):
+                raise Error("public data ends before its columns")
+            check_field_bytes(data[off:off + period * h1])
+            off += period * h1
+            continue
+        if off + 3 > len(data):
+            raise Error("public data ends before its columns")
+        var terms = get_u16(data, off + 1)
+        off += 3
+        for _ in range(terms):
+            if off + h1 + 2 > len(data):
+                raise Error("public data ends before its columns")
+            check_field_bytes(data[off:off + h1])
+            var n = get_u16(data, off + h1)
+            off += h1 + 2
+            if off + 2 * n > len(data):
+                raise Error("public data ends before its columns")
+            for k in range(n):
+                if get_u16(data, off + 2 * k) >= period:
+                    raise Error("a term names a chain past the column's period")
+            off += 2 * n
+    offs.append(off)
+    return offs^
+
+
+def column_chain(publics: Span[UInt8, _], data: Span[UInt8, _], offs: List[Int], i: Int, x2: Int, h1: Int, h2: Int) -> List[UInt8]:
+    """Public column i on chain x2: its h1 values, from `column_offsets`-validated data of either form."""
     var period = h2 // get_u16(publics, i * PUB)
-    return values[off + (x2 % period) * h1 + x1]
+    var c = x2 % period
+    var off = offs[i]
+    var out = List[UInt8](length=h1, fill=0)
+    if data[off] != TERMS:
+        for x1 in range(h1):
+            out[x1] = data[off + c * h1 + x1]
+        return out^
+    var terms = get_u16(data, off + 1)
+    var pos = off + 3
+    for _ in range(terms):
+        var n = get_u16(data, pos + h1)
+        for k in range(n):                       # per occurrence: a chain listed twice adds twice, as in tile_values and eval_terms
+            if get_u16(data, pos + h1 + 2 + 2 * k) == c:
+                for x1 in range(h1):
+                    out[x1] = UInt8((Int(out[x1]) + Int(data[pos + x1])) % 127)
+        pos += h1 + 2 + 2 * n
+    return out^
 
 
 def selector_values[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, publics: Span[UInt8, _], values: Span[UInt8, _],
-                               pub_at: Int, chain: Int) -> List[UInt8]:
+                               pub_at: Int, chain: Int) raises -> List[UInt8]:
     """The `sel` argument of horner_chain_end for accumulator k on `chain`: per ingest entry, h1 values of its
     selector (a public column read as col_b, at the entry's shift) or ones."""
     comptime h1 = p.h1()
+    var offs = column_offsets(publics, values, h1, p.h2())
     var first = get_u16(accs, k * ACC + 2)
     var count = get_u16(accs, k * ACC + 4)
     var out = List[UInt8](length=count * h1, fill=1)
     for i in range(count):
         var en = entry(families, first + i)
         if en.col_b != NONE:
+            var col = column_chain(publics, values, offs, en.col_b - pub_at, chain, h1, p.h2())
             for x1 in range(h1):
-                out[i * h1 + x1] = public_value(publics, values, en.col_b - pub_at, chain, (x1 + en.dj1_b // 2) % h1, h1, p.h2())
+                out[i * h1 + x1] = col[(x1 + en.dj1_b // 2) % h1]
     return out^
 
 
@@ -527,7 +611,7 @@ def residual_at(fam: Span[UInt8, _], alpha: E, chals: Span[UInt8, _], z1: E, z2:
     return acc
 
 
-def _lagrange(n: Int, w: F2, z: E) raises -> List[E]:
+def lagrange(n: Int, w: F2, z: E) raises -> List[E]:
     """L_i(z) for i < n on the cyclic group <w> of order n: (z^n - 1) / n * w^i / (z - w^i), or the
     indicator of i when z is w^i."""
     var out = List[E](capacity=n)
@@ -552,8 +636,8 @@ def eval_values(vals: Span[UInt8, _], off: Int, m: Int, h1: Int, h2: Int, w1: F2
     and the column is a polynomial in (X1, X2^m), so it is the period's interpolant on <w2^m> at x2^m
     (docs/public-columns.md). Barycentric per axis: h1 + h2 / m inversions, then one F x E product per value."""
     var period = h2 // m
-    var l1 = _lagrange(h1, w1, x1)
-    var l2 = _lagrange(period, ext_pow[1](w2, m), ext_pow[E_LEVEL](x2, m))
+    var l1 = lagrange(h1, w1, x1)
+    var l2 = lagrange(period, ext_pow[1](w2, m), ext_pow[E_LEVEL](x2, m))
     var acc = E(0)
     for t2 in range(period):
         var row = E(0)
@@ -573,22 +657,51 @@ def eval_line(coeffs: Span[UInt8, _], off: Int, count: Int, x1: E) -> E:
     return acc
 
 
-def value_bytes(publics: Span[UInt8, _], h1: Int, h2: Int) -> Int:
-    """Host bytes of every public column's period: sum h1 (h2 / m)."""
-    var n = 0
-    for i in range(len(publics) // PUB):
-        n += h1 * (h2 // get_u16(publics, i * PUB))
-    return n
+def eval_terms(data: Span[UInt8, _], off: Int, l1: List[E], l2: List[E]) -> E:
+    """A term-form public column at a point: sum over terms of (row against the axis-1 Lagrange values l1)
+    times (the sum of the axis-2 Lagrange values l2 over the term's chains). One F x E product per row value,
+    one E product per term."""
+    var h1 = len(l1)
+    var terms = get_u16(data, off + 1)
+    var pos = off + 3
+    var acc = E(0)
+    for _ in range(terms):
+        var row = E(0)
+        for x1 in range(h1):
+            var v = data[pos + x1]
+            if v != 0:
+                row = f_add(row, f_mul(l1[x1], E(v)))
+        var n = get_u16(data, pos + h1)
+        pos += h1 + 2
+        var cs = E(0)
+        for k in range(n):
+            cs = f_add(cs, l2[get_u16(data, pos + 2 * k)])
+        pos += 2 * n
+        acc = f_add(acc, ext_mul[E_LEVEL](row, cs))
+    return acc
 
 
-def tile_values(publics: Span[UInt8, _], values: Span[UInt8, _], h1: Int, h2: Int) -> List[UInt8]:
-    """The periods as full (column, x2, x1) value tables on H, the layout `idft2` reads."""
-    var out = List[UInt8](capacity=(len(publics) // PUB) * h2 * h1)
-    var src = 0
+def tile_values(publics: Span[UInt8, _], values: Span[UInt8, _], h1: Int, h2: Int) raises -> List[UInt8]:
+    """The columns as full (column, x2, x1) value tables on H, the layout `idft2` reads, from data of either form."""
+    var offs = column_offsets(publics, values, h1, h2)
+    var out = List[UInt8](length=(len(publics) // PUB) * h2 * h1, fill=0)
     for i in range(len(publics) // PUB):
         var period = h2 // get_u16(publics, i * PUB)
-        for x2 in range(h2):
-            for t in range(h1):
-                out.append(values[src + (x2 % period) * h1 + t])
-        src += period * h1
+        var off = offs[i]
+        var col = i * h2 * h1
+        if values[off] != TERMS:
+            for x2 in range(h2):
+                for t in range(h1):
+                    out[col + x2 * h1 + t] = values[off + (x2 % period) * h1 + t]
+            continue
+        var terms = get_u16(values, off + 1)
+        var pos = off + 3
+        for _ in range(terms):
+            var n = get_u16(values, pos + h1)
+            for k in range(n):
+                var c = get_u16(values, pos + h1 + 2 + 2 * k)
+                for x2 in range(c, h2, period):
+                    for t in range(h1):
+                        out[col + x2 * h1 + t] = UInt8((Int(out[col + x2 * h1 + t]) + Int(values[pos + t])) % 127)
+            pos += h1 + 2 + 2 * n
     return out^

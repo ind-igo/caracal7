@@ -34,7 +34,7 @@ digest_shift = 128 - s0. One accumulator may take the terms of several groups (e
 zero off it): the caller makes the accumulators and wires their slots."""
 
 from core.params import Params
-from relations.ir import CHAL_MUL
+from relations.ir import CHAL_MUL, PubTerm, pack_terms
 from relations.statement import Statement, Layout, Term, Read, BIT, BYTE
 from workloads.sha256 import ROUNDS, WORDS, STATE, SHA_COLUMNS, k_const, iv, rotr, blocks, padded_words, chain_words, column_names, live_chains
 
@@ -371,19 +371,49 @@ def sha256_group_trace[p: Params](layout: Layout, g: ShaGroup, message: List[UIn
                     trace[v * N + row] = trace[u1 * N + row - ROWS]
 
 
+def _slot_rows(qs: Int, z_lo: Int, z_hi: Int) -> List[UInt8]:
+    """A row vector: 1 on the rows of slots q with bit q of `qs` set and z in [z_lo, z_hi), 0 elsewhere."""
+    var v = List[UInt8](length=ROWS, fill=0)
+    for q in range(SLOTS):
+        if (qs >> q) & 1 == 1:
+            for z in range(z_lo, z_hi):
+                v[BASE + SLOT * q + z] = 1
+    return v^
+
+
+def _chains(lo: Int, hi: Int, step: Int = 1) -> List[Int]:
+    var v = List[Int]()
+    for c in range(lo, hi, step):
+        v.append(c)
+    return v^
+
+
+def _nonzero(v: List[UInt8]) -> Bool:
+    for x in v:
+        if x != 0:
+            return True
+    return False
+
+
 def sha256_group_public[p: Params](layout: Layout, g: ShaGroup, message: List[UInt8]) raises -> List[UInt8]:
-    """The public data of the group's public columns in declaration order (N bytes each): the selector, the
-    masks, then `_pubs`. The message's length and padding are public; its bytes are not."""
-    comptime N = p.N()
+    """The public data of the group's public columns in declaration order, each in term form (`pack_terms`):
+    the selector, the masks, then `_pubs`. Every column is a few (row vector, chain list) terms: a row pattern
+    over the four slots on all, the live, or one chain, and the round constants on the sixteen chain classes of
+    a block. The message's length and padding are public; its bytes are not."""
     comptime h2 = p.h2()
+    comptime PER = ROUNDS // SLOTS                      # chains per block
     var base = layout.group_base[g.name]
     var bk = blocks(message)
-    if ROUNDS // SLOTS * bk >= g.chains:
+    if p.h1() != ROWS:
+        raise Error("the group needs " + String(ROWS) + " rows per chain")
+    if PER * bk >= g.chains:
         raise Error("message needs more chains than the group has: 16 per 64-byte block plus one")
     var n = ROUNDS * bk
+    var live = n // SLOTS                               # live chains: t < n on c < live
     var m = padded_words(message)
     var kc = k_const()
     var ivw = iv()
+    var all = _slot_rows(15, 0, SLOT)
     var out = layout.selector[p](g.name)
     for mk in _masks(h2, g.embed >= 0):
         out.extend(layout.mask[p](g.name, mk.shifts))
@@ -394,67 +424,85 @@ def sha256_group_public[p: Params](layout: Layout, g: ShaGroup, message: List[UI
         seg = g.segments()
     for u in _pubs(h2, g.embed >= 0):
         var name = u.name
-        var r = 0
-        for rot in _rots():
-            if name == "ge" + String(rot):
-                r = rot
-        var v = List[UInt8](length=N, fill=0)
-        var mk = layout.mask[p](g.name, u.shifts)          # zero off the mask for the column's shifts (the verifier checks)
-        for c in range(g.chains):
-            for q in range(SLOTS):
-                var t = SLOTS * c + q
-                var live = t < n
-                for z in range(SLOT):
-                    var row = (base + c) * ROWS + BASE + SLOT * q + z
-                    var s = _stream_index(t, z)                # the padded-message bit, -1 off the message rounds
-                    var j = SLOT * q + z                       # the chain's window bit
-                    var ecc = c == seg[2]
-                    var b: UInt8 = 0
-                    if name == "qall":
-                        b = 1
-                    elif name.startswith("ge"):
-                        b = 1 if z >= r else 0
-                    elif name == "nb":
-                        b = 1 if z < SLOT - 1 else 0
-                    elif name == "qlt" or name == "q012":
-                        b = 1 if q < 3 else 0
-                    elif name == "q3a" or name == "q3b":
-                        b = 1 if q == 3 else 0
-                    elif name == "q01":
-                        b = 1 if q < 2 else 0
-                    elif name == "q23":
-                        b = 1 if q >= 2 else 0
-                    elif name == "lv":
-                        b = 1 if live else 0
-                    elif name == "end":
-                        b = 1 if live and t % ROUNDS == ROUNDS - 1 else 0
-                    elif name == "K":
-                        b = UInt8((kc[t % ROUNDS] >> UInt32(31 - z)) & 1) if live else 0
-                    elif name == "s16":
-                        b = 1 if live and t >= 16 and t % ROUNDS < 16 else 0
-                    elif name == "pfix":
-                        b = 1 if s >= 8 * len(message) and s < 512 * bk else 0
-                    elif name == "pv":
-                        b = _stream_bit(m, s) if s >= 8 * len(message) and s < 512 * bk else 0
-                    elif name == "start":
-                        b = 1 if t == 0 else 0
-                    elif name == "iv0" or name == "iv1":
-                        if t == 0:
-                            var k = 4 if name == "iv1" else 0
-                            for i in range(4):
-                                b += UInt8((ivw[k + i] >> UInt32(31 - z)) & 1) << UInt8(i)
-                    elif name == "dsel":
-                        b = 1 if t == n - 1 else 0
-                    elif name == "ea2":
-                        b = 1 if ecc and seg[2] - 2 == seg[0] and j >= seg[3] else 0
-                    elif name == "eav":
-                        b = 1 if ecc and seg[2] - 14 == seg[0] and j >= seg[3] else 0
-                    elif name == "eb1":
-                        b = 1 if ecc and seg[2] - 1 == seg[1] else 0
-                    elif name == "ebu":
-                        b = 1 if ecc and seg[2] - 13 == seg[1] else 0
-                    elif name == "ec":
-                        b = 1 if ecc and j < seg[3] else 0
-                    v[row] = b * mk[row]
-        out.extend(v^)
+        var terms = List[PubTerm]()
+        if name == "qall":
+            terms.append(PubTerm(all.copy(), _chains(0, g.chains)))
+        elif name.startswith("ge"):
+            var r = 0
+            for rot in _rots():
+                if name == "ge" + String(rot):
+                    r = rot
+            terms.append(PubTerm(_slot_rows(15, r, SLOT), _chains(0, g.chains)))
+        elif name == "nb":
+            terms.append(PubTerm(_slot_rows(15, 0, SLOT - 1), _chains(0, g.chains)))
+        elif name == "qlt" or name == "q012":
+            terms.append(PubTerm(_slot_rows(7, 0, SLOT), _chains(0, g.chains)))
+        elif name == "q3a" or name == "q3b":
+            terms.append(PubTerm(_slot_rows(8, 0, SLOT), _chains(0, g.chains)))
+        elif name == "q01":
+            terms.append(PubTerm(_slot_rows(3, 0, SLOT), _chains(0, g.chains)))
+        elif name == "q23":
+            terms.append(PubTerm(_slot_rows(12, 0, SLOT), _chains(0, g.chains)))
+        elif name == "lv":
+            terms.append(PubTerm(all.copy(), _chains(0, live)))
+        elif name == "end":                             # t % 64 == 63: slot 3 of a block's last chain
+            terms.append(PubTerm(_slot_rows(8, 0, SLOT), _chains(PER - 1, live, PER)))
+        elif name == "K":                               # t % 64 = 4 (c % 16) + q: one row pattern per chain class
+            for i in range(PER):
+                var row = List[UInt8](length=ROWS, fill=0)
+                for q in range(SLOTS):
+                    for z in range(SLOT):
+                        row[BASE + SLOT * q + z] = UInt8((kc[SLOTS * i + q] >> UInt32(31 - z)) & 1)
+                terms.append(PubTerm(row^, _chains(i, live, PER)))
+        elif name == "s16":                             # message rounds of every block but the first
+            for c in range(PER, live):
+                if c % PER < 16 // SLOTS:
+                    terms.append(PubTerm(all.copy(), [c]))
+        elif name == "pfix" or name == "pv":           # the padding bits: on the message rounds' chains only
+            for c in range(live):
+                if c % PER >= 16 // SLOTS:
+                    continue
+                var row = List[UInt8](length=ROWS, fill=0)
+                for q in range(SLOTS):
+                    for z in range(SLOT):
+                        var s = _stream_index(SLOTS * c + q, z)
+                        if s >= 8 * len(message) and s < 512 * bk:
+                            row[BASE + SLOT * q + z] = 1 if name == "pfix" else _stream_bit(m, s)
+                if _nonzero(row):
+                    terms.append(PubTerm(row^, [c]))
+        elif name == "start":
+            terms.append(PubTerm(_slot_rows(1, 0, SLOT), [0]))
+        elif name == "iv0" or name == "iv1":
+            var k = 4 if name == "iv1" else 0
+            var row = List[UInt8](length=ROWS, fill=0)
+            for z in range(SLOT):
+                for i in range(4):
+                    row[BASE + z] += UInt8((ivw[k + i] >> UInt32(31 - z)) & 1) << UInt8(i)
+            terms.append(PubTerm(row^, [0]))
+        elif name == "dsel":
+            terms.append(PubTerm(_slot_rows(8, 0, SLOT), [live - 1]))
+        elif name == "ea2" or name == "eav" or name == "ec":
+            var back = 2 if name == "ea2" else 14
+            if name == "ec" or seg[2] - back == seg[0]:
+                var row = List[UInt8](length=ROWS, fill=0)
+                for j in range(STREAM):
+                    if (j >= seg[3]) != (name == "ec"):
+                        row[BASE + j] = 1
+                terms.append(PubTerm(row^, [seg[2]]))
+        elif name == "eb1" or name == "ebu":
+            if seg[2] - (1 if name == "eb1" else 13) == seg[1]:
+                terms.append(PubTerm(all.copy(), [seg[2]]))
+        else:
+            raise Error("no public data rule for " + name)
+        var on = List[Bool](length=h2, fill=False)      # zero off the mask for the column's shifts (the verifier checks)
+        for y in layout.mask_chains[p](g.name, u.shifts):
+            on[y] = True
+        var packed = List[PubTerm]()
+        for t in terms:
+            var cs = List[Int]()
+            for c in t.chains:
+                if on[base + c]:
+                    cs.append(base + c)
+            packed.append(PubTerm(t.row.copy(), cs^))
+        out.extend(pack_terms(packed, ROWS))
     return out^

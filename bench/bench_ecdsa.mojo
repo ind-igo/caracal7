@@ -7,7 +7,6 @@ from max.gpu.host import DeviceContext
 from core.params import Params, CLIENT
 from core.hash import Blake3
 from prover import Prover, load_trace, load_advice, load_public
-from relations import value_bytes
 from relations.statement import advice
 from workloads.bigint import Big
 from workloads.ecdsa import Curve, Ecdsa
@@ -38,10 +37,6 @@ def run[p: Params]() raises:
     t0 = perf_counter_ns()
     var data = Ecdsa.public_data[p](c.layout, inputs)
     var t_public = _ms(t0)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     t0 = perf_counter_ns()
     var idx = advice[p](c.layout, trace)
     var t_advice = _ms(t0)
@@ -51,7 +46,7 @@ def run[p: Params]() raises:
     t0 = perf_counter_ns()
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     ctx.synchronize()
     var t_load = _ms(t0)
     t0 = perf_counter_ns()

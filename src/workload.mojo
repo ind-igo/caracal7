@@ -14,7 +14,7 @@ from core.params import Params
 from core.hash import Hash
 from prover import Prover, load_trace, load_advice, load_public
 from verifier import verify
-from relations import value_bytes, entry, ENTRY, NONE, NO_BASIS
+from relations import entry, ENTRY, NONE, NO_BASIS
 from relations.statement import Statement, Layout, Compiled, advice
 
 
@@ -33,8 +33,8 @@ trait Workload:
 
     @staticmethod
     def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
-        """One period of values per public column ((h2 / m, h1) F bytes), then every restriction line (`restriction_line`), from the
-        public inputs alone."""
+        """Every public column's data (one dense period of (h2 / m, h1) F bytes, or a term list: `pack_terms`), then
+        every restriction line (`restriction_line`), then the public factors' columns, from the public inputs alone."""
         ...
 
 
@@ -53,13 +53,9 @@ def prove_prepared[p: Params, H: Hash, W: Workload](ctx: DeviceContext, mut prov
     var trace = w.trace[p](layout)
     var idx = advice[p](layout, trace)
     var data = W.public_data[p](layout, public)
-    var n_blocks = value_bytes(layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     load_trace[p, H](ctx, prover, trace)
     load_advice[p, H](ctx, prover, idx)
-    load_public[p, H](ctx, prover, blocks)
+    load_public[p, H](ctx, prover, data)
     return prover.prove(ctx, public)
 
 

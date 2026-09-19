@@ -12,7 +12,7 @@ from relations.statement import Statement, Term, Compiled, Layout, BIT, LIMB6, B
 from prover import Prover, load_trace, load_public
 from verifier import verify
 from proof import Shape
-from relations.ir import GRP
+from relations.ir import GRP, column_offsets, column_chain
 
 comptime p = CLIENT.grid(72, 32)
 comptime N = p.N()
@@ -124,10 +124,11 @@ def test_two_groups_pool_columns_and_prove() raises:
     block.extend(L.selector[p]("A", inner=True))
     block.extend(_pa())
     block.extend(L.mask[p]("A", [0, 2]))
-    assert_equal(Int(block[2 * N + (CHAINS_A - 1) * h1]), 0)
-    assert_equal(Int(block[2 * N + (CHAINS_A - 2) * h1]), 1)
-    assert_equal(Int(block[4 * N + (CHAINS_A - 2) * h1]), 0)
-    assert_equal(Int(block[4 * N + (CHAINS_A - 3) * h1]), 1)
+    var offs = column_offsets(L.publics, block, h1, h2)
+    assert_equal(Int(column_chain(L.publics, block, offs, 2, CHAINS_A - 1, h1, h2)[0]), 0)
+    assert_equal(Int(column_chain(L.publics, block, offs, 2, CHAINS_A - 2, h1, h2)[0]), 1)
+    assert_equal(Int(column_chain(L.publics, block, offs, 4, CHAINS_A - 2, h1, h2)[0]), 0)
+    assert_equal(Int(column_chain(L.publics, block, offs, 4, CHAINS_A - 3, h1, h2)[0]), 1)
     var prover = Prover[p, Blake3](ctx, _statement().compile[p]().take_shape(), c.families.copy())
     load_trace[p, Blake3](ctx, prover, trace)
     load_public[p, Blake3](ctx, prover, block)
@@ -140,19 +141,20 @@ def test_two_groups_pool_columns_and_prove() raises:
         public.append(trace[L.col("a0") * N + h1 + x1])
     assert_equal(_verdict(proof, c, public), "accepted")
     var wrong = public.copy()
-    wrong[5 * N + 3] = (wrong[5 * N + 3] + 1) % 127
+    var tail = offs[5]                                   # the factor columns follow the public columns
+    wrong[tail + 3] = (wrong[tail + 3] + 1) % 127
     assert_equal(_verdict(proof, c, wrong), "wiring grand product is not the public factor")
     var erased = public.copy()                           # a selector that is not the chain indicator is refused, not a different statement
-    erased[3 * h1] = 0
+    erased[offs[0] + 3 + 5] = 0                          # a row value of gA's one term
     assert_equal(_verdict(proof, c, erased), "a group selector's public data is not its chain indicator")
-    erased = public.copy()
-    erased[2 * N + (CHAINS_A - 1) * h1] = 1
+    erased = public.copy()                               # gAi's last chain moved onto the group's last chain
+    erased[offs[2] + 3 + h1 + 2 + 2 * (CHAINS_A - 2)] = CHAINS_A - 1
     assert_equal(_verdict(proof, c, erased), "a group selector's public data is not its chain indicator")
-    erased = public.copy()
-    erased[4 * N + (CHAINS_A - 2) * h1] = 1
+    erased = public.copy()                               # the mask's last chain moved past its shift
+    erased[offs[4] + 3 + h1 + 2 + 2 * (CHAINS_A - 3)] = CHAINS_A - 2
     assert_equal(_verdict(proof, c, erased), "a group selector's public data is not its chain indicator")
-    erased = public.copy()                               # a group's public column is zero off the group
-    erased[3 * N + CHAINS_A * h1 + 4] = 1
+    erased = public.copy()                               # a group's public column (dense here) is zero off the group
+    erased[offs[3] + CHAINS_A * h1 + 4] = 1
     assert_equal(_verdict(proof, c, erased), "a group public column's public data is not zero off its group")
     # a B chain that breaks eqB under its selector
     var bad = trace.copy()

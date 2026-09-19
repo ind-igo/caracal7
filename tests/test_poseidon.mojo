@@ -9,7 +9,6 @@ from core.hash import Blake3
 from relations import entry, ENTRY, NONE, NO_BASIS
 from workloads.poseidon import Poseidon, poseidon_m31, poseidon_statement, poseidon_trace, poseidon_public_columns, column_names, ROWS, T, M31
 from prover import Prover, load_trace, load_advice, load_public
-from relations import value_bytes
 from relations.statement import advice
 from workload import prove_workload, verify_workload
 
@@ -139,14 +138,10 @@ def test_wrong_digest_is_rejected() raises:
     var wrong = w.public_inputs[p]()
     wrong[1] ^= 1
     var data = Poseidon.public_data[p](c.layout, wrong)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     var proof = prover.prove(ctx, wrong)
     var ok: Bool
     try:
@@ -174,14 +169,10 @@ def test_wrong_coefficient_is_rejected() raises:
         pubs.append(full^)
     _ = _families_hold[p](c.families, c.shape.columns_z, c.layout.columns_w(), trace, pubs)
     var idx = advice[p](c.layout, trace)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     var proof = prover.prove(ctx, inputs_)
     var ok: Bool
     try:

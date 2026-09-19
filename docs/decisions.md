@@ -2311,3 +2311,62 @@ The notes vault's automatic backups saved the main section 12.3 edits in
 `dd963aa`, `e597a0e`, `82d11d5`, and `c9a8273` while the work was in progress.
 That history was preserved. Vault commit `38bcee0` records the final J3
 ledger-scope note after both reviews and validation.
+
+## E20 linear MCA research comparison (2026-09-19)
+
+Keep the analysis-only improvement separate from a parameter change. The
+[soundness note](soundness.md#e20-linear-mca-research-comparison) now records
+the inputs, formulas, numerators, and proof conditions. Root `AGENTS.md`
+directs later security work to this comparison. README links to it.
+
+The main Hab25 ledger remains the conservative result. The recorded ECDSA
+case gives 87.28 conditional bits there and 102.36 under the linear MCA
+research calculation, with the same 288 queries. The scalar input is
+BCHKS25 Theorem 4.6, pp. 28-29, with M=1, followed by the own affine and
+packed transfers. It is distinct from the old section4 power-curve projection.
+The theorem has a proof sketch; the own proofs need review. P1-P5 remain open.
+
+The separate eta=1/8 experiment gives 106.01 conditional bits and 341 queries.
+The code dimensions, field, tail rate, and grinding budget stay fixed.
+On an Apple M1 Pro with 16 GiB RAM and Mojo 1.0.0 (ed45d567), a temporary
+harness used the existing ECDSA fixture on the 144 x 576 grid. It reused
+`workload.Session`, warmed both settings twice, and measured 20 alternating
+pairs. Prove excludes witness preparation and GPU compilation. Verify includes
+statement compilation and public-data construction. All 40 measured proofs
+verified; the harness built with `mojo build --Werror`.
+
+| Recorded median or size | eta=1/16 | eta=1/8 |
+|---|---:|---:|
+| Warm prove | 294.075 ms | 297.186 ms |
+| Verify | 130.326 ms | 134.3135 ms |
+| Complete proof | 545188 bytes | 599780 bytes |
+
+The proof size rose 10.01%. Timing was noisy: the ratio of prove medians rose
+1.06%, while the median paired ratio fell 0.70%. Thus proof time was roughly
+unchanged in this experiment. The ratio of verify medians rose 3.06%; the
+median paired ratio rose 1.75%. These timings apply only to this fixture and
+machine. They are not a performance prediction for other workloads or E24.
+
+The user accepts a 120-bit target. This is a target for later parameter work,
+not a result of the E20 analysis change. E24 is a separate research proposal;
+its field implementation, compiled ledger, and performance still need checks.
+No protocol code, parameter, or executable ledger charge changes in this note.
+
+## Public columns in term form (2026-09-19, M1 Pro)
+
+`docs/public-columns.md`, "Status (2026-09-19): term form". The SOD verify was 1.98 s, of which the public
+columns cost 0.97 s: 0.52 s to derive 153 dense columns (48.6 MB) from the public inputs, 0.40 s to interpolate
+them at the opening points, 0.05 s to check the group columns per cell. A public column's data is now a list of
+terms (a row vector over h1 times a chain list), summed; the dense period is still accepted, marked apart by
+the first byte (255 is not an F value). The SHA group's columns are a few terms each (the round constants:
+sixteen, one per chain class of a block; the padding: one per message-round chain), the RSA masks one per
+distinct value and weight range of the role table, the selectors and masks one.
+
+- **Measured** (`bench_sod`, `bench_rsa`, warm): SOD public data 48.6 MB -> 823 KB, derived in 17 ms; residual
+  at z 403 -> 5 ms; verify 1.98 -> 1.14 s. RSA verify 1.10 -> 0.59 s. Prove times and proof sizes unchanged
+  (the prover tiles the terms to the same grid values). The verify is now the tail levels (0.61 s of the SOD's),
+  the running claim (0.14 s), the boundaries and the clear vector.
+- **Security unchanged.** The verifier derives the data from the hashed public inputs as before and evaluates
+  the same column polynomial: the interpolant of a sum of products is the sum of the products' interpolants.
+  `column_offsets` validates every byte it indexes before any check reads it; the group checks are the same
+  conditions on terms (an exact selector is one term of ones on exactly the mask's chains).

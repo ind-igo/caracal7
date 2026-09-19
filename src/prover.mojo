@@ -25,7 +25,7 @@ from proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from core.hash import Hash
 from pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, factor_len, TAIL_F4
 from pcs import DOM_BYTES, ROUND_ROWS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
-from relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, value_bytes, tile_values
+from relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, tile_values
 from relations.statement import Compiled
 from relations import AccLayout, accumulate, horner, wiring, derive_chals, counting_sort, merge_tables
 from relations import lde, residual, quotient, quotient_elems, k_values_to_trace
@@ -640,13 +640,9 @@ def load_advice[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H]
 
 
 def load_public[p: Params, H: Hash](ctx: DeviceContext, mut prover: Prover[p, H], values: Span[UInt8, _]) raises:
-    """Upload the public columns: one period of (h2 / m, h1) F values per column in order (docs/public-columns.md),
-    tiled to H and transformed to the coefficients the LDE reads with the trace's `idft2` (ltmp as scratch)."""
-    if len(values) != value_bytes(prover.shape.publics, p.h1(), p.h2()):
-        raise Error("public values have the wrong size")
-    for v in values:
-        if v >= 127:
-            raise Error("public values are F bytes below 127")
+    """Upload the public columns: the public data's columns in order, each a dense period or a term list
+    (docs/public-columns.md; bytes past the columns are ignored), tiled to H and transformed to the coefficients
+    the LDE reads with the trace's `idft2` (ltmp as scratch)."""
     ref L = prover.layout
     _upload(ctx, prover.arena, L.lde.pub_vals, tile_values(prover.shape.publics, values, p.h1(), p.h2()))
     if prover.shape.columns_p > 0:

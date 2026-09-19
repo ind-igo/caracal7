@@ -25,7 +25,7 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from core.params import Params, domain_for, query_count
 from core.arena import Arena
-from relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index, value_bytes
+from relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index
 from core.hash import Hash
 from core.tables import F2_ORDER, Domains, f2_primitive
 from core.field import ext_mul, ext_pow
@@ -383,10 +383,10 @@ struct Shape(Writable):
                 m = max(m, self.table_rows(k))
         return m
 
-    def public_bytes[p: Params](self) -> Int:
-        """Host bytes of the public data both sides derive: the column periods, the restriction polynomials, then
+    def tail_bytes[p: Params](self) -> Int:
+        """Host bytes of the public data after the columns (ir.column_offsets): the restriction polynomials, then
         the public factors' ingest columns."""
-        var n = value_bytes(self.publics, p.h1(), p.h2())
+        var n = 0
         for i in range(len(self.restrictions) // RES):
             n += (Int(self.restrictions[i * RES + 4]) | Int(self.restrictions[i * RES + 5]) << 8) * 2
         for i in range(len(self.pubf) // PUBF):

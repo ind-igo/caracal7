@@ -47,7 +47,7 @@ from std.memory import unsafe_memcpy
 from std.builtin.sort import sort
 from max.algorithm import parallelize
 from core.params import Params
-from relations.ir import FIX_E
+from relations.ir import FIX_E, PubTerm, pack_terms
 from relations.statement import Statement, Layout, Term, BIT
 from workloads.bigint import Big
 from workloads.mulmod import ROWS, Q, PIECES, PIECE, SLOTS, BITS, UP, VALUE, FOLDED, WIDTH, MUL, OpValues, product_columns, product_certificate, plain_fingerprint, _row, _cols, _put, _columns, _mul_chain
@@ -663,9 +663,9 @@ def rsa_inputs(limbs: Int, muls: Int, s: Big, n: Big, m: Big) raises -> List[UIn
 
 
 def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 0, m_wired: Bool = False) raises -> List[UInt8]:
-    """The public columns in declaration order (N bytes each, x2 major), then the factors' ingest columns
+    """The public columns in declaration order, each in term form (`pack_terms`: one term per distinct
+    (value, weight range) of `_mask_range` over the live chains), then the factors' ingest columns
     (`rsa_build`'s base and m_wired)."""
-    comptime N = p.N()
     if len(inputs) < 2:
         raise Error("public inputs start with limbs and muls")
     var limbs = Int(inputs[0])
@@ -681,29 +681,51 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 
         vals.append(limbs_of(Big.from_bytes(bytes), limbs))
     var cells = _cells(limbs, muls)
     var names = _mask_names(cells)
-    var data = List[UInt8](capacity=(len(names) + 3 * Q) * N)
+    var data = List[UInt8]()
     for name in names:
-        for x2 in range(p.h2()):
-            var live = x2 >= base and x2 < base + len(cells)
-            var r = _mask_range(cells[x2 - base], limbs, name) if live else (0, 0, 0)
-            for x1 in range(ROWS):
-                data.append(UInt8(r[0]) if _weight_rows(r[1], r[2], x1) else UInt8(0))
+        var keys = Dict[Int, Int]()
+        var terms = List[PubTerm]()
+        for x2 in range(len(cells)):
+            var r = _mask_range(cells[x2], limbs, name)
+            if r[0] == 0:
+                continue
+            var key = (r[0] * 1024 + r[1]) * 1024 + r[2]
+            if key not in keys:
+                keys[key] = len(terms)
+                var row = List[UInt8](length=ROWS, fill=0)
+                for x1 in range(ROWS):
+                    if _weight_rows(r[1], r[2], x1):
+                        row[x1] = UInt8(r[0])
+                terms.append(PubTerm(row^, List[Int]()))
+            terms[keys[key]].chains.append(base + x2)
+        data.extend(pack_terms(terms, ROWS))
     for name in ["kc", "k4", "kt"]:
         for j in range(Q):
-            for x2 in range(p.h2()):
-                var live = x2 >= base and x2 < base + len(cells)
-                for x1 in range(ROWS):
-                    var b = False
-                    if live and cells[x2 - base].block == 0 and cells[x2 - base].head >= 0:
-                        var pp = cells[x2 - base].head
-                        var four = x1 == _row(2) and j == 2 % Q
-                        if name == "kc":
-                            b = (x1 == _row(BIAS) and j == BIAS % Q) or (pp == 0 and four)
-                        elif name == "k4":
-                            b = four
-                        else:
-                            b = pp == 2 * limbs - 1 and four
-                    data.append(UInt8(1) if b else UInt8(0))
+            var keys = Dict[Int, Int]()
+            var terms = List[PubTerm]()
+            for x2 in range(len(cells)):
+                if cells[x2].block != 0 or cells[x2].head < 0:
+                    continue
+                var pp = cells[x2].head
+                var four = j == 2 % Q
+                var bias = name == "kc" and j == BIAS % Q
+                if name == "kc":
+                    four = four and pp == 0
+                elif name == "kt":
+                    four = four and pp == 2 * limbs - 1
+                var key = (2 if bias else 0) + (1 if four else 0)
+                if key == 0:
+                    continue
+                if key not in keys:
+                    keys[key] = len(terms)
+                    var row = List[UInt8](length=ROWS, fill=0)
+                    if bias:
+                        row[_row(BIAS)] = 1
+                    if four:
+                        row[_row(2)] = 1
+                    terms.append(PubTerm(row^, List[Int]()))
+                terms[keys[key]].chains.append(base + x2)
+            data.extend(pack_terms(terms, ROWS))
     for f in _factors(limbs, muls, m_wired):
         data.extend(_columns(vals[f[2]][f[3]].bits(FOLDED), f[1] == SLOT_HA))
     return data^

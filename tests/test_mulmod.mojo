@@ -14,7 +14,6 @@ from relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_c
 from workloads.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
 from workloads.bigint import Big
 from prover import Prover, load_trace, load_public
-from relations import value_bytes
 from verifier import verify
 from workload import prove_workload, verify_workload
 
@@ -186,12 +185,9 @@ def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros:
     var shape = mulmod_statement(zeros, circuit).compile[p]().take_shape()
     var cc = mulmod_statement(zeros, circuit).compile[p]()
     var data = Mulmod.public_data[p](cc.layout, claim)
-    var blocks = List[UInt8]()
-    for i in range(value_bytes(cc.layout.publics, p.h1(), p.h2())):
-        blocks.append(data[i])
     var prover = Prover[p, Blake3](ctx, c^.take_shape(), cc.families.copy())
     load_trace[p, Blake3](ctx, prover, trace)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     var proof = prover.prove(ctx, claim)
     try:
         _ = verify[p, Blake3](proof^, shape, claim, cc.families, data)
@@ -329,11 +325,8 @@ def test_add_sub_canon_circuit() raises:
     var prover = Prover[p, Blake3](ctx, cs^.take_shape(), mulmod_statement(True, check).compile[p]().families.copy())
     var ca = mulmod_statement(True, check).compile[p]()
     var swapped_data = Mulmod.public_data[p](ca.layout, swapped)
-    var blocks = List[UInt8]()
-    for i in range(value_bytes(ca.layout.publics, p.h1(), p.h2())):
-        blocks.append(swapped_data[i])
     load_trace[p, Blake3](ctx, prover, circuit_trace[p](c.layout, vals, check))
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, swapped_data)
     var swapped_proof = prover.prove(ctx, swapped)
     with assert_raises(contains="pinned"):
         _ = verify[p, Blake3](swapped_proof^, shape, swapped, ca.families, swapped_data)

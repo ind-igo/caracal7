@@ -28,6 +28,10 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
+The [E20 linear MCA research comparison](docs/soundness.md#e20-linear-mca-research-comparison)
+gives 102.36 conditional bits for the same ECDSA protocol and parameters, subject
+to the stated proof conditions. The executable ledger still charges Hab25.
+
 ## Statements
 
 Every statement implements the `Workload` trait in `workload.mojo` (public inputs, trace, public data) and is proved by `prove_workload`. Each has a test under `tests/` and a bench under `bench/`.
@@ -80,14 +84,15 @@ The csp-benchmarks harness is `csp-rust/`, a Criterion crate over the prover's C
 
 ### RSA-2048 and the passport SOD
 
-M1 Pro, warm prove, proof verified, 2026-09-18 (`bench/bench_rsa.mojo`, `bench/bench_sod.mojo`, grid 144 x 2016):
+M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo`, `bench/bench_sod.mojo`, grid 144 x 2016):
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
-| RSA-2048 verify | 1888 | 586 | 1100 | 627,000 |
-| passport SOD (3 x SHA-256 + RSA-2048) | 1987 | 1724 | 2100 | 1,030,000 |
+| RSA-2048 verify | 1888 | 586 | 594 | 627,000 |
+| passport SOD (3 x SHA-256 + RSA-2048) | 1987 | 1724 | 1135 | 1,030,000 |
 
-About half of each verify is public-data derivation. The next steps are in `docs/passport.md`.
+The verify is host-side field arithmetic over the proof; its public data is under 1 MB (`docs/public-columns.md`).
+The next steps are in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA
 

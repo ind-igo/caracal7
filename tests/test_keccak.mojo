@@ -8,7 +8,6 @@ from core.params import CLIENT, Params
 from core.hash import Blake3
 from workloads.keccak import Keccak, keccak256, keccak_statement, keccak_trace, keccak_public_values, chain_words, digest_words, rc, KECCAK_COLUMNS, ABSORB, LANES, ROUNDS
 from prover import Prover, load_trace, load_advice, load_public
-from relations import value_bytes
 from relations.statement import advice
 from workload import prove_workload, verify_workload, check_families
 
@@ -84,14 +83,10 @@ def test_wrong_digest_is_rejected() raises:
     var wrong = w.public_inputs[p]()
     wrong[len(wrong) - 1] ^= 1
     var data = Keccak.public_data[p](c.layout, wrong)
-    var n_blocks = value_bytes(c.layout.publics, p.h1(), p.h2())
-    var blocks = List[UInt8](capacity=n_blocks)
-    for i in range(n_blocks):
-        blocks.append(data[i])
     var prover = Prover[p, Blake3](ctx, c^)
     load_trace[p, Blake3](ctx, prover, trace)
     load_advice[p, Blake3](ctx, prover, idx)
-    load_public[p, Blake3](ctx, prover, blocks)
+    load_public[p, Blake3](ctx, prover, data)
     var proof = prover.prove(ctx, wrong)
     var ok: Bool
     try:

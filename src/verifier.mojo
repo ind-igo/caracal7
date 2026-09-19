@@ -21,7 +21,7 @@ from core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_emb
 from core.tables import Domains, RsDomain, f2_primitive
 from pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_line, value_bytes
+from relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_terms, eval_line, lagrange, column_offsets, TERMS
 from core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -33,7 +33,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     then the polynomial of every restriction; the verifier never hashes it.
     ponytail: soundness rests on the caller deriving `public` from `public_inputs` (which the prefix hashes);
     nothing here checks that. The statement builder is where the derivation becomes code on both sides."""
-    _check_statement[p](shape, families, public_inputs, public)
+    var offs = _check_statement[p](shape, families, public_inputs, public)
     var r = ProofReader(proof_bytes^)
     var t = HostTranscript[p, H]()
     var tv = perf_counter_ns()
@@ -87,9 +87,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     _vmark(profile, "boundaries", tv)
     _small_grid[p](shape, openings, z2v, q3, alpha, stage1, wchal, z2, d)
     _vmark(profile, "small grid", tv)
-    _residual[p](shape, families, openings, public, alpha, stage1, z1, z2, d)
+    _residual[p](shape, families, openings, public, offs, alpha, stage1, z1, z2, d)
     _vmark(profile, "residual at z", tv)
-    _restrictions[p](shape, openings, public, z1)
+    _restrictions[p](shape, openings, public, offs, z1)
     _vmark(profile, "restrictions", tv)
 
     # step 7: the tail in tensor form, one committed level at a time, then the clear vector
@@ -109,9 +109,10 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], mut c: Compiled, pu
     return verify[p, H](proof_bytes^, c.shape, public_inputs, c.families, public, profile)
 
 
-def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inputs: Span[UInt8, _], public: List[UInt8]) raises:
+def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inputs: Span[UInt8, _], public: List[UInt8]) raises -> List[Int]:
     """Shape validated its own family table; bind this one to the opening list and the challenge count
-    before any index is used, and the public inputs to the statement's pinned bytes."""
+    before any index is used, and the public inputs to the statement's pinned bytes. Returns where each public
+    column's data starts (ir.column_offsets), the data validated."""
     if len(families) != shape.entries * ENTRY:
         raise Error("family table does not match the shape")
     if len(public_inputs) < len(shape.pinned) or public_inputs[0:len(shape.pinned)] != Span(shape.pinned):
@@ -123,16 +124,18 @@ def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inpu
     for k in range(shape.entries):
         if entry(families, k).chal > shape.chal_count():
             raise Error("family table names a challenge element past the shape's derivation table")
-    if len(public) != shape.public_bytes[p]():
+    var offs = column_offsets(shape.publics, public, p.h1(), p.h2())
+    if len(public) - offs[shape.columns_p] != shape.tail_bytes[p]():
         raise Error("public data has the wrong size")
-    check_field_bytes(public)
+    check_field_bytes(public[offs[shape.columns_p]:])
     for off in group_offsets(shape.groups):          # a group's public columns live on the group's mask, not an input
         var c = get_u16(shape.groups, off + 4)
         var exact = shape.groups[off + 6] == 1
-        var start = 0                                 # the column's offset once, not per cell (`public_value` sums per call)
-        for j in range(c):
-            start += p.h1() * (p.h2() // get_u16(shape.publics, j * PUB))
+        var start = offs[c]
         var period = p.h2() // get_u16(shape.publics, c * PUB)
+        if public[start] == TERMS:
+            _check_group_terms[p](shape, off, exact, public, start)
+            continue
         for x2 in range(p.h2()):
             var want = group_mask(shape.groups, off, x2, p.h2())
             if not exact and want:
@@ -143,6 +146,37 @@ def _check_statement[p: Params](shape: Shape, families: List[UInt8], public_inpu
                     raise Error("a group selector's public data is not its chain indicator")
                 if not exact and v != 0:
                     raise Error("a group public column's public data is not zero off its group")
+    return offs^
+
+
+def _check_group_terms[p: Params](shape: Shape, off: Int, exact: Bool, public: List[UInt8], start: Int) raises:
+    """A group public column in term form: exact means one term, a row of ones, the mask's chains in order;
+    else every term's chains lie in the mask."""
+    comptime h1 = p.h1()
+    var terms = get_u16(public, start + 1)
+    var pos = start + 3
+    if exact:
+        if terms != 1:
+            raise Error("a group selector's public data is not its chain indicator")
+        for x1 in range(h1):
+            if public[pos + x1] != 1:
+                raise Error("a group selector's public data is not its chain indicator")
+        var n = get_u16(public, pos + h1)
+        var k = 0
+        for x2 in range(p.h2()):
+            if group_mask(shape.groups, off, x2, p.h2()):
+                if k >= n or get_u16(public, pos + h1 + 2 + 2 * k) != x2:
+                    raise Error("a group selector's public data is not its chain indicator")
+                k += 1
+        if k != n:
+            raise Error("a group selector's public data is not its chain indicator")
+        return
+    for _ in range(terms):
+        var n = get_u16(public, pos + h1)
+        for k in range(n):
+            if not group_mask(shape.groups, off, get_u16(public, pos + h1 + 2 + 2 * k), p.h2()):
+                raise Error("a group public column's public data is not zero off its group")
+        pos += h1 + 2 + 2 * n
 
 
 def _one() -> E:
@@ -211,7 +245,7 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
             var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
             lhs = ext_mul[E_LEVEL](lhs, f_add(wg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
             rhs = ext_mul[E_LEVEL](rhs, f_add(wg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](sg))))
-    var off = shape.public_bytes[p]()
+    var off = len(public)                                     # the factors' columns end the public data
     for i in range(len(shape.pubf) // PUBF):
         off -= shape.factor_bytes[p](i)
     for i in range(len(shape.pubf) // PUBF):
@@ -294,11 +328,11 @@ def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
         raise Error("small grid identity fails at z2")
 
 
-def _residual[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], public: List[UInt8], alpha: E,
+def _residual[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], public: List[UInt8], offs: List[Int], alpha: E,
                          stage1: List[UInt8], z1: E, z2: E, d: Domains) raises:
     """Step 5: the residual identity at z from the openings, R(z) = (A + z2^h2 B)(z1^h1 - 1) + Q2 (z2^h2 - 1)."""
     var one = _one()
-    var preads = _PublicReads[p](shape, public, shape.point_list, z1, z2, d)
+    var preads = _PublicReads[p](shape, public, offs, shape.point_list, z1, z2, d)
     var reads = List[E]()
     for k in range(shape.entries):
         var en = entry(families, k)
@@ -315,9 +349,9 @@ def _residual[p: Params](shape: Shape, families: List[UInt8], openings: List[UIn
         raise Error("residual identity fails at z")
 
 
-def _restrictions[p: Params](shape: Shape, openings: List[UInt8], public: List[UInt8], z1: E) raises:
+def _restrictions[p: Params](shape: Shape, openings: List[UInt8], public: List[UInt8], offs: List[Int], z1: E) raises:
     """Restrictions (docs/public-columns.md): the opening of the column on its line equals the public polynomial at z1."""
-    var res_off = value_bytes(shape.publics, p.h1(), p.h2())
+    var res_off = offs[shape.columns_p]
     for i in range(len(shape.restrictions) // RES):
         var col = get_u16(shape.restrictions, i * RES)
         var coord = get_u16(shape.restrictions, i * RES + 2)
@@ -568,13 +602,16 @@ def _opening[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, colu
 
 
 struct _PublicReads[p: Params]:
-    """Reads for residual_at: an opening for a committed column, the values interpolated at the point for a
-    public column (index at or past columns_w + columns_z), cached per (column, point)."""
+    """Reads for residual_at: an opening for a committed column, the public data evaluated at the point for a
+    public column (index at or past columns_w + columns_z), cached per (column, point). A term-form column
+    costs one product per row value and per chain against the point's Lagrange values, cached per point (axis 1)
+    and per (point, m) (axis 2); a dense period is interpolated in full (`eval_values`)."""
     var base: Int               # columns_w + columns_z: the first public index
     var columns: Int            # shape.columns(), the openings stride
     var points: Int
     var publics: List[UInt8]
     var public: List[UInt8]
+    var offs: List[Int]
     var pts: List[UInt8]
     var z1: E
     var z2: E
@@ -584,13 +621,16 @@ struct _PublicReads[p: Params]:
     var w2: F2
     var cache: List[E]
     var valid: List[Bool]
+    var l1: Dict[Int, List[E]]  # axis-1 Lagrange values per point
+    var l2: Dict[Int, List[E]]  # axis-2 Lagrange values on the period per (point, m)
 
-    def __init__(out self, shape: Shape, public: List[UInt8], pts: List[UInt8], z1: E, z2: E, d: Domains):
+    def __init__(out self, shape: Shape, public: List[UInt8], offs: List[Int], pts: List[UInt8], z1: E, z2: E, d: Domains):
         self.base = shape.columns_w + shape.columns_z
         self.columns = shape.columns()
         self.points = shape.points
         self.publics = shape.publics.copy()
         self.public = public.copy()
+        self.offs = offs.copy()
         self.pts = pts.copy()
         self.z1 = z1
         self.z2 = z2
@@ -600,6 +640,8 @@ struct _PublicReads[p: Params]:
         self.w2 = d.omega2
         self.cache = List[E](length=shape.columns_p * shape.points, fill=E(0))
         self.valid = List[Bool](length=shape.columns_p * shape.points, fill=False)
+        self.l1 = Dict[Int, List[E]]()
+        self.l2 = Dict[Int, List[E]]()
 
     def read(mut self, openings: Span[UInt8, _], point: Int, column: Int) raises -> E:
         if column < self.base:
@@ -607,12 +649,19 @@ struct _PublicReads[p: Params]:
         var i = column - self.base
         var slot = i * self.points + point
         if not self.valid[slot]:
-            var off = 0
-            for j in range(i):
-                off += Self.p.h1() * (Self.p.h2() // get_u16(self.publics, j * PUB))
+            var off = self.offs[i]
+            var m = get_u16(self.publics, i * PUB)
             var x1 = point_coord(self.z1, get_u16(self.pts, point * 4), self.g1, Self.p.h1())
             var x2 = point_coord(self.z2, get_u16(self.pts, point * 4 + 2), self.g2, Self.p.h2())
-            self.cache[slot] = eval_values(self.public, off, get_u16(self.publics, i * PUB), Self.p.h1(), Self.p.h2(), self.w1, self.w2, x1, x2)
+            if self.public[off] != TERMS:
+                self.cache[slot] = eval_values(self.public, off, m, Self.p.h1(), Self.p.h2(), self.w1, self.w2, x1, x2)
+            else:
+                if point not in self.l1:
+                    self.l1[point] = lagrange(Self.p.h1(), self.w1, x1)
+                var key = point * 65536 + m
+                if key not in self.l2:
+                    self.l2[key] = lagrange(Self.p.h2() // m, ext_pow[1](self.w2, m), ext_pow[E_LEVEL](x2, m))
+                self.cache[slot] = eval_terms(self.public, off, self.l1[point], self.l2[key])
             self.valid[slot] = True
         return self.cache[slot]
 
