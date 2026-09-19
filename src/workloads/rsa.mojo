@@ -10,30 +10,35 @@ The product r = a_i b_j < 2^512 of a chain splits into lo (weights below 256) an
 of chain (i, j) is
 
     t = cont lo(t of (i + 1, j - 1)) + hi(t of (i - 1, j)) + hi(r of (i - 1, j)) + w lo(r of (i, j))
+        + hi(t of (i, j - 1)) + hi(r of (i, j - 1))      on a rectangle's top row (hi2)
 
 Along the anti-diagonal i + j = p the lo halves of t carry the running sum of position p, each chain's hi
 (below 8, since t < 2^259) is passed to position p + 1 on the chain (i + 1, j), and the head of the
-diagonal (the chain of least i) holds limb p of the block's total in lo(t). Limb 2 limbs - 1 is a tail
-chain without a product that holds the hi of the last diagonal (`bu` bounds a tail's t below 2^256, so no
-hi is lost there: the triangle's tail is A^2 / 2^(256 (2 limbs - 1)) minus the lower limbs, below 2^256;
-a rectangle's interior tail (limbs, j) is the hi of a column sum of at most limbs products plus a carry,
-which descends below 2^256 the same way). The ripple is an exact integer identity with signed 4-bit carries and a zero row on the
-idle row's carry.
+diagonal (the chain of least i) holds limb p of the block's total in lo(t). The top row i = limbs - 1 has
+no chain above it: its hi goes to the next column's top chain (i, j + 1) as a second read (`hi2`, the same
+weights), and the hi of the corner (limbs - 1, limbs - 1) is limb 2 limbs - 1, the top of the product,
+below 2^256. An AB block holds that limb on a tail chain without a product (the compare lane needs a chain
+per limb); a QN block has no tail: the AB head of limb 2 limbs - 1 reads the QN corner's hi(t) + hi(r) by
+stride (`qt{k}`, `qr{k}`) in place of a wired lo(t). The ripple is an exact integer identity with signed
+4-bit carries and a zero row on the idle row's carry.
 
-Two geometries. The rectangle (QN, and AB of the last modmul, a b with b = s): (limbs + 1) x limbs chains,
-chain (i, j) at y = (limbs + 1)(limbs - 1 - j) + (limbs - i) with the tails at i = limbs, so the reads are
-at the strides limbs (the diagonal) and 1 (the chain below). The triangle (AB of a squaring, a = b: every
+Two geometries. The rectangle (QN, and AB of the last modmul, a b with b = s): the tail first if any, then
+the columns j from the top with i descending, so the reads are at the strides limbs - 1 (the diagonal), 1
+(the chain below) and limbs (the column to the left, top row). The triangle (AB of a squaring, a = b: every
 modmul but the last): the products a_i a_j for i <= j only, w = 2 off the diagonal (and the hi of an
 off-diagonal r counts twice too); one tail chain, then the diagonals p = 2 limbs - 2 down to 0, each with
 i ascending from its head; the square (i, i) passes its hi to (i, i + 1), the last chain of the next
-diagonal. limbs (limbs + 1) / 2 + 1 chains instead of limbs (limbs + 1): 37 for 72 at 2048 bits.
+diagonal. limbs (limbs + 1) / 2 + 1 chains for a triangle, limbs^2 (+ 1 with the tail) for a rectangle: 37,
+65 and 64 at 2048 bits; 1745 per verify (decisions.md "RSA rectangles without tails").
 
 The compare lane on the AB heads: u_p = lo(t_ab) + K_p + hi(u_(p-1)) - lo(t_qn) - r_p with K_0 = 2^258 + 4
 and K_p = 2^258 after, lo(t_qn) wired from the QN head (the cy accumulator ingests cy on the AB heads and
-lo(t) under `qh` on the QN heads: one slot for both ends), r_p a hint (slot cz, zero above limb
+lo(t) under `qh` on the QN heads: one slot for both ends; on the last head the QN corner's hi(t) + hi(r)
+by stride, and cy is zero there), r_p a hint (slot cz, zero above limb
 limbs - 1 by `zm`) and the carry read from the previous head (the `mp{k}` masks). The families force
 lo(u_p) = 4 on every head and hi(u) = 4 on the last one, which telescopes to
-sum_p (lo(t_ab) - lo(t_qn) - r_p) 2^(256 p) = 0, so a b = q n + r as integers. u stays below 2^259 for any
+sum_p (lo(t_ab) - qn_p - r_p) 2^(256 p) = 0 with qn_p the wired lo(t_qn), or the corner's hi(t) + hi(r) on
+the last head, so a b = q n + r as integers. u stays below 2^259 for any
 witness (the bias exceeds the two subtracted limbs), so it is a bit vector. r is bound below 2^(256 limbs),
 not below n: the statement proves s^e = m (mod n) for the public m, which a verifier supplies canonical.
 
@@ -77,18 +82,23 @@ struct _Cell(Copyable, Movable):
     var lo: Int         # the weight of lo(r) in the sum lane: 2 off a triangle's diagonal, 0 on a tail
     var cont: Int       # lo(t) of the next chain on the diagonal
     var hi: Int         # hi(t) and hi(r) of the chain below, (i - 1, j)
-    var rw: Int         # the weight of that hi(r): 2 on a triangle
+    var hi2: Int        # hi(t) and hi(r) of the column top to the left, (i, j - 1): a rectangle's top row
+    var rw: Int         # the weight of those hi(r): 2 on a triangle
     var sq: Int         # hi(t) and hi(r) of a square (i, i), into (i, i + 1) or the tail
     var head: Int       # the limb this chain heads, -1 none
     var prev: Int       # the previous head (the compare carry); AB heads past 0
+    var qtop: Int       # AB head 2 limbs - 1: the QN chain (limbs - 1, limbs - 1), whose hi(t) + hi(r) is limb 2 limbs - 1 of q n
 
 
-def _rect(limbs: Int) -> List[Tuple[Int, Int]]:
-    """(i, j) per chain of a rectangle block, i = limbs the tails."""
-    var v = List[Tuple[Int, Int]](length=limbs * (limbs + 1), fill=(0, 0))
-    for j in range(limbs):
-        for i in range(limbs + 1):
-            v[(limbs + 1) * (limbs - 1 - j) + (limbs - i)] = (i, j)
+def _rect(limbs: Int, tail: Bool) -> List[Tuple[Int, Int]]:
+    """(i, j) per chain of a rectangle block: the tail (limbs, limbs - 1) if `tail`, then the columns j from
+    the top with i descending."""
+    var v = List[Tuple[Int, Int]]()
+    if tail:
+        v.append((limbs, limbs - 1))
+    for j in range(limbs - 1, -1, -1):
+        for i in range(limbs - 1, -1, -1):
+            v.append((i, j))
     return v^
 
 
@@ -110,7 +120,9 @@ def _stride(at: Dict[Int, Int], limbs: Int, y: Int, i: Int, j: Int) raises -> In
 
 
 def _block_cells(m: Int, block: Int, limbs: Int, square: Bool) raises -> List[_Cell]:
-    var ij = _triangle(limbs) if square else _rect(limbs)
+    """The cells of one block: a triangle (AB of a squaring), an AB rectangle with its tail, or a QN rectangle
+    without one (its top limb is read by the AB head, `qtop`)."""
+    var ij = _triangle(limbs) if square else _rect(limbs, block == 0)
     var at = Dict[Int, Int]()                 # (i, j) -> y
     for y in range(len(ij)):
         at[ij[y][0] * (limbs + 1) + ij[y][1]] = y
@@ -125,6 +137,7 @@ def _block_cells(m: Int, block: Int, limbs: Int, square: Bool) raises -> List[_C
         var lo = 0 if tail else (2 if square and i < j else 1)
         var cont = 0
         var hi = 0
+        var hi2 = 0
         var sq = 0
         if square:
             if not tail and i < p // 2:
@@ -134,15 +147,17 @@ def _block_cells(m: Int, block: Int, limbs: Int, square: Bool) raises -> List[_C
             if tail or (p % 2 == 1 and i == p // 2):
                 sq = _stride(at, limbs, y, limbs - 1 if tail else i, limbs - 1 if tail else i)
         else:
-            if not tail and j >= 1:
+            if i < limbs - 1 and j >= 1:
                 cont = _stride(at, limbs, y, i + 1, j - 1)
             if i >= 1:
                 hi = _stride(at, limbs, y, i - 1, j)
+            if i == limbs - 1 and j >= 1:
+                hi2 = _stride(at, limbs, y, i, j - 1)
         var head = -1
         if (square and (tail or i == max(0, p - limbs + 1))) or (not square and (i == 0 or j == limbs - 1)):
             head = 2 * limbs - 1 if tail else p
             heads[head] = y
-        v.append(_Cell(m, block, i, j, not tail, lo, cont, hi, 2 if square else 1, sq, head, 0))
+        v.append(_Cell(m, block, i, j, not tail, lo, cont, hi, hi2, 2 if square else 1, sq, head, 0, 0))
     for y in range(len(v)):
         var h = v[y].head
         if block == 0 and h >= 1:
@@ -156,17 +171,23 @@ def _cells(limbs: Int, muls: Int) raises -> List[_Cell]:
     """Every chain of the verify in order: per modmul the AB block (a triangle but for the last modmul), then QN."""
     var v = List[_Cell]()
     for m in range(muls):
+        var ab = len(v)
         v.extend(_block_cells(m, 0, limbs, m < muls - 1))
+        var qn = len(v)
         v.extend(_block_cells(m, 1, limbs, False))
+        for x in range(qn, len(v)):
+            if v[x].i == limbs - 1 and v[x].j == limbs - 1:
+                v[ab].qtop = x - ab                      # the AB block starts with its tail, head 2 limbs - 1
     return v^
 
 
 def chain_count(limbs: Int, muls: Int) raises -> Int:
-    return (muls - 1) * (limbs * (limbs + 1) // 2 + 1) + (muls + 1) * limbs * (limbs + 1)
+    return (muls - 1) * (limbs * (limbs + 1) // 2 + 1) + limbs * limbs + 1 + muls * limbs * limbs
 
 
 def _heads(cells: List[_Cell], m: Int, block: Int) -> List[Int]:
-    """The chain (from the base) heading each limb of block `block` of modmul m."""
+    """The chain (from the base) heading each limb of block `block` of modmul m: 2 limbs entries for an AB
+    block, 2 limbs - 1 for a QN block (its top limb is the corner's hi, read by the AB head, not a chain)."""
     var limbs = 0
     for x in range(len(cells)):
         if cells[x].m == m and cells[x].block == block:
@@ -192,22 +213,26 @@ def _add_unique(mut l: List[Int], s: Int):
     l.append(s)
 
 
-def _strides(cells: List[_Cell]) -> Tuple[List[Int], List[Int], List[Int], List[Int]]:
-    """The distinct strides in use: (cont, hi, sq, prev), each ascending."""
+def _strides(cells: List[_Cell]) -> Tuple[List[Int], List[Int], List[Int], List[Int], List[Int]]:
+    """The distinct strides in use: (cont, hi and hi2, sq, prev, qtop), each ascending."""
     var cont = List[Int]()
     var hi = List[Int]()
     var sq = List[Int]()
     var prev = List[Int]()
+    var qtop = List[Int]()
     for c in cells:
         _add_unique(cont, c.cont)
         _add_unique(hi, c.hi)
+        _add_unique(hi, c.hi2)
         _add_unique(sq, c.sq)
         _add_unique(prev, c.prev)
+        _add_unique(qtop, c.qtop)
     sort(cont)
     sort(hi)
     sort(sq)
     sort(prev)
-    return (cont^, hi^, sq^, prev^)
+    sort(qtop)
+    return (cont^, hi^, sq^, prev^, qtop^)
 
 
 def _num(name: String) -> Int:
@@ -233,6 +258,9 @@ def _mask_names(cells: List[_Cell]) -> List[String]:
     v.append("ch")
     for k in st[3]:
         v.append("mp" + String(k))
+    for k in st[4]:
+        v.append("qt" + String(k))
+        v.append("qr" + String(k))
     v.extend(["mt", "zm", "ym", "um", "qh"])
     return v^
 
@@ -264,17 +292,24 @@ def _mask_range(c: _Cell, limbs: Int, name: String) -> Tuple[Int, Int, Int]:
     elif name.startswith("cl"):
         v = 1 if c.cont == _num(name) else 0
     elif name.startswith("hm"):
-        v = 1 if c.hi == _num(name) else 0
+        v = 1 if c.hi == _num(name) or c.hi2 == _num(name) else 0
         hi = Q
     elif name.startswith("rm"):
-        v = c.rw if c.hi == _num(name) else 0
+        v = c.rw if c.hi == _num(name) or c.hi2 == _num(name) else 0
     elif name.startswith("sq"):
         v = 1 if c.sq == _num(name) else 0
-    elif name == "ch" or name == "ym":
+    elif name == "ch":
         v = 1 if head else 0
+    elif name == "ym":
+        v = 1 if head and c.qtop == 0 else 0     # head 2 limbs - 1 reads the QN top by stride, no cy
     elif name.startswith("mp"):
         v = 1 if head and c.prev == _num(name) else 0
         hi = Q
+    elif name.startswith("qt"):
+        v = 1 if c.qtop == _num(name) else 0
+        hi = Q
+    elif name.startswith("qr"):
+        v = 1 if c.qtop == _num(name) else 0
     elif name == "mt":
         v = 1 if head and c.head == 2 * limbs - 1 else 0
         hi = Q
@@ -365,7 +400,7 @@ def _wires(limbs: Int, muls: Int, s_wired: Bool = False) raises -> List[Tuple[In
                 else:
                     first[c.i] = x
         first.clear()
-        for p in range(2 * limbs):
+        for p in range(len(qn)):
             v.append((SLOT_CY, ab[p], SLOT_CY, qn[p]))
         prev = ab.copy()
     return v^
@@ -458,6 +493,9 @@ def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: 
                              Term(1, st.read("kc" + String(j)))]
         for k in strides[3]:
             t.append(Term(1, st.read("u" + String(j), k1=UP, k2=k), st.read("mp" + String(k))))
+        for k in strides[4]:
+            t.append(Term(-1, st.read("t" + String(j), k1=UP, k2=k), st.read("qt" + String(k))))
+            t.append(Term(-1, st.read("r" + String(j), k1=UP, k2=k), st.read("qr" + String(k))))
         t.append(Term(-1, st.read("cy" + String(j))))
         t.append(Term(-1, st.read("cz" + String(j))))
         cmp_terms.append(t^)
@@ -534,6 +572,8 @@ def _modmul_chains(cells: List[_Cell], m: Int, limbs: Int, a: List[Big], b: List
             t = t + _lo(v.t[x + c.cont])
         if c.hi > 0:
             t = t + _hi(v.t[x + c.hi]) + _hi(v.r[x + c.hi]) * Big(c.rw)
+        if c.hi2 > 0:
+            t = t + _hi(v.t[x + c.hi2]) + _hi(v.r[x + c.hi2]) * Big(c.rw)
         if c.sq > 0:
             t = t + _hi(v.t[x + c.sq]) + _hi(v.r[x + c.sq])
         if t.bit_length() > (TBITS if c.product else LIMB):
@@ -544,9 +584,12 @@ def _modmul_chains(cells: List[_Cell], m: Int, limbs: Int, a: List[Big], b: List
     var carry = Big(4)
     for p in range(2 * limbs):
         var x = ab[p] - x0
-        v.cy[x] = _lo(v.t[qn[p] - x0])
+        var qtop = cells[ab[p]].qtop
+        var sub = _hi(v.t[x + qtop]) + _hi(v.r[x + qtop]) if qtop > 0 else _lo(v.t[qn[p] - x0])   # limb p of q n
+        if qtop == 0:
+            v.cy[x] = sub.copy()
         v.cz[x] = r[p].copy() if p < limbs else Big()
-        var u = _lo(v.t[x]) + Big(1).shl(BIAS) + carry - v.cy[x] - v.cz[x]
+        var u = _lo(v.t[x]) + Big(1).shl(BIAS) + carry - sub - v.cz[x]
         if u.neg or _lo(u) != Big(4):
             raise Error("compare lane does not close at limb " + String(p))
         carry = _hi(u)
@@ -649,6 +692,9 @@ def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, 
             if c.hi > 0:
                 _add_bits(pile, v.t[x + c.hi], 1, LIMB, Q)
                 _add_bits(pile, v.r[x + c.hi], c.rw, LIMB, LIMB)
+            if c.hi2 > 0:
+                _add_bits(pile, v.t[x + c.hi2], 1, LIMB, Q)
+                _add_bits(pile, v.r[x + c.hi2], c.rw, LIMB, LIMB)
             if c.sq > 0:
                 _add_bits(pile, v.t[x + c.sq], 1, LIMB, Q)
                 _add_bits(pile, v.r[x + c.sq], 1, LIMB, LIMB)
@@ -665,6 +711,9 @@ def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, 
                     cp[2] += 1
                 else:
                     _add_bits(cp, v.u[x + c.prev], 1, LIMB, Q)
+                if c.qtop > 0:
+                    _add_bits(cp, v.t[x + c.qtop], -1, LIMB, Q)
+                    _add_bits(cp, v.r[x + c.qtop], -1, LIMB, LIMB)
                 _add_bits(cp, v.cy[x], -1, 0, LIMB)
                 _add_bits(cp, v.cz[x], -1, 0, LIMB)
                 _lane_carries[p](chain, cuc, cp, v.u[x].bits(BIAS + 1))

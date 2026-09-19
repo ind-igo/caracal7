@@ -2516,3 +2516,44 @@ the benches prove the passport sizes. The prefix now binds sigma and the public 
 digest, as it already did the lookup tables: the DSC prefix is 2,791 bytes, the SOD's 4,377, and the slot
 count no longer meets the prefix region either. Tests: builder, prover, RSA, accumulate, small grid,
 SOD, DSC, CSCA pass; the SOD and DSC benches prove and verify at 144 x 2688.
+
+## RSA rectangles without tails (2026-09-20, M1 Pro)
+
+`workloads/rsa.mojo`. The passport in one proof is about 4200 chains at real sizes and the largest grid with
+accumulators is 4032, so the RSA lane (1888 chains per verify, 89 percent of the passport) had to lose 5
+percent. The question was whether that needs Karatsuba; the answer is no, the rectangle's tail chains were
+the slack.
+
+- **What the tails were.** A rectangle block (q n of every modmul, a b of the last) was (limbs + 1) x limbs
+  chains: the chain (limbs, j) held hi(t) + hi(r) of the column top (limbs - 1, j) and passed it to the next
+  column's top (limbs - 1, j + 1) through its lo(t) on the `cont` stride, because every chain had one hi
+  read and one cont read. That was a uniformity device from the rectangle's first version; the triangle's
+  per-stride masks (the squaring symmetry entry) make a second hi read one more mask, not a new lane.
+- **Now.** The top row reads hi(t) and hi(r) of the column to its left directly (`hi2`, stride limbs,
+  the existing hm/rm masks), so a rectangle is limbs^2 product chains; the QN block drops its top tail
+  too, and the AB head of limb 2 limbs - 1 subtracts the QN corner's hi(t) + hi(r) by a forward stride
+  read (`qt{k}`, `qr{k}`, strides 37 and 65 at eight limbs) in place of a wired lo(t) (cy is zero there).
+  The AB rectangle of the last modmul keeps its top tail: the compare lane lives on a chain per limb.
+  Per verify 16 x 37 + 65 + 17 x 64 = 1745 chains for 1888; the SOD is 1958 chains, the DSC 2003 with the
+  bench fixture's body, the one-proof passport about 3900 on 4032.
+- **Karatsuba, assessed and deferred.** One level on the q n block (three 4 x 4 rectangles for one 8 x 8)
+  would save 16 chains per modmul on top of this, 272 per verify. The wire budget that rejected it is
+  gone (ids in F4), but the recombination is real work: the sums q_k + q_(k+4) have to be bound (an idle
+  u-lane ripple on a middle-block chain with cy and cz as wired copies), the signed recombination needs a
+  bias and about ten stride masks on the middle block's heads, the 257-bit limbs widen the hi(r) reads,
+  the compare lane's bias changes. Not needed for the fold; docs/passport.md item 4 keeps the design.
+- **Measured** (A/B back to back on the same grids, 2688 for the SOD and DSC, 2016 for the RSA verify):
+  prove and verify unchanged within noise (the idle chains cost what the tails did); the proof grows 15 to
+  20 KB, about 1.5 percent, from the new shift points (the point list is 72 entries for 64: `hi2` at
+  (UP, 8), the corner reads at (UP, 37) and (UP, 65)). Keeping the QN top tail would save two of those
+  points for 17 chains per verify; the chains are the constrained resource for the fold, so the corner
+  read stays. The SOD fits the 2016 grid now: 1.28 s prove for 1.83, the same proof size, 1.1 s verify for
+  0.67 (103 queries at rate 0.225 for 80 at 0.15); the bench stays on 2688, verify time being the
+  passport's weaker number. No legal grid lies between 1344 and 2016 (a <= 7), so the RSA verify alone
+  stays on 2016.
+- **Reviewed.** Codex (asked for a second opinion before the change) preferred this over Karatsuba,
+  corrected the strides (limbs - 1 for cont, limbs for the second hi read) and modelled the geometry for
+  1 to 255 limbs; its diff review found a stale sum equation. Opus modelled 1 to 16 limbs through
+  `_mask_range` and the family terms: every read forward, the identity telescopes to a b = q n + r, every
+  weight of the corner's t and r is read (no lost carry), the bias margin holds on the last head; no code
+  defects, stale numbers in the README and passport doc. Tests: RSA, SOD, DSC pass.

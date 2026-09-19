@@ -92,11 +92,11 @@ M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
-| RSA-2048 verify | 1888 | 586 | 594 | 627,000 |
-| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 2101 | 1672 | 562 | 1,108,000 |
-| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2146 | 1377 | 718 | 1,042,000 |
+| RSA-2048 verify | 1745 | 634 | 630 | 642,000 |
+| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 1830 | 670 | 1,123,000 |
+| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 1490 | 740 | 1,064,000 |
 
-A passport is the two proofs sharing one commitment digest: 3.0 s prove, 2.15 MB, 1.3 s verify; the SOD proof
+A passport is the two proofs sharing one commitment digest: 3.3 s prove, 2.2 MB, 1.4 s verify; the SOD proof
 discloses the MRZ fields and a nullifier per scope. The verify is host-side field arithmetic over the proof;
 its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
 proved with Barretenberg on the same machine, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s

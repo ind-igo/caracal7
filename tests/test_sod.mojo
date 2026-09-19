@@ -78,7 +78,7 @@ def test_sod_verifies_and_wires_hold() raises:
     var embeds: List[Int] = [EMBED_1, EMBED_2]
     var r = _message(R_HEX)
     var scope = _message(SCOPE_HEX)
-    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + sha_chains(commitment_length(2)) + sha_chains(NULL_LENGTH) + chain_count(2, 2), 171)
+    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + sha_chains(commitment_length(2)) + sha_chains(NULL_LENGTH) + chain_count(2, 2), 166)
     var w = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), msgs.copy(), r.copy())
     var inputs = w.public_inputs[p]()
     var proof = prove_workload[p, Blake3, SOD](ctx, w)

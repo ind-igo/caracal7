@@ -1,4 +1,4 @@
-"""One RSA-2048 verify (e = 65537: 17 modmuls, 1888 chains) on the 144 x 2016 grid, workloads/rsa.mojo. The
+"""One RSA-2048 verify (e = 65537: 17 modmuls, 1745 chains) on the 144 x 2016 grid, workloads/rsa.mojo. The
 key and signature come from OpenSSL (genrsa 2048; dgst -sha256 -sign; m is the PKCS#1 v1.5 encoding of the
 digest, checked as pow(s, e, n) in Python). Warm prove, proof size, verify."""
 

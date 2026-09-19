@@ -1,5 +1,5 @@
-"""RSA verify on the product chain (workloads/rsa.mojo): a 512-bit instance (2 limbs, e = 3, 22 chains: a triangle of 4 and two rectangles of 6) on
-a 48-chain grid, so half the chains are idle. Every bit family holds on the trace, the proof verifies, a wrong m is refused on both sides."""
+"""RSA verify on the product chain (workloads/rsa.mojo): a 512-bit instance (2 limbs, e = 3, 17 chains: a triangle of 4, an AB rectangle of 5 and two QN rectangles of 4) on
+a 48-chain grid, so most chains are idle. Every bit family holds on the trace, the proof verifies, a wrong m is refused on both sides."""
 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
@@ -68,7 +68,7 @@ def test_families_hold_and_proof_verifies() raises:
     var n = _n()
     var s = _s().mod(n)
     var m = s.mulmod(s, n).mulmod(s, n)
-    assert_equal(chain_count(2, 2), 22)
+    assert_equal(chain_count(2, 2), 17)
     var w = RSA(2, 2, s, n, m)
     var c = rsa_statement(2, 2).compile[p]()
     var trace = rsa_trace[p](c.layout, 2, 2, s, n, m)

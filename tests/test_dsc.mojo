@@ -74,7 +74,7 @@ def test_dsc_verifies_and_wires_hold() raises:
     nb.reverse()
     for i in range(64):
         assert_equal(tbs[N_OFFSET + i], nb[i])
-    assert_equal(sha_chains(len(tbs)) + sha_chains(commitment_length(2)) + chain_count(2, 2), 88)
+    assert_equal(sha_chains(len(tbs)) + sha_chains(commitment_length(2)) + chain_count(2, 2), 83)
     var w = DSC(2, 2, s, n_csca, m, len(tbs), N_OFFSET, tbs.copy(), n_dsc, r.copy())
     var inputs = w.public_inputs[p]()
     var proof = prove_workload[p, Blake3, DSC](ctx, w)
