@@ -23,15 +23,17 @@ the same columns; what changes is the geometry:
 Fingerprints (the wires): the digest is an..hn of slot 3 on the last live chain; a Horner accumulator with
 scale zeta ingesting them there (`dsel`) with coefficient zeta^(32 (7 - i) + digest_shift) holds
 zeta^digest_shift times sum_k H_k zeta^k (H the digest as a 256-bit integer), the fingerprint mulmod's
-`plain_fingerprint` gives a 256-bit value (digest_shift = 0 wires it to RSA's message limb). A digest
-embedded in this group's message at byte offset `embed` spans up to three message chains cA, cB, cC (a
-block's message words sit on its first four chains, so the next message chain is one or 13 chains on; s0 =
-8 embed mod 128 bits into cA); transport columns t1 = w one chain up, t2 = t1 one chain up, u1 = w 13 chains
-up, v = u1 one chain up bring the three segments onto chain cC, where the `embedded` terms ingest them with
-coefficients zeta^256 (cA's rows >= s0: t2 or v), zeta^128 (cB: t1 or u1) and 1 (w, rows < s0), the public
-masks picking the transport: the fingerprint times zeta^(128 - s0), so the producer's group takes
-digest_shift = 128 - s0. One accumulator may take the terms of several groups (each group's selector is
-zero off it): the caller makes the accumulators and wires their slots."""
+`plain_fingerprint` gives a 256-bit value (digest_shift = 0 wires it to RSA's message limb). A 32-byte window
+of this group's message at byte offset `embed` spans up to three message chains cA, cB, cC (a block's
+message words sit on its first four chains, so the next message chain is one or 13 chains on; s0 = 8 embed
+mod 128 bits into cA); transport columns t1 = w one chain up, t2 = t1 one chain up, u1 = w 13 chains up, v =
+u1 one chain up bring the first two segments onto chain cC, and wd = w read 128 - s0 rows up (cyclic in the
+chain, so w's rows move down) puts cC's own s0 bits on the chain's last rows, where the `embedded` terms ingest them with
+coefficients zeta^(128 + s0) (cA's rows >= s0: t2 or v), zeta^s0 (cB: t1 or u1) and 1 (wd on the rows
+143 - s0 .. 142), the public masks picking the transport: the plain fingerprint of the window's value, wired
+to a digest (digest_shift = 0) or to a limb. A group's windows share s0 (one wd family). One accumulator may
+take the terms of several groups (each group's selector is zero off it): the caller makes the accumulators
+and wires their slots."""
 
 from core.params import Params
 from relations.ir import CHAL_MUL, PubTerm, pack_terms
@@ -106,24 +108,25 @@ struct ShaGroup(Copyable, Movable):
     var name: String
     var base: Int               # the group's first chain
     var chains: Int
-    var embed: Int              # byte offset of an embedded digest in the message, -1 none
+    var embeds: List[Int]       # byte offsets of the embedded 32-byte windows in the message
     var digest: List[Term]      # ingest terms (Horner, scale zeta) of the digest fingerprint times zeta^digest_shift, on the last live chain
-    var embedded: List[Term]    # ingest terms of the embedded digest's fingerprint times zeta^(128 - s0), on chain `embed_chain`
+    var embedded: List[Term]    # ingest terms of every window's plain fingerprint, each on its `embed_chain`
 
     def digest_chain(self, message: List[UInt8]) -> Int:
         """The group chain holding the digest (slot 3)."""
         return ROUNDS // SLOTS * blocks(message) - 1
 
-    def segments(self) -> Tuple[Int, Int, Int, Int]:
-        """(cA, cB, cC, s0) of the embedded digest: its first chain, the next two message chains, and its
-        bit offset into cA's 128-bit window."""
-        var w0 = 8 * self.embed // SLOT
+    def segments(self, k: Int = 0) -> Tuple[Int, Int, Int, Int]:
+        """(cA, cB, cC, s0) of window k: its first chain, the next two message chains, and its bit offset
+        into cA's 128-bit window."""
+        var w0 = 8 * self.embeds[k] // SLOT
         var ca = _chain_of_word(w0)
         var cb = _next_message_chain(ca)
-        return (ca, cb, _next_message_chain(cb), 8 * self.embed % STREAM)
+        return (ca, cb, _next_message_chain(cb), 8 * self.embeds[k] % STREAM)
 
-    def embed_chain(self) -> Int:
-        return self.segments()[2]
+    def embed_chain(self, k: Int = 0) -> Int:
+        """The chain whose `embedded` terms ingest window k."""
+        return self.segments(k)[2]
 
 
 def _chain_of_word(w: Int) -> Int:
@@ -164,7 +167,7 @@ def _pubs(h2: Int, embed: Bool) -> List[_Pub]:
     v.append(_Pub("iv1", [0]))
     v.append(_Pub("dsel", [0]))
     if embed:
-        for n in ["ea2", "eav", "eb1", "ebu", "ec"]:
+        for n in ["ea2", "eav", "eb1", "ebu", "ed"]:
             v.append(_Pub(n, [0]))
     return v^
 
@@ -197,23 +200,36 @@ def _sum(mut st: Statement, P: String, result: String, var terms: List[Term], ca
     st.family(P + "=" + result, terms^)
 
 
-def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Zeta, digest_shift: Int, embed: Int = -1) raises -> ShaGroup:
+def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Zeta, digest_shift: Int, embeds: List[Int] = List[Int]()) raises -> ShaGroup:
     """Declare group `g` of `chains` chains (more than 16 per block of the longest message: the last chain is
     idle) with its columns, public columns and families; the columns are named g.name. Returns the ingest
-    terms for the caller's accumulators."""
+    terms for the caller's accumulators. `embeds` are the byte offsets of 32-byte windows of the message
+    whose plain fingerprints the `embedded` terms ingest, each on its own chain: the windows are congruent
+    mod 16 (one bit offset s0 for the group) and ingest on distinct chains (32 bytes apart is enough)."""
     if chains < 2 or chains > h2 or h2 < 16:
         raise Error("a SHA-256 group has 2 to h2 chains: " + g)
-    var pre = ShaGroup(g, 0, chains, embed, List[Term](), List[Term]())
-    if embed >= 0 and pre.embed_chain() >= chains:
-        raise Error("the embedded digest's third chain lies outside the group: " + g)
+    var pre = ShaGroup(g, 0, chains, embeds.copy(), List[Term](), List[Term]())
+    var embed = len(embeds) > 0
+    var s0 = pre.segments(0)[3] if embed else 0
+    for k in range(len(embeds)):
+        if embeds[k] < 0 or pre.embed_chain(k) >= chains:
+            raise Error("an embedded window's third chain lies outside the group: " + g)
+        var seg = pre.segments(k)
+        if (seg[2] - seg[0] != 2 and seg[2] - seg[0] != 14) or (seg[2] - seg[1] != 1 and seg[2] - seg[1] != 13):
+            raise Error("a window's segments are not on the transports' chains: " + g)      # the public data picks t2 or v, t1 or u1
+        if seg[3] != s0:
+            raise Error("a group's embedded windows share their bit offset: " + g)
+        for l in range(k):
+            if pre.embed_chain(l) == pre.embed_chain(k):
+                raise Error("two embedded windows ingest on one chain: " + g)
     if st.chains_declared() + chains + 15 > h2:          # masks wrap mod h2: a read 15 chains up from the group's first chains must land off the group
         raise Error("a SHA-256 group ends at least 15 chains before the grid's end: " + g)
     var P = g + "."
     st.pub(P + "sel", 1)
     var base = st.group(g, chains, P + "sel")
-    for m in _masks(h2, embed >= 0):
+    for m in _masks(h2, embed):
         st.mask(g, P + m.name, m.shifts)
-    for u in _pubs(h2, embed >= 0):
+    for u in _pubs(h2, embed):
         st.pub(P + u.name, 1, group=g, shifts=u.shifts)
     for n in column_names():
         st.col(P + n, BIT, group=g)
@@ -222,8 +238,8 @@ def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Z
         helpers.append(h.name)
     for i in range(WORDS):
         helpers.append("bx" + String(STATE[byte=i]))
-    if embed >= 0:
-        helpers.extend(["t1", "t2", "u1", "v"])
+    if embed:
+        helpers.extend(["t1", "t2", "u1", "v", "wd"])
     for n in helpers:
         st.col(P + n, BYTE, group=g)
     # the schedule's shifted words: one helper per read, placed by slot
@@ -296,17 +312,18 @@ def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Z
     for i in range(WORDS):
         digest.append(Term(1, Read(P + String(STATE[byte=i]) + "n", 0, 0), Read(P + "dsel", 0, 0), chal=zeta.power(st, SLOT * (WORDS - 1 - i) + digest_shift)))
     var embedded = List[Term]()
-    if embed >= 0:
+    if embed:
         st.family(P + "=t1", [Term(1, Read(P + "t1", 0, 0)), Term(-1, Read(P + "w", 0, h2 - 1))])
         st.family(P + "=t2", [Term(1, Read(P + "t2", 0, 0)), Term(-1, Read(P + "t1", 0, h2 - 1))])
         st.family(P + "=u1", [Term(1, Read(P + "u1", 0, 0)), Term(-1, Read(P + "w", 0, h2 - 13))])
         st.family(P + "=v", [Term(1, Read(P + "v", 0, 0)), Term(-1, Read(P + "u1", 0, h2 - 1))])
-        embedded.append(Term(1, Read(P + "t2", 0, 0), Read(P + "ea2", 0, 0), chal=zeta.power(st, 2 * STREAM)))
-        embedded.append(Term(1, Read(P + "v", 0, 0), Read(P + "eav", 0, 0), chal=zeta.power(st, 2 * STREAM)))
-        embedded.append(Term(1, Read(P + "t1", 0, 0), Read(P + "eb1", 0, 0), chal=zeta.power(st, STREAM)))
-        embedded.append(Term(1, Read(P + "u1", 0, 0), Read(P + "ebu", 0, 0), chal=zeta.power(st, STREAM)))
-        embedded.append(Term(1, Read(P + "w", 0, 0), Read(P + "ec", 0, 0)))
-    return ShaGroup(g, base, chains, embed, digest^, embedded^)
+        st.family(P + "=wd", [Term(1, Read(P + "wd", 0, 0)), Term(-1, Read(P + "w", (ROWS - (STREAM - s0)) % ROWS, 0))])
+        embedded.append(Term(1, Read(P + "t2", 0, 0), Read(P + "ea2", 0, 0), chal=zeta.power(st, STREAM + s0)))
+        embedded.append(Term(1, Read(P + "v", 0, 0), Read(P + "eav", 0, 0), chal=zeta.power(st, STREAM + s0)))
+        embedded.append(Term(1, Read(P + "t1", 0, 0), Read(P + "eb1", 0, 0), chal=zeta.power(st, s0)))
+        embedded.append(Term(1, Read(P + "u1", 0, 0), Read(P + "ebu", 0, 0), chal=zeta.power(st, s0)))
+        embedded.append(Term(1, Read(P + "wd", 0, 0), Read(P + "ed", 0, 0)))
+    return ShaGroup(g, base, chains, embeds.copy(), digest^, embedded^)
 
 
 # ---- host ----
@@ -353,15 +370,20 @@ def sha256_group_trace[p: Params](layout: Layout, g: ShaGroup, message: List[UIn
         if t < n and t % ROUNDS == ROUNDS - 1:
             for i in range(WORDS):
                 _put(trace, N, layout.col(P + "bx" + String(STATE[byte=i])), chain, q, words[(t - 63) * SHA_COLUMNS + i])
-    if g.embed >= 0:
+    if len(g.embeds) > 0:
         var w = layout.col(P + "w")
         var t1 = layout.col(P + "t1")
         var t2 = layout.col(P + "t2")
         var u1 = layout.col(P + "u1")
         var v = layout.col(P + "v")
-        for c in range(1, g.chains):
+        var wd = layout.col(P + "wd")
+        var d = STREAM - g.segments(0)[3]
+        for c in range(g.chains):
             for x1 in range(ROWS):
                 var row = (base + c) * ROWS + x1
+                trace[wd * N + row] = trace[w * N + (base + c) * ROWS + (x1 + ROWS - d) % ROWS]
+                if c == 0:
+                    continue
                 trace[t1 * N + row] = trace[w * N + row - ROWS]
                 if c > 1:
                     trace[t2 * N + row] = trace[t1 * N + row - ROWS]
@@ -415,14 +437,12 @@ def sha256_group_public[p: Params](layout: Layout, g: ShaGroup, message: List[UI
     var ivw = iv()
     var all = _slot_rows(15, 0, SLOT)
     var out = layout.selector[p](g.name)
-    for mk in _masks(h2, g.embed >= 0):
+    for mk in _masks(h2, len(g.embeds) > 0):
         out.extend(layout.mask[p](g.name, mk.shifts))
-    var seg = (0, 0, -1, 0)
-    if g.embed >= 0:
-        if g.embed + 32 > len(message):
-            raise Error("the embedded digest lies outside the message")
-        seg = g.segments()
-    for u in _pubs(h2, g.embed >= 0):
+    for k in range(len(g.embeds)):
+        if g.embeds[k] + 32 > len(message):
+            raise Error("an embedded window lies outside the message")
+    for u in _pubs(h2, len(g.embeds) > 0):
         var name = u.name
         var terms = List[PubTerm]()
         if name == "qall":
@@ -481,17 +501,25 @@ def sha256_group_public[p: Params](layout: Layout, g: ShaGroup, message: List[UI
             terms.append(PubTerm(row^, [0]))
         elif name == "dsel":
             terms.append(PubTerm(_slot_rows(8, 0, SLOT), [live - 1]))
-        elif name == "ea2" or name == "eav" or name == "ec":
+        elif name == "ea2" or name == "eav" or name == "ed":     # cA's rows >= s0 through t2 or v; cC's s0 bits on the last rows through wd
             var back = 2 if name == "ea2" else 14
-            if name == "ec" or seg[2] - back == seg[0]:
-                var row = List[UInt8](length=ROWS, fill=0)
-                for j in range(STREAM):
-                    if (j >= seg[3]) != (name == "ec"):
-                        row[BASE + j] = 1
-                terms.append(PubTerm(row^, [seg[2]]))
+            for k in range(len(g.embeds)):
+                var seg = g.segments(k)
+                if name == "ed" or seg[2] - back == seg[0]:
+                    var row = List[UInt8](length=ROWS, fill=0)
+                    for j in range(STREAM):
+                        if name == "ed":
+                            if j >= STREAM - seg[3]:
+                                row[BASE + j] = 1
+                        elif j >= seg[3]:
+                            row[BASE + j] = 1
+                    if _nonzero(row):
+                        terms.append(PubTerm(row^, [seg[2]]))
         elif name == "eb1" or name == "ebu":
-            if seg[2] - (1 if name == "eb1" else 13) == seg[1]:
-                terms.append(PubTerm(all.copy(), [seg[2]]))
+            for k in range(len(g.embeds)):
+                var seg = g.segments(k)
+                if seg[2] - (1 if name == "eb1" else 13) == seg[1]:
+                    terms.append(PubTerm(all.copy(), [seg[2]]))
         else:
             raise Error("no public data rule for " + name)
         var on = List[Bool](length=h2, fill=False)      # zero off the mask for the column's shifts (the verifier checks)
@@ -506,3 +534,13 @@ def sha256_group_public[p: Params](layout: Layout, g: ShaGroup, message: List[UI
             packed.append(PubTerm(t.row.copy(), cs^))
         out.extend(pack_terms(packed, ROWS))
     return out^
+
+
+def sha256_digest_factor(entry: Int, entries: Int, digest: List[UInt8]) -> List[UInt8]:
+    """The public factor's columns for a digest on an accumulator of `entries` ingest terms whose eight digest
+    terms (`ShaGroup.digest`, shift 0) start at `entry`: ROWS bytes per entry, the digest words on slot 3."""
+    var v = List[UInt8](length=entries * ROWS, fill=0)
+    for i in range(WORDS):
+        for z in range(SLOT):
+            v[(entry + i) * ROWS + BASE + 3 * SLOT + z] = (digest[4 * i + z // 8] >> UInt8(7 - z % 8)) & 1
+    return v^

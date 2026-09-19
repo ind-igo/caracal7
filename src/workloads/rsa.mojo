@@ -296,20 +296,21 @@ def _weight_rows(lo: Int, hi: Int, x1: Int) -> Bool:
     return w >= lo and w < hi
 
 
-def _factors(limbs: Int, muls: Int, m_wired: Bool = False) raises -> List[Tuple[Int, Int, Int, Int]]:
+def _factors(limbs: Int, muls: Int, m_wired: Bool = False, s_wired: Bool = False, n_wired: Bool = False) raises -> List[Tuple[Int, Int, Int, Int]]:
     """(chain, slot, source, limb) of every public factor in statement order; `m_wired` leaves limb 0 of m to
-    a wire the caller adds (`m_chain`)."""
+    a wire the caller adds (`m_chain`), `s_wired` leaves s a witness (its occurrences wired to each other),
+    `n_wired` leaves n's limbs to wires the caller adds on the rb slot (`n_chains`)."""
     var cells = _cells(limbs, muls)
     var v = List[Tuple[Int, Int, Int, Int]]()
     for x in range(len(cells)):
         ref c = cells[x]
         if not c.product:
             continue
-        if c.block == 0 and c.m == 0:
+        if c.block == 0 and c.m == 0 and not s_wired:
             v.append((x, SLOT_HA, SRC_S, c.i))
-        if c.block == 0 and (c.m == 0 or c.m == muls - 1):
+        if c.block == 0 and (c.m == 0 or c.m == muls - 1) and not s_wired:
             v.append((x, SLOT_RB, SRC_S, c.j))
-        if c.block == 1:
+        if c.block == 1 and not n_wired:
             v.append((x, SLOT_RB, SRC_N, c.j))
     var heads = _heads(cells, muls - 1, 0)
     for p in range(1 if m_wired else 0, limbs):
@@ -317,10 +318,34 @@ def _factors(limbs: Int, muls: Int, m_wired: Bool = False) raises -> List[Tuple[
     return v^
 
 
-def _wires(limbs: Int, muls: Int) raises -> List[Tuple[Int, Int, Int, Int]]:
-    """(slot, chain, slot, chain) of every wire."""
+def n_chains(limbs: Int, muls: Int, j: Int) raises -> List[Int]:
+    """The chains (from the base) whose rb slot holds limb j of n: every product of the QN blocks."""
+    var cells = _cells(limbs, muls)
+    var v = List[Int]()
+    for x in range(len(cells)):
+        if cells[x].block == 1 and cells[x].product and cells[x].j == j:
+            v.append(x)
+    return v^
+
+
+def _wires(limbs: Int, muls: Int, s_wired: Bool = False) raises -> List[Tuple[Int, Int, Int, Int]]:
+    """(slot, chain, slot, chain) of every wire; `s_wired` joins the occurrences of each limb of s (the ha
+    and rb slots of the first modmul, the rb slot of the last) instead of the public factors."""
     var cells = _cells(limbs, muls)
     var v = List[Tuple[Int, Int, Int, Int]]()
+    if s_wired:
+        for i in range(limbs):
+            var ends = List[Tuple[Int, Int]]()
+            for x in range(len(cells)):
+                ref c = cells[x]
+                if c.block != 0 or not c.product:
+                    continue
+                if c.m == 0 and c.i == i:
+                    ends.append((SLOT_HA, x))
+                if (c.m == 0 or c.m == muls - 1) and c.j == i:
+                    ends.append((SLOT_RB, x))
+            for k in range(1, len(ends)):
+                v.append((ends[k - 1][0], ends[k - 1][1], ends[k][0], ends[k][1]))
     var first = Dict[Int, Int]()              # q_i's first chain per modmul
     var prev = List[Int]()
     for m in range(muls):
@@ -381,10 +406,13 @@ def rsa_statement(limbs: Int, muls: Int) raises -> Statement:
     return st^
 
 
-def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: Bool = False) raises -> Int:
+def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: Bool = False, s_wired: Bool = False,
+              n_wired: Bool = False) raises -> List[Int]:
     """The RSA columns, families and wiring on `st`, the chains from `base` (ungrouped: the columns are zero
     off them, as on the idle chains). `m_wired` leaves limb 0 of m to a wire the caller adds to the cz slot
-    on chain base + `m_chain`(0); the cz slot is returned. Pins limbs and muls."""
+    on chain base + `m_chain`(0); `s_wired` makes s a witness; `n_wired` leaves limb j of n to wires the
+    caller adds to the rb slot on the chains base + `n_chains`(j) (the plain fingerprint of the limb: a
+    SHA-256 group's 32-byte window, sha256g). Returns the slots ha, rb, cy, cz. Pins limbs and muls."""
     if limbs < 1 or limbs > 255 or muls < 1 or muls > 255:
         raise Error("limbs and muls are bytes, at least 1")
     product_columns(st)
@@ -445,12 +473,12 @@ def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: 
     var slots = List[Int]()
     for name in names:
         slots.append(st.slot(name))
-    var fs = _factors(limbs, muls, m_wired)
+    var fs = _factors(limbs, muls, m_wired, s_wired, n_wired)
     for i in range(len(fs)):
         st.public_factor("f" + String(i), names[fs[i][1]], slots[fs[i][1]], base + fs[i][0])
-    for w in _wires(limbs, muls):
+    for w in _wires(limbs, muls, s_wired):
         st.wire(slots[w[0]], base + w[1], slots[w[2]], base + w[3])
-    return slots[SLOT_CZ]
+    return slots^
 
 
 # ---- host ----
@@ -662,10 +690,11 @@ def rsa_inputs(limbs: Int, muls: Int, s: Big, n: Big, m: Big) raises -> List[UIn
     return v^
 
 
-def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 0, m_wired: Bool = False) raises -> List[UInt8]:
+def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 0, m_wired: Bool = False, s_wired: Bool = False,
+                               n_wired: Bool = False) raises -> List[UInt8]:
     """The public columns in declaration order, each in term form (`pack_terms`: one term per distinct
     (value, weight range) of `_mask_range` over the live chains), then the factors' ingest columns
-    (`rsa_build`'s base and m_wired)."""
+    (`rsa_build`'s base and wiring flags; a wired value's bytes in `inputs` are ignored)."""
     if len(inputs) < 2:
         raise Error("public inputs start with limbs and muls")
     var limbs = Int(inputs[0])
@@ -726,7 +755,7 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 
                     terms.append(PubTerm(row^, List[Int]()))
                 terms[keys[key]].chains.append(base + x2)
             data.extend(pack_terms(terms, ROWS))
-    for f in _factors(limbs, muls, m_wired):
+    for f in _factors(limbs, muls, m_wired, s_wired, n_wired):
         data.extend(_columns(vals[f[2]][f[3]].bits(FOLDED), f[1] == SLOT_HA))
     return data^
 

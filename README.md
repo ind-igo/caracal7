@@ -24,7 +24,7 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Commitment layer (layer 1).** Ligerito as published, with a subfield first round. Every committed column is a Reed-Solomon codeword over `F4` on a domain of one to four cosets of a subgroup of `F4*` (order dividing 161280), rate at most 1/16, and the codeword rows sit in Blake3 Merkle trees with 1024-byte leaves. Three trees: the witness, the accumulators, the quotients. After the opening challenge the folds are not sent; each fold is committed as the next level, and the tail is Ligerito's batched partial sumcheck, three binary digits per level, with the last level in the clear. The verifier opens query rows per level and checks them against the fold. The query count is sized at the Johnson radius (BCHKS25, Theorem 1.5, p. 9) with 20 bits of grinding on the query seeds, for a per-level target of 112 bits.
 
-**Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads; the RSA and passport verifies are dominated by deriving their public data, which the next step moves to a product form.
+**Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads and in about half a second for the RSA and passport statements, most of it the tail levels.
 
 **Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
@@ -44,7 +44,8 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `ecdsa` | one secp256k1 signature verification on the mulmod chains | `docs/ecdsa.md` |
 | `rsa` | one RSA-2048 signature verification (e = 65537, 17 modmuls), squaring symmetry | `docs/decisions.md` |
 | `sha256g` | SHA-256 as a row group on the 144-row chain, digests wired between groups | `docs/decisions.md` |
-| `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify, one proof | `docs/passport.md` |
+| `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify with the DSC key committed, one proof | `docs/passport.md` |
+| `dsc` | the DSC certificate check: SHA(certificate body), RSA verify by the CSCA key, the committed DSC key inside the body | `docs/passport.md` |
 
 ## Run
 
@@ -84,14 +85,17 @@ The csp-benchmarks harness is `csp-rust/`, a Criterion crate over the prover's C
 
 ### RSA-2048 and the passport SOD
 
-M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo`, `bench/bench_sod.mojo`, grid 144 x 2016):
+M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench/bench_sod.mojo` and
+`bench/bench_dsc.mojo` on 144 x 2688):
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
 | RSA-2048 verify | 1888 | 586 | 594 | 627,000 |
-| passport SOD (3 x SHA-256 + RSA-2048) | 1987 | 1724 | 1135 | 1,030,000 |
+| passport SOD (3 x SHA-256 + commitment + RSA-2048, s and n witness) | 2068 | 1536 | 526 | 1,082,000 |
+| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2146 | 1377 | 718 | 1,042,000 |
 
-The verify is host-side field arithmetic over the proof; its public data is under 1 MB (`docs/public-columns.md`).
+A passport is the two proofs sharing one commitment digest: 2.9 s prove, 2.1 MB, 1.25 s verify. The verify
+is host-side field arithmetic over the proof; its public data is under 1 MB (`docs/public-columns.md`).
 The next steps are in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA

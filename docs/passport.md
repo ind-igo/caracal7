@@ -5,23 +5,38 @@ Plan and background: notes vault `wiki/projects/caracal7/passport-demo.md`. This
 ## State (2026-09-19)
 
 - `workloads/rsa.mojo`: RSA-2048 verify (e = 65537, 17 modmuls) in one proof, squaring symmetry done
-  (decisions.md "RSA squaring symmetry"): 1888 chains on 144 x 2016.
-- `workloads/sod.mojo`: SHA(DG1) -> SHA(LDS security object) -> SHA(signed attributes) -> RSA verify, one
-  proof, 1987 chains on 144 x 2016 (decisions.md "Passport SOD in one proof").
-- Public columns in term form (docs/public-columns.md, "term form"): the verifier's public data is 823 KB for
-  the SOD (was 48.6 MB), derived in 17 ms.
-- Numbers (M1 Pro, warm): RSA 0.59 s prove, 627 KB, 0.59 s verify; SOD 1.7 s prove, 1.03 MB, 1.14 s verify.
-  The verify is now the tail levels (0.6 s of the SOD's), then the running claim, the boundaries and the clear
-  vector. A passport with the certificate check is about 2.5 s.
+  (decisions.md "RSA squaring symmetry"): 1888 chains. The signature s and the modulus n can be witness
+  (`s_wired`: the occurrences of each limb of s are wired to each other; `n_wired`: the limbs of n come from
+  wires the caller adds, `n_chains`).
+- `workloads/sod.mojo`: SHA(DG1) -> SHA(LDS security object) -> SHA(signed attributes) -> RSA verify with s and
+  n witness, plus the commitment SHA(n || r) to the DSC key (r 32 random bytes), one proof, 2068 chains on
+  144 x 2688 (decisions.md "DSC certificate check"). The verifier gets the lengths, the offsets, the PKCS#1
+  padding limbs and the commitment digest.
+- `workloads/dsc.mojo`: the DSC certificate check: SHA(certificate body) -> RSA verify against the public CSCA
+  key with s witness; the body's 32-byte windows at the key's offset are wired to the commitment's windows, so
+  the DSC key inside the body is the committed one; the commitment digest is public. 2146 chains on 144 x 2688.
+- A passport is the two proofs with one commitment digest in both public inputs. The DSC key, both signatures,
+  the body and r never reach the verifier. The prover is not zero-knowledge (the spec leaves it out of scope):
+  witness means "not given", the proof's opened rows still leak witness bytes until a masking layer exists.
+- Public columns in term form (docs/public-columns.md): the verifier's public data is under 1 MB per proof.
+- Numbers (M1 Pro, warm, `bench/bench_sod.mojo`, `bench/bench_dsc.mojo`): SOD 1.54 s prove, 1.08 MB, 0.53 s
+  verify; DSC 1.38 s prove, 1.04 MB, 0.72 s verify. A passport: 2.9 s prove, 2.1 MB, 1.25 s verify. Grids of
+  144 x 2688 (the 2016 grid holds neither proof: the commitment group adds 81 chains).
 
-## Next, in order (about four to five sessions to a solid zkPassport benchmark)
+## Why two proofs
 
-1. Done: public columns in term form (the product form). Verify time halved; the verifier's public data is
-   under 1 MB.
-2. DSC certificate check. A second RSA verify is about 3900 chains. The next legal grid, 4032, holds four
-   F2* cosets (16128 endpoints / 4032), and one RSA verify takes four slots plus one coset for factors.
-   Decide: second proof, or reduce the wiring slots to three.
-3. Predicates and nullifier: age, expiry, nationality from the MRZ bytes on the DG1 group; nullifier as
-   one hash.
-4. zkPassport baseline on the same M1: build the Noir circuits, run Barretenberg, sum the subproofs.
+One proof would hold the SOD, the body hash and the second RSA verify: about 4200 chains, above the 4032 grid,
+and that grid allows three wiring slots plus the factors (F2* has 16128 endpoints) where the RSA lane uses four
+and the fingerprints one. Two proofs on 2688 need no slot merge; the link between them is the commitment,
+which the DSC key needs anyway: with n public, the DSC check would be a proof about public data that the
+verifier checks itself in microseconds.
+
+## Next, in order
+
+1. Done: public columns in term form. Verify time halved; the verifier's public data is under 1 MB.
+2. Done: DSC certificate check as a second proof, the DSC key hidden under a commitment.
+3. Predicates and nullifier: age, expiry, nationality from the MRZ bytes on the DG1 group (the window
+   mechanism of `sha256g` gives any 32-byte window of a message as a fingerprint); nullifier as one hash.
+4. CSCA registry: the CSCA key is a public input today; a Merkle path or a public list.
+5. zkPassport baseline on the same M1: build the Noir circuits, run Barretenberg, sum the subproofs.
    Do not quote their phone numbers against Mac numbers.

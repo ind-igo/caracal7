@@ -45,9 +45,9 @@ def _embedding(digest: List[UInt8], at: Int, length: Int) -> List[UInt8]:
 def _statement(m1: List[UInt8], m2: List[UInt8]) raises -> Tuple[Statement, ShaGroup, ShaGroup, ShaGroup]:
     var st = Statement()
     var zeta = Zeta()
-    var g1 = sha256_group(st, "h1", CHAINS_1, h2, zeta, 128 - 8 * EMBED % STREAM)
-    var g2 = sha256_group(st, "h2", CHAINS_2, h2, zeta, 0, embed=EMBED)
-    var g3 = sha256_group(st, "h3", CHAINS_3, h2, zeta, 0, embed=EMBED_3)
+    var g1 = sha256_group(st, "h1", CHAINS_1, h2, zeta, 0)
+    var g2 = sha256_group(st, "h2", CHAINS_2, h2, zeta, 0, embeds=[EMBED])
+    var g3 = sha256_group(st, "h3", CHAINS_3, h2, zeta, 0, embeds=[EMBED_3])
     var dg = g1.digest.copy()
     dg.extend(g2.digest.copy())
     dg.extend(g3.digest.copy())

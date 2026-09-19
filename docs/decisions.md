@@ -2370,3 +2370,41 @@ distinct value and weight range of the role table, the selectors and masks one.
   the same column polynomial: the interpolant of a sum of products is the sum of the products' interpolants.
   `column_offsets` validates every byte it indexes before any check reads it; the group checks are the same
   conditions on terms (an exact selector is one term of ones on exactly the mask's chains).
+
+## DSC certificate check: a second proof, the DSC key under a commitment (2026-09-19, M1 Pro)
+
+`docs/passport.md`. The passport's second signature (the CSCA over the DSC certificate) is its own proof
+(`workloads/dsc.mojo`): SHA-256 of the certificate body wired to the RSA message limb, the CSCA modulus a
+public input, the signature witness. One proof for everything does not fit: SOD plus body hash plus a
+second verify is about 4200 chains, above the 4032 grid, which allows three wiring slots where the RSA lane
+takes four and the fingerprints one.
+
+- **The DSC key is witness in both proofs.** With n public the certificate check would prove a fact about
+  public data. The SOD's RSA now takes s and n as witness (`rsa_build`'s `s_wired`, `n_wired`): the
+  occurrences of each limb of s (the ha and rb slots of the first modmul's products, the rb slot of the
+  last's) are wired to each other; the limbs of n come from a fourth SHA-256 group hashing n || r (r 32
+  random bytes) whose 32-byte windows are wired to the rb slot of every QN product of that limb
+  (`n_chains`). The group's digest is a public factor (`sha256_digest_factor`) and the DSC proof opens the
+  same commitment: its body's windows at the key's offset are wired to its own commitment group's windows.
+  The verifier checks one digest in both public inputs.
+- **Window fingerprints are plain.** `sha256g` takes a list of window offsets per group and a fifth
+  transport column `wd` = w shifted 128 - s0 rows down the chain (cyclic), so the window's low s0 bits land
+  on the chain's last rows with coefficient 1, the middle segment takes zeta^s0 and the top zeta^(128 + s0):
+  the fingerprint is the window's value, wired to a digest (digest_shift 0) or to a limb without a shift on
+  the consumer. The first attempt scaled the RSA's rb accumulator by zeta^128 on the n chains; that breaks
+  the product certificate's chain-end identity zeta^6 R_A R_B = R_C, the test caught it ("small grid identity
+  fails at z2"). A group's windows share s0 (one `wd` family); windows 32 bytes apart ingest on distinct
+  chains.
+- **Measured** (warm, grids 144 x 2688): SOD 2068 chains, 1.54 s prove, 1.08 MB, 0.53 s verify (was 1.72 s,
+  1.03 MB, 1.14 s on 2016 with s and n public: the twelve hundred public factors of s and n are gone, and the
+  larger grid's level-1 domain is at a lower rate, 80 queries). DSC 2146 chains, 1.38 s prove, 1.04 MB, 0.72 s verify. A passport
+  2.9 s prove, 2.1 MB, 1.25 s verify. Fixture: OpenSSL CSCA and DSC certificates (the body 650 bytes with
+  the ICAO document-type extension, the key at byte 223), the DSC key signing the signed attributes.
+- **Tests.** `test_sod` (128-chain grid, 122 live) and `test_dsc` (96 chains, 88 live) with 512-bit e = 3
+  keys: the proofs verify without messages, s, n or r; a changed DG1, eContent, signed attributes, r (proved
+  under the honest public inputs), a body byte inside or outside the key window, another committed key with
+  the body honest, and a forged key pair (s'^3 = m + n', so the RSA lane holds under a modulus the commitment
+  does not hold; Codex asked for a case that reaches the wires) fail at the wire; a changed CSCA key or
+  offset fails the transcript or the pin; a wrong length or limb count is refused before any public data is
+  indexed (Codex: the commitment group's size came from the unchecked limbs byte and could index past the
+  grid). Untested: a prover using different limbs of s in different cells; the s wires are read in review.
