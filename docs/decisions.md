@@ -2598,3 +2598,53 @@ ran the benchmark and reproduced the rational numerators; Codex reproduced
 the ECDSA and tail-rate totals independently. `git diff --check` passed.
 The pre-existing uncommitted documentation and AGENTS.md were preserved
 and are not part of this change.
+
+## J3: packed and recursive list review (2026-09-20)
+
+Continue from the DKT26 ledger commit `bae2607`. Keep the Bend project paused.
+`docs/list-composition.md` records a scoped review of spec 12.3, the packed
+alphabet, and the verifier's challenge order. It separates the abstract PCS
+argument from its basis and relation contracts and from P5.
+
+The packed review checked the split algebra, restriction to one common row
+set, descent of every candidate without uniqueness, equality across the four
+conjugate components, joint list counting, split scope, quadratic Bind, and
+`2B/Q` opening batching. A native independent reviewer found no mathematical
+defect under the stated basis-map assumptions.
+
+The recursive review checked root-before-query list fixation, list unions
+for batching and degree-two sumcheck, the simultaneous MCA event, and backward
+extraction from the clear vector. It checked the actual absorbs and sampling
+calls in `verify`, `_Tail.level`, `_Tail.clear`, and `_open_previous`, and the
+coordinate/product forms of `_level1_symbol` and `_tail_symbol`. It found no
+missing PCS charge. These are source observations and an own mathematical
+argument, not formal verification of Mojo or of the assumed basis identities.
+
+The relation proof needs a bad predicate at each challenge barrier and a
+separate coverage proof. Later witnesses in an earlier event must satisfy
+the downstream algebraic identities exactly; randomized failures are charged
+at their own later barriers. The coverage proof must allow adaptive Z, Z2,
+Q, Q3, and opening answers. A W-list union does not make Z fixed before
+stage 1; a W/Z-list union does not make Q fixed before alpha. These remain
+P2/P3 contracts. The interactive query bound has no grinding discount. Its
+conversion to the ledger work model remains P5. No parameter, executable,
+or ledger charge changes. ECDSA remains 106.41 conditional bits under DKT26
+and 87.28 under Hab25.
+
+Review corrections: the concurrent read-only Codex review found that the
+new note had not explicitly fixed the Johnson radius. The note now states
+its exact integer radius at every level; the counterexamples to the broader
+wording were reproduced and are outside this scope. Opus 5 requested an
+explicit F4-valued received-word condition, inclusion of Z2/Q3, and precise
+per-barrier relation events. All were applied. Since the verifier checks
+only opened rows, the note also proves a coordinatewise canonical completion
+reduction for hidden malformed bytes. A native follow-up review confirmed
+that it preserves the list barriers and requires no additional error charge.
+Original Merkle root labels and transcript bytes are not replaced. This is
+a conditional statement-soundness argument, not proximity to malformed words.
+
+Validation: the `mojo build --Werror` soundness build and `sh run_tests.sh`
+passed (30 test files and 16 benchmarks). A fresh ledger run matched all
+20 prior reports exactly. Local links and `git diff --check` passed. The
+review corrections affect documentation only. Pre-existing uncommitted
+documentation and AGENTS.md remain outside this commit.

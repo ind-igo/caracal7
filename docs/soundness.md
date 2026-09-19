@@ -608,6 +608,15 @@ ledger instead of silently using a formula that omits table or zero-denominator 
 
 ## Proof-to-code map and status
 
+A [scoped packed and recursive list review](list-composition.md) checked the
+abstract descent, Bind, opening batch, and backward extraction argument
+against the observed challenge order. No missing PCS charge was found.
+The basis identities remain a P1/P4 contract. Each relation charge needs a
+bad event at its own challenge barrier and a separate coverage proof that
+allows later adaptive Z/Z2/Q/Q3 choices. These remain P2/P3 contracts.
+The review does not justify the grinding work reduction or cryptographic
+compilation in P5.
+
 | ID | Obligation | Evidence / remaining work |
 |---|---|---|
 | P1 | Packed level-1 columns admit the scalar RS guarantee in the block metric | Vault spec 12.1 and the list proof in 12.3; scalar citations checked above. Independently review descent, reconstruction of F-valued coordinates, and the joint opening claim |
@@ -673,8 +682,10 @@ ECDSA's changed-message round trip also exercises its native public-data walk; i
 evidence that malicious slope witnesses are constrained. Review that path separately. No practical
 number of successful random tests measures a failure probability near 2^-96.
 
-Before submission, close P1-P5 and review the J1/J3 own proofs
-with independent cryptographic review. Then select parameters for the full
-bound. The present conservative field allowance is dominant and the ECDSA
-conditional total is below 96 bits. More queries cannot reduce an `A/Q`
-term. The `security_bits: 112` metadata remains a query target only.
+Before submission, close P1-P5 and obtain independent cryptographic review.
+The [scoped list review](list-composition.md) records the next algebraic and
+relation contracts. The Hab25 baseline remains field-limited and gives 87.28
+conditional bits for ECDSA. The DKT26 comparison gives 106.41 with the same
+parameters and is now close to its query-only bound. Both use the ledger's
+unproved grinding work model. Neither is a security certification.
+The `security_bits: 112` metadata remains a query target only.
