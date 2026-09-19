@@ -5,14 +5,15 @@ key is not the committed one, random bytes the public digest does not hash, and 
 the signed limb are refused at the wire. The commitment is the one test_sod's SOD opens. Fixture: OpenSSL
 genrsa -3 512 twice (CSCA, DSC), s = m^d mod n_csca for m = (random upper limb || sha256(body))."""
 
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 from max.gpu.host import DeviceContext
 
 from core.params import CLIENT
 from core.hash import Blake3
 from workloads.bigint import Big
 from workloads.sha256 import sha256
-from workloads.dsc import DSC
+from workloads.dsc import DSC, HEAD
+from workloads.csca import Registry, csca_key_id, csca_key_id_of
 from workloads.sod import sha_chains, commitment_length, commitment_message
 from workloads.rsa import chain_count
 from workload import prove_workload, prove_prepared, verify_workload
@@ -33,6 +34,14 @@ def _message(hex: String) raises -> List[UInt8]:
     var v = Big.from_hex(hex).bytes(hex.byte_length() // 2)
     v.reverse()
     return v^
+
+
+def _hex(v: List[UInt8]) raises -> String:
+    comptime D = "0123456789abcdef"
+    var s = String("")
+    for b in v:
+        s += String(D[byte=Int(b >> 4)]) + String(D[byte=Int(b & 15)])
+    return s
 
 
 def _verdict(proof: List[UInt8], w: DSC, inputs: List[UInt8]) raises -> String:
@@ -71,6 +80,28 @@ def test_dsc_verifies_and_wires_hold() raises:
     var proof = prove_workload[p, Blake3, DSC](ctx, w)
     var verifier = DSC(2, 2, Big(), n_csca, m.shr(256).shl(256), len(tbs), N_OFFSET)      # no body, s, n_dsc, r or low limb
     assert_equal(_verdict(proof, verifier, inputs), "accepted")
+    # the registry: the proof's CSCA key id is the digest of the big-endian modulus
+    # (without leading zeros: the id does not depend on the statement's limb count)
+    var nc = n_csca.bytes(64)
+    nc.reverse()
+    assert_equal(csca_key_id_of(inputs), sha256(nc))
+    assert_equal(csca_key_id(n_csca), sha256(nc))
+    var padded = List[UInt8](inputs[:HEAD])
+    padded[0] = 3
+    padded.extend(n_csca.bytes(96))
+    assert_equal(csca_key_id_of(padded), sha256(nc))
+    var reg = Registry.parse("# test list\n" + _hex(sha256(nc)) + " 3  # the test CSCA\n\n" + _hex(sha256(r)) + "\n")
+    assert_true(reg.trusts(inputs))
+    var untrusted = Registry.parse(_hex(sha256(r)) + "\n" + _hex(sha256(nc)))       # e = 65537, not the proof's
+    assert_true(not untrusted.trusts(inputs))
+    untrusted.add(n_csca, 3)
+    assert_true(untrusted.trusts(inputs))
+    with assert_raises(contains="64 hex digits"):
+        _ = Registry.parse("abc")
+    with assert_raises(contains="2^k + 1"):
+        _ = Registry.parse(_hex(sha256(nc)) + " 7")
+    with assert_raises(contains="hold n_csca"):
+        _ = csca_key_id_of(List[UInt8](inputs[:8]))
     # the commitment the SOD proof opens is the same bytes
     var c = sha256(commitment_message(n_dsc, 2, r))
     for i in range(32):

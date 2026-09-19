@@ -21,6 +21,12 @@ Plan and background: notes vault `wiki/projects/caracal7/passport-demo.md`. This
 - `workloads/dsc.mojo`: the DSC certificate check: SHA(certificate body) -> RSA verify against the public CSCA
   key with s witness; the body's 32-byte windows at the key's offset are wired to the commitment's windows, so
   the DSC key inside the body is the committed one; the commitment digest is public. 2146 chains on 144 x 2688.
+- `workloads/csca.mojo`: the verifier's check of the public inputs, beside `verify` on each proof.
+  `passport_check(sod_inputs, dsc_inputs, registry)`: the DSC proof's CSCA key and exponent are in the
+  registry (a text file of key ids, the SHA-256 of the big-endian modulus, and exponents), the padding limbs
+  of both m are the PKCS#1 v1.5 SHA-256 encoding (the prover supplies them; unpinned, s^e = m holds for any
+  upper limbs), and both proofs carry one commitment digest. No chains: a wrong value breaks the trust in the
+  proof, not the proof.
 - A passport is the two proofs with one commitment digest in both public inputs. The DSC key, both signatures,
   the body and r never reach the verifier. The prover is not zero-knowledge (the spec leaves it out of scope):
   witness means "not given", the proof's opened rows still leak witness bytes until a masking layer exists.
@@ -44,6 +50,27 @@ verifier checks itself in microseconds.
 2. Done: DSC certificate check as a second proof, the DSC key hidden under a commitment.
 3. Done: predicates and nullifier. The DG1 window is a public factor of its fingerprint; the nullifier is
    one SHA-256 group (33 chains) whose first window is the LDS digest and whose second is the public scope.
-4. CSCA registry: the CSCA key is a public input today; a Merkle path or a public list.
+4. Done: CSCA registry as a public list on the verifier's side, with the padding and commitment checks of the
+   public inputs in `passport_check`. A Merkle path inside the proof would hide the signing CSCA, but the
+   disclosed window names the country; it waits for the masking layer.
 5. zkPassport baseline on the same M1: build the Noir circuits, run Barretenberg, sum the subproofs.
    Do not quote their phone numbers against Mac numbers.
+
+## Deferred optimizations
+
+None of these cut security. In order of payoff:
+
+1. One proof instead of two. The two proofs sum to about 4250 chains; the 4032 grid is one coset short and
+   its slot rule gives three wiring slots where the RSA lane uses four. A slot merge, or an RSA lane on three
+   slots, folds the passport into one proof: one Merkle root, one row combination, one set of opened columns,
+   about half the verify time. Revisit first, it changes every number below.
+2. Verify time. The fingerprint sums run one row at a time; a batched Horner over all groups is a small
+   change worth maybe 20 to 30 percent of the 0.56 s. Cheap, revisit second.
+3. The commitment group SHA(n || r), 81 chains in both proofs. A commitment to the digest of n would be
+   smaller but the DSC proof needs n in limbs, so it needs a hash-to-limbs wire. Not obvious; leave.
+4. RSA limb split. 8 limbs and 17 modmuls is the tuned point; a 16-limb split with a Karatsuba row may
+   cut 10 to 15 percent of the RSA chains. Untested.
+5. Grid slack. The 2688 grid wastes about 590 chains in the SOD proof; a 2304 grid (h2 = 2^8 * 9) needs the
+   slot rule to take seven cosets. Look after item 1, which changes the grid anyway.
+6. Proof size. 1.1 MB per proof is the Ligero opening; it scales with the square root of the trace. A
+   smaller proof needs another commitment, out of scope for F127.

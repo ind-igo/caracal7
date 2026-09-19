@@ -2443,3 +2443,28 @@ carries a nullifier; both are public factors on the fingerprint accumulator, no 
   the pin rejects a claimed offset): the tamper cases only touched the first segment of a window, so a mask
   that produced no term would have failed open; a flip of the last byte of the window and of the scope now
   exercise the wd and u1 segments. The predicates take the pinned DG1 length and refuse anything but TD3.
+
+## CSCA registry and the verifier's public-input check (2026-09-19)
+
+- **Decision.** `workloads/csca.mojo`: the registry is a text file of keys, the SHA-256 of the CSCA
+  modulus in big-endian bytes without leading zeros (the form `openssl rsa -modulus` prints) and the public
+  exponent, one per line, `#` comments. The verifier computes the id of the CSCA key named in the DSC proof's
+  public inputs and looks it up with the proof's exponent. No chains, no new public input: the key was
+  already public. The alternative, a Merkle path inside the proof with the registry root public, hides which
+  CSCA signed; the disclosed MRZ window names the nationality, so the path hides nothing today. It becomes
+  worth its chains together with the masking layer.
+- **The public inputs' values were unchecked.** Opus: `verify` binds the public inputs through the
+  transcript but checks no value in them; the upper limbs of m (the PKCS#1 v1.5 padding) and the commitment
+  digest are the prover's bytes. Unpinned, the DSC relation is "s^e = m for some m whose low limb is the
+  digest", not a PKCS#1 signature. `passport_check(sod_inputs, dsc_inputs, registry)` now pins all three: the
+  key on the list, the padding limbs of both proofs equal to `pkcs1_upper(limbs)` (00 01 FF..FF 00
+  DigestInfo), one commitment in both. Codex: the id was the digest of the modulus padded to the statement's
+  limbs, so a 1024-bit CSCA under a 2048-bit statement never matched an OpenSSL-made list (leading zeros are
+  stripped now), and the registry ignored the exponent, so a listed modulus was trusted under e = 3 (the
+  exponent is part of the line and of the check).
+- **Order of checks.** The proof binds its public inputs, so the check runs before or after `verify`, never
+  instead of it; before is cheaper on a rejected key.
+- **Tests.** `test_csca` (host only, 2 s): the bench fixtures' public inputs pass; another exponent, a key
+  off the list, a flipped padding byte in either proof, two commitments, inputs cut short and malformed lines
+  are refused; the id does not change with the limb count; uppercase hex and CRLF parse. `test_dsc`: the
+  registry against the real proof's public inputs.

@@ -47,6 +47,7 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify with the DSC key committed, a disclosed MRZ window and a nullifier, one proof | `docs/passport.md` |
 | `mrz` | the verifier's predicates on the disclosed window: nationality, birth, expiry, age | `docs/passport.md` |
 | `dsc` | the DSC certificate check: SHA(certificate body), RSA verify by the CSCA key, the committed DSC key inside the body | `docs/passport.md` |
+| `csca` | the verifier's side of a passport: the CSCA registry (a list of key ids and exponents), the PKCS#1 padding limbs, one commitment in both proofs | `docs/passport.md` |
 
 ## Run
 
