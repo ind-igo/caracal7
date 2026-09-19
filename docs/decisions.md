@@ -2557,3 +2557,44 @@ the slack.
   `_mask_range` and the family terms: every read forward, the identity telescopes to a b = q n + r, every
   weight of the corner's t and r is read (no lost carry), the bias margin holds on the last head; no code
   defects, stale numbers in the README and passport doc. Tests: RSA, SOD, DSC pass.
+
+## DKT26 Johnson MCA comparison (2026-09-20)
+
+Add `johnson_dkt26_5.12_conditional` to `bench/bench_soundness.mojo`.
+Keep the main Hab25 ledger and all old projections. The new comparison uses
+Theorem 5.12, p. 53, and the ordinary numerator of Lemma 5.3, pp. 40-43, in
+Dao, Kominers, and Thaler, *Reed-Solomon Codes Beyond Johnson: Efficient
+Decoding and Smaller Cryptographic Proofs*. The source is the user's saved
+Markdown and PDF; no PDF was downloaded.
+
+The [authors' pinned source](https://github.com/quangvdao/rs-beyond-johnson/tree/fd6d84edd50dcca7c0b3f388e0b4824d9daa082d)
+contains `scripts/ordinary_mca_budget.py` and the Johnson constant checks.
+Its ordinary rational evaluator agrees with the new numerator. The paper's
+Appendix I, pp. 144-145, reports a Lean formalization. The pinned ArkLib
+revision is `a5aa2677fee4e3a79d6bb05136631cce4a08587d`. We inspected the
+Johnson theorem declaration, but did not build Lean or audit its axioms.
+
+The new scalar numerator uses exact checked integer arithmetic. It rejects
+unsupported domains and intermediate Int overflow. The probability display
+still uses Float64. The comparison reuses the main query error and every
+non-gap allowance, including the old lists and Bind. It retains the four
+conjugate-code charge. Protocol parameters and proof code are unchanged.
+The exact formula, ECDSA inputs, workload table, citations, and remaining
+obligations are in [soundness.md](soundness.md#dkt26-johnson-mca-comparison).
+
+All 20 compiled reports matched an independent exact-rational numerator
+calculation and a 100-digit probability calculation. Removing the new report
+lines left the old benchmark output unchanged. ECDSA gives 106.41 conditional
+bits; the 16 CSP cases give 105.67-106.41. The native math reviewer checked
+24,968 parameter combinations against the authors' evaluator and found no
+correctness defect. These checks do not prove the packed or adaptive
+composition, or P1-P5. The separate Bend project remains paused.
+
+Validation: `uv run mojo build --Werror -I src bench/bench_soundness.mojo`
+passed. `sh run_tests.sh` passed all 30 test files and 16 benchmarks, including
+the soundness arithmetic checks. Opus 5 and a concurrent
+`codex --sandbox read-only exec` review found no concrete defect. Opus also
+ran the benchmark and reproduced the rational numerators; Codex reproduced
+the ECDSA and tail-rate totals independently. `git diff --check` passed.
+The pre-existing uncommitted documentation and AGENTS.md were preserved
+and are not part of this change.

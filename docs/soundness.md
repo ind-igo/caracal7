@@ -16,6 +16,10 @@ bound below that target; the ledger includes them. The upstream
 [eligibility rule](https://github.com/ethereum/csp-benchmarks/blob/main/CONTRIBUTING.md#benchmark-eligibility)
 requires at least 96 bits; the project's own goal is more than 100 bits.
 
+The [DKT26 Johnson MCA comparison](#dkt26-johnson-mca-comparison) now gives
+105.67-106.41 conditional bits for the same 16 E20 CSP configurations.
+The main Hab25 result remains the conservative baseline.
+
 ## Run and interpret
 
 ```sh
@@ -95,6 +99,116 @@ the field, and proof generation have not changed. More queries do not reduce
 the dominant field term. All three earlier comparison columns are historical. They omit the new
 list terms and are not the current bench projections. The current pairs
 projection gives 105.99 bits for ECDSA after those terms are included.
+
+### DKT26 Johnson MCA comparison
+
+**Status: conditional comparison.** The executable now prints
+`johnson_dkt26_5.12_conditional` beside the main Hab25 result. With the same
+E20 parameters, ECDSA gives **106.41 conditional bits**. The 16 recorded CSP
+cases give **105.67-106.41**. The prover, verifier, field, proof format, query
+counts, and all non-gap allowances are unchanged. P1-P5 remain open.
+
+DKT26 is Dao, Kominers, and Thaler, *Reed-Solomon Codes Beyond Johnson:
+Efficient Decoding and Smaller Cryptographic Proofs*. The local source is
+`~/notes/raw/papers/rs-beyond-johnson.md`; the displayed equations were checked
+in the saved `pdf/rs-beyond-johnson.pdf`. Source revisions and review history
+are in [decisions.md](decisions.md#dkt26-johnson-mca-comparison-2026-09-20).
+
+**Theorem 5.12, p. 53**, applies to degree-at-most-D RS codes on any n
+prescribed distinct field points, in every characteristic. It requires
+`1 <= D <= n-2` and agreement `a > sqrt(D/n)`, with `a <= 1`.
+It supplies full agreement-set MCA, with error at most `E_line/Q`.
+The numerator has order `n/eta_0^3` at fixed rate, where
+`eta_0=a-sqrt(D/n)`. This result stays at the Johnson radius. The improved
+count reconstructs only the actual message coefficients and separates the
+message and challenge degrees (**section 5.7, pp. 53-54**).
+
+For each compiled level, set `D=K-1` and retain `eta=1/eta_inv`. Set
+`A=ceil(sqrt(n*K)+n/eta_inv)` and apply the theorem with `a=A/n`.
+This is exactly the configured integer Hamming ball, not a change to queries.
+The scalar calculation is:
+
+```
+m = max(ceil(sqrt(D/n)/(2*(A/n-sqrt(D/n)))), 3)
+t = m + 1/2
+B = ceil(t/sqrt(D/n)) - 1
+H = ceil(t^2/(3*D/n)) - 1
+Psi = 1 + (2*D-1)*(2*B-1) + 2*max(0, B-2*D-1)
+E_line = (2*B-1)*H + (n-D)/(A-D)*(B+H*Psi) + (n-D-1)*B
+C_i = ceil(E_line).
+```
+
+This is Theorem 5.12's `B_cf`, using the ordinary numerator of **Lemma 5.3,
+pp. 40-43**, at curve degree one and witness threshold `L=D+1`. No free
+threshold optimization is used. The executable computes these ceilings by
+integer comparisons and rejects intermediate Int overflow. Only the final
+probabilities and bit display use Float64.
+
+**Corollary 7.2, p. 66**, supplies affine MCA with error `E_line/(Q-1)`,
+independent of the number of coefficients. **Corollary 7.7, pp. 68-69**,
+supplies the interleaved form without a width factor. **Corollary 7.8,
+pp. 69-70**, supplies the shared-level multilinear fold bound `h*E_line/Q`.
+All retain the scalar hypotheses. These statements supply public references
+for the affine, interleaved, and three-level transfers used in this comparison.
+The Caracal packed descent, joint-list argument, and adaptive extraction are
+still **own proof, needs review**. These scalar transfers do not prove them.
+
+The comparison retains the four conjugate-code allowance at level 1:
+
+```
+A_gap = 4*(C_1+1) + 3*sum(C_i for committed levels i >= 2)
+conditional_bits = -log2(P_query + (A_gap+A_other)/127^20).
+```
+
+`C_1<Q` justifies `E_line/(Q-1) <= (C_1+1)/Q`; the executable checks this
+condition. `A_other` and `P_query` come directly from the main ledger.
+In particular, this comparison keeps the old list bounds, Bind, opening,
+relation, sumcheck, next-list query factors, and grinding model. It does not
+substitute the smaller scalar list bound in Theorem 5.12 for the packed joint
+list. Fiat-Shamir, hash binding, and quantum-security losses remain outside
+the total.
+
+For ECDSA, the level arrays are `K=[20736,10368,1296,162]`,
+`n=[161280,92160,10752,1344]`, and `s=[74,70,72,72]`, with `eta_inv=16`.
+They give `A=[67910,36672,4405,551]`, `m=[3,3,3,3]`, `B=[9,10,10,10]`,
+`H=[31,36,33,34]`, and `C=[66374040,44914431,5031516,641610]`.
+Thus `A_gap=417258835`, `A_other=101929329`, and the total field numerator
+is `519188164`. The query-only bound is 106.48 bits. The field-only bound is
+110.82 bits; adding probabilities gives 106.41 bits, not their sum.
+
+| Workload | Input | Hab25 conditional bits | DKT26 conditional bits |
+|---|---:|---:|---:|
+| SHA-256 | 128 B | 94.83 | 106.31 |
+| SHA-256 | 256 B | 93.92 | 106.14 |
+| SHA-256 | 512 B | 91.66 | 106.31 |
+| SHA-256 | 1024 B | 89.92 | 105.77 |
+| SHA-256 | 2048 B | 87.36 | 106.02 |
+| Keccak | 128 B | 99.52 | 106.15 |
+| Keccak | 256 B | 97.19 | 106.20 |
+| Keccak | 512 B | 95.19 | 106.20 |
+| Keccak | 1024 B | 93.09 | 105.78 |
+| Keccak | 2048 B | 91.09 | 105.78 |
+| Poseidon | 2, 4, 8 elements | 91.09 | 105.78 |
+| Poseidon | 12, 16 elements | 87.60 | 105.67 |
+| ECDSA | 1 signature | 87.28 | 106.41 |
+
+All bits are rounded down. The main Hab25 result is kept beside the new
+comparison. The separate ECDSA tail-rate checks at inverse rates 4, 8, 16,
+and 32 give DKT26 totals 106.45, 106.41, 106.05, and 105.30, respectively.
+Recompute the full ledger after any field, shape, rate, query, or workload
+change. These results do not cover unlisted configurations.
+
+The beyond-Johnson result is separate. **Theorem 1.1, p. 6**, requires
+characteristic `p > max(K-1, B_partial)` for its stated quantitative bounds.
+All four current ECDSA dimensions fail even `p>K-1` at `p=127`.
+E24 also has characteristic 127. A larger extension cannot fix that hypothesis.
+This is not a claim that every beyond-Johnson result must fail for our codes.
+
+The next security work is to review the packed and adaptive composition,
+then consider query parameters for the 120-bit target. ECDSA is now close to
+its query-only bound, so increasing the extension degree alone cannot reach
+that target with these queries. Bend proof work remains paused at the
+checkpoint in the separate `caracal7-fv` repository.
 
 ## Claim and composition
 

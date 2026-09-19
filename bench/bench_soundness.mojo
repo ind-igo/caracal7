@@ -104,6 +104,81 @@ def add_numerator(total: Int, term: Int, factor: Int = 1) raises -> Int:
     return total + factor * term
 
 
+def ceil_ratio(numerator: Int, denominator: Int) raises -> Int:
+    if numerator < 0 or denominator <= 0:
+        raise Error("ceiling needs a nonnegative numerator and positive denominator")
+    return numerator // denominator + (1 if numerator % denominator != 0 else 0)
+
+
+def ceil_sqrt(value: Int) raises -> Int:
+    if value <= 0:
+        raise Error("square root needs a positive integer")
+    var low = 1
+    var high = value
+    while low < high:
+        var mid = low + (high - low) // 2
+        if mid >= ceil_ratio(value, mid):
+            high = mid
+        else:
+            low = mid + 1
+    return low
+
+
+def dkt26_numerator(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
+    """DKT26 Theorem 5.12, p. 53; Lemma 5.3, pp. 40-43, ell=1, L=D+1.
+    Exact integer ceilings. Reject intermediate Int overflow, including parameter sizing.
+    """
+    if dimension <= 1 or dimension >= length or eta_inv < 2:
+        raise Error("DKT26 needs 1 < dimension < length and eta_inv >= 2")
+    var degree = dimension - 1
+    var nk = add_numerator(0, length, dimension)
+    var scaled = add_numerator(0, add_numerator(0, nk, eta_inv), eta_inv)
+    # A=ceil(sqrt(n*K)+n/eta_inv); this preserves the configured integer Hamming ball.
+    var agreement = ceil_ratio(add_numerator(length, ceil_sqrt(scaled)), eta_inv)
+    if agreement > length:
+        raise Error("DKT26 agreement exceeds the code length")
+    var dn = add_numerator(0, degree, length)
+    var twice_t = 7  # 2*m+1, starting at m=3
+    while True:
+        # m >= sqrt(D/n)/(2*(A/n-sqrt(D/n))), checked without square roots.
+        var lhs = add_numerator(0, agreement, twice_t - 1)
+        lhs = add_numerator(0, lhs, lhs)
+        var rhs = add_numerator(0, add_numerator(0, dn, twice_t), twice_t)
+        if lhs >= rhs:
+            break
+        twice_t = add_numerator(twice_t, 2)
+    var support = add_numerator(0, add_numerator(0, length, twice_t), twice_t)
+    var b = ceil_sqrt(ceil_ratio(support, 4 * degree)) - 1
+    var h = ceil_ratio(support, 12 * degree) - 1
+    var psi = add_numerator(1, 2 * degree - 1, 2 * b - 1)
+    psi = add_numerator(psi, max(0, b - 2 * degree - 1), 2)
+    var joint = add_numerator(b, h, psi)
+    var incidence = ceil_ratio(add_numerator(0, length - degree, joint), agreement - degree)
+    var exceptional = add_numerator(incidence, 2 * b - 1, h)
+    return add_numerator(exceptional, length - degree - 1, b)
+
+
+def dkt26_gap[p: Params](ref s: Shape) raises -> Int:
+    if p.regime != REGIME_JOHNSON or p.n_cw() != 1 or p.tail_digits != 3:
+        raise Error("DKT26 comparison needs the supported Johnson profile")
+    var scalar = dkt26_numerator(p.L(), p.K(), p.eta_inv)
+    # Corollary 7.2, p. 66: E/(Q-1) <= (ceil(E)+1)/Q when ceil(E)<Q.
+    # For e>=10, Q exceeds the entire Int range. Smaller orders fit exactly.
+    if p.e < 10:
+        var order = 1
+        for _ in range(p.e):
+            order *= 127
+        if scalar >= order:
+            raise Error("DKT26 affine numerator must be smaller than the challenge field")
+    var gap = add_numerator(4, scalar, 4)  # retain the four conjugate-code allowance
+    for level in s.tail:
+        if level.codewords != 1:
+            raise Error("DKT26 comparison does not cover split tail codewords")
+        # Corollary 7.8, pp. 69-70: three shared-challenge binary fold levels.
+        gap = add_numerator(gap, dkt26_numerator(level.L, level.rows, p.eta_inv), 3)
+    return gap
+
+
 def list_bound(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
     if dimension <= 0 or dimension >= length or eta_inv < 2:
         raise Error("list bound needs 0 < dimension < length and eta_inv >= 2")
@@ -274,6 +349,12 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     projection[p](s, "johnson_bchks25_1.5_projection", REGIME_JOHNSON, numerator_no_gap, pairs=True)
     projection[p](s, "johnson_bchks25_4.2_4.6_projection", REGIME_JOHNSON, numerator_no_gap, section4=True)
     var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
+    if p.regime == REGIME_JOHNSON:
+        var dkt_gap = dkt26_gap[p](s)
+        print("johnson_dkt26_5.12_conditional", "eta_inv", p.eta_inv, "pcs_gap", dkt_gap,
+              "field_numerator_total", add_numerator(numerator_no_gap, dkt_gap),
+              "query_bits", bits(q_err), "conditional_iop_bits",
+              bits(Float64(add_numerator(numerator_no_gap, dkt_gap)) / field_order(p.e) + q_err))
     print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
     print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))
     print("projected_e16_same_geometry_and_queries", bits(Float64(numerator) / field_order(16) + q_err))
@@ -281,6 +362,21 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
 
 
 def self_check() raises:
+    # Independent rational calculation of all four ECDSA scalar bounds.
+    assert_equal(dkt26_numerator(161280, 20736, 16), 66374040)
+    assert_equal(dkt26_numerator(92160, 10368, 16), 44914431)
+    assert_equal(dkt26_numerator(10752, 1296, 16), 5031516)
+    assert_equal(dkt26_numerator(1344, 162, 16), 641610)
+    assert_equal(dkt26_numerator(64, 17, 16), 28478)  # m=4, integral scalar bound
+    assert_equal(ceil_sqrt(9223372036854775807), 3037000500)
+    assert_equal(ceil_sqrt(64), 8)
+    assert_equal(ceil_sqrt(65), 9)
+    with assert_raises():
+        _ = dkt26_numerator(64, 1, 16)
+    with assert_raises():
+        _ = dkt26_numerator(64, 63, 2)
+    with assert_raises():
+        _ = dkt26_numerator(9223372036854775807, 2, 16)
     assert_true(abs(query_error(16, 4, 3) - 125.0 / 512.0) < 1e-15)
     # rho=16/64=1/4, m=4: exact Hab25 numerator 408146688; +1 from the upward pad.
     assert_equal(gap_numerator(64, 17, REGIME_JOHNSON, 16), 408146689)
