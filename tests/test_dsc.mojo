@@ -13,7 +13,7 @@ from core.hash import Blake3
 from workloads.bigint import Big
 from workloads.sha256 import sha256
 from workloads.dsc import DSC
-from workloads.sod import SOD, sha_chains, commitment_length, commitment_message
+from workloads.sod import sha_chains, commitment_length, commitment_message
 from workloads.rsa import chain_count
 from workload import prove_workload, prove_prepared, verify_workload
 from prover import Prover
@@ -72,11 +72,9 @@ def test_dsc_verifies_and_wires_hold() raises:
     var verifier = DSC(2, 2, Big(), n_csca, m.shr(256).shl(256), len(tbs), N_OFFSET)      # no body, s, n_dsc, r or low limb
     assert_equal(_verdict(proof, verifier, inputs), "accepted")
     # the commitment the SOD proof opens is the same bytes
-    var sod = SOD(2, 2, Big(), n_dsc, Big(), [1, 2, 3], [0, 0], List[List[UInt8]](), r.copy())
     var c = sha256(commitment_message(n_dsc, 2, r))
     for i in range(32):
         assert_equal(inputs[len(inputs) - 32 + i], c[i])
-    _ = sod
     # the body carries another key than the committed one: the window wires break
     var bad = tbs.copy()
     bad[N_OFFSET + 40] ^= 1

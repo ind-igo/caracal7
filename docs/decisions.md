@@ -2408,3 +2408,38 @@ takes four and the fingerprints one.
   offset fails the transcript or the pin; a wrong length or limb count is refused before any public data is
   indexed (Codex: the commitment group's size came from the unchecked limbs byte and could index past the
   grid). Untested: a prover using different limbs of s in different cells; the s wires are read in review.
+
+## Predicates and nullifier: a disclosed DG1 window and one more SHA-256 group (2026-09-19, M1 Pro)
+
+`docs/passport.md` step 3. The SOD proof (`workloads/sod.mojo`) now discloses a 32-byte window of DG1 and
+carries a nullifier; both are public factors on the fingerprint accumulator, no new slot.
+
+- **The window is a public factor of its plain fingerprint.** The DG1 group takes one embedded window at a
+  pinned offset (the head gains a u16); the verifier fingerprints the window bytes it is given
+  (`sha256_window_factor`: the bits on the rows of the five embedded terms, cA's rows at and after s0 on the
+  t2 and v entries, cB's on t1 and u1, cC's first s0 bits on the last rows of wd; the masks keep the live
+  transport of each pair) and closes the wiring product on it. The predicates (`workloads/mrz.mojo`:
+  nationality, birth, sex, expiry of a TD3 MRZ; age and validity on a date) run on the verifier's side over
+  the disclosed bytes. A hidden-date comparison inside the proof would cost a comparison gadget and buys
+  nothing until the masking layer exists: the opened rows leak the witness. The default window starts at
+  the nationality (DG1 byte 59), so the document number stays hidden and the optional data is disclosed; a
+  window has 32 bytes, and any window holding nationality, birth and expiry discloses one of the two.
+- **The nullifier is SHA-256(SHA-256(LDS security object) || scope).** One 64-byte group (33 chains): its
+  first window is wired to the eContent group's digest (a digest and a window fingerprint are the same
+  value), its second window is a public factor holding the 32-byte scope, its digest a public factor. The
+  LDS security object holds the data-group hashes (the photo among them): the preimage is unguessable from
+  the disclosed fields, and anyone with the chip's data can compute the nullifier, the usual model. The
+  signature would do as well (zkPassport's choice) at 81 chains instead of 33; the DG1 alone would not: its
+  entropy is the document number, which a verifier grinds in seconds once the birth date is disclosed.
+- **Measured** (back to back on a loaded machine, 144 x 2688): SOD 2101 chains, 1.67 s prove, 1.11 MB,
+  0.56 s verify, against 1.60 s, 1.08 MB, 0.53 s for the previous statement in the same run. A passport
+  3.0 s prove, 2.15 MB, 1.28 s verify.
+- **Tests.** `test_sod` moves to a 192-chain grid (171 live) and the ICAO sample DG1 (93 bytes): the
+  verifier reads Utopia, 1974-08-12, F, 2012-04-15 from the disclosed window, age 52 and expired on
+  2026-09-19; the nullifier in the public inputs is the hash; a window byte claimed in the public inputs that
+  is not DG1's, and a scope in the trace other than the public one, fail at the wire (proved under the
+  honest public inputs). Codex: MRZ dates were not range-checked (a 99th month passes the expiry test);
+  the month and day are now 1..12 and 1..31. Opus (no hole; the factor's exponent ranges partition 0..255 and
+  the pin rejects a claimed offset): the tamper cases only touched the first segment of a window, so a mask
+  that produced no term would have failed open; a flip of the last byte of the window and of the scope now
+  exercise the wd and u1 segments. The predicates take the pinned DG1 length and refuse anything but TD3.

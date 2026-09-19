@@ -1,9 +1,11 @@
-"""The SOD workload (workloads/sod.mojo): three SHA-256 groups (DG1, eContent, signed attributes of the
-real ASN.1 shape), the commitment group (n || r) and a 512-bit RSA verify (2 limbs, e = 3) on a 128-chain
-grid, 122 chains live. The proof verifies against public inputs without the messages, s or n; a DG1 whose
-digest the eContent does not carry, signed attributes whose digest is not the signed limb, a modulus the
-commitment does not hold, and random bytes the public digest does not hash are refused at the wire. Fixture:
-OpenSSL genrsa -3 512 (the DSC key of test_dsc), s = m^d mod n for m = (random upper limb || sha256(attrs))."""
+"""The SOD workload (workloads/sod.mojo): three SHA-256 groups (the ICAO sample DG1, an eContent, signed
+attributes of the real ASN.1 shape), the commitment group (n || r), the nullifier group and a 512-bit RSA
+verify (2 limbs, e = 3) on a 192-chain grid, 171 chains live. The proof verifies against public inputs without
+the messages, s or n, and the verifier reads the MRZ fields from the disclosed window; a DG1 whose digest the
+eContent does not carry, signed attributes whose digest is not the signed limb, a modulus the commitment does
+not hold, random bytes the public digest does not hash, a window that is not DG1's and a scope the nullifier
+does not hash are refused at the wire. Fixture: OpenSSL genrsa -3 512 (the DSC key of test_dsc), s = m^d mod n
+for m = (random upper limb || sha256(attrs))."""
 
 from std.testing import assert_equal, assert_true, TestSuite
 from max.gpu.host import DeviceContext
@@ -12,23 +14,25 @@ from core.params import CLIENT
 from core.hash import Blake3
 from workloads.bigint import Big
 from workloads.sha256 import sha256
-from workloads.sod import SOD, sha_chains, commitment_length
+from workloads.sod import SOD, sha_chains, commitment_length, NULL_LENGTH, HEAD
+from workloads.mrz import mrz_fields, Date, WINDOW_OFFSET
 from workloads.rsa import chain_count
 from workload import prove_workload, prove_prepared, verify_workload
 from prover import Prover
 
-comptime p = CLIENT.grid(144, 128)
+comptime p = CLIENT.grid(144, 192)
 comptime N_HEX = "c6c2c947fb9983e3f183b3f232619049cf007a2a00ea640b93ca8c2a11b3ed503dc31cbb8c4e06dd5baf9e24dd239c6bc07e3bf53eb92f746873f6e09dd44ccf"
-comptime S_HEX = "8006fef715c7c0ddecd6eff468fa7d2a3a68c3cb3f4c6135db4d344b49601f3c6f5c893133ffe5ae144c01ece68e73735ad65dff3d6b87443230e8478b910bcd"
-comptime M_HEX = "05eba8ddf8be24f7fcd1908e2bd623d6530ae64739280d5e23971213e29041c8bf8080d253cc543c9c0647462570f1a2c992cbf3679a80eb99271400f1bbadd4"
-comptime S_FORGED_HEX = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000051dc07c20aa1270f38fb5cbb5cf52d813c6552d288d"
-comptime N_FORGED_HEX = "800000000000000000000000000000000000000000675b234f7754adf696de93768cae91bd0ba698c3bd3e6f903dabdda1e25d70226b410c8650ec9541b55041"
+comptime S_HEX = "a4ffd94cde96743b4c2ea345612da61d62539c51f34fb1e63f1a2d37aa54d57578a3ee2a104f96000f74846c5ffc2f7c7a34dfd37c6e751cf5a6a89739720171"
+comptime M_HEX = "7a5bc125f007aa97c0b78533c9a6b4866f5d74360f19219e4ae344c2964f337449a08d34a4d6ba4d1299c3f31cecf3e76de7c155c283bd3cb65c65ad04fb64c4"
+comptime S_FORGED_HEX = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000064d7821c43dd01460a217e9113a5b688cfaf28468dc"
+comptime N_FORGED_HEX = "8000000000000000000000000000000000000000000c6efcc1784c7bdae68a223c0406fad3a6122ce7cf6aeaa19d359531f7f40c96008e267a157f5ba3d294fc"
 comptime R_HEX = "a584972e6adad837d3db75d7685592f3de517be3afce80bf3883008fa9c10714"
-comptime DG1_HEX = "a54dca182530bb1d6d132cded6237b2ed91e3f721fcb1971174494d6493c9d5c3460be31201e69fe"
-comptime ECONTENT_HEX = "daa0eee8b9997f5c920764db0e493c5a26904c9f1af12aa4469dd3472cf7cc469452934f43401ddf7c2999fdafe59325"
-comptime ATTRS_HEX = "3147301506092a864886f70d010903310806066781080101302f06092a864886f70d0109043122042017588c29fd9dc7826cf2031d1a2d666e5ffe7264ca7c4da46b03849d348b7ef1"
+comptime DG1_HEX = "615b5f1f58503c55544f4552494b53534f4e3c3c414e4e413c4d415249413c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c4c38393839303243333655544f3734303831323246313230343135395a45313834323236423c3c3c3c3c3130"
+comptime ECONTENT_HEX = "585b93f8e779c6c8432bc07d1c637793f4d77e0b756865f7aec3756f98d6ec6eb767eda371904651274d0750e87265aa"
+comptime ATTRS_HEX = "3147301506092a864886f70d010903310806066781080101302f06092a864886f70d0109043122042023c09199ea90aa65aab358e441333b56dc09a1d9ca18425aadbe0f43429e1b31"
 comptime EMBED_1 = 8
 comptime EMBED_2 = 41
+comptime SCOPE_HEX = "5b3e2b1e0a76d2e7e1d5a01d5b0d0b6b7d2a3c9e0f1e2d3c4b5a69788796a5b4"
 
 
 def _bytes(hex: String) raises -> List[UInt8]:
@@ -73,35 +77,65 @@ def test_sod_verifies_and_wires_hold() raises:
     var lengths: List[Int] = [len(msgs[0]), len(msgs[1]), len(msgs[2])]
     var embeds: List[Int] = [EMBED_1, EMBED_2]
     var r = _message(R_HEX)
-    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + sha_chains(commitment_length(2)) + chain_count(2, 2), 122)
-    var w = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), msgs.copy(), r.copy())
+    var scope = _message(SCOPE_HEX)
+    assert_equal(sha_chains(lengths[0]) + sha_chains(lengths[1]) + sha_chains(lengths[2]) + sha_chains(commitment_length(2)) + sha_chains(NULL_LENGTH) + chain_count(2, 2), 171)
+    var w = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), msgs.copy(), r.copy())
     var inputs = w.public_inputs[p]()
     var proof = prove_workload[p, Blake3, SOD](ctx, w)
-    var verifier = SOD(2, 2, Big(), Big(), m.shr(256).shl(256), lengths.copy(), embeds.copy())     # no messages, s, n, r or low limb
+    var verifier = SOD(2, 2, Big(), Big(), m.shr(256).shl(256), lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy())     # no messages, s, n, r or low limb
     assert_equal(_verdict(proof, verifier, inputs), "accepted")
+    # the verifier's predicates on the disclosed window: Anna Maria Eriksson of Utopia, born 1974-08-12, expired 2012-04-15
+    var window = List[UInt8]()
+    for i in range(32):
+        window.append(inputs[HEAD + 32 + 32 + i])
+    var today = Date(2026, 9, 19)
+    var fields = mrz_fields(window, WINDOW_OFFSET, lengths[0], today)
+    assert_equal(fields.nationality, "UTO")
+    assert_equal(fields.sex, "F")
+    assert_equal(fields.birth, Date(1974, 8, 12))
+    assert_equal(fields.expiry, Date(2012, 4, 15))
+    assert_equal(fields.age_on(today), 52)
+    assert_true(fields.expired_on(today))
+    assert_equal(sha256(sha256(msgs[1]) + scope.copy()), List[UInt8](inputs[len(inputs) - 32:]))
     # DG1 changed: its digest is not the one the eContent carries
     var bad = msgs.copy()
     bad[0][5] ^= 1
-    var wb = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), bad^, r.copy())
+    var wb = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), bad^, r.copy())
     assert_equal(_verdict(prove_workload[p, Blake3, SOD](ctx, wb), verifier, inputs), "wiring grand product is not the public factor")
-    # eContent changed: both of its wires break (the digest it carries and the digest it has)
+    # eContent changed: its three wires break (the digest it carries, the digest it has, the nullifier's window)
     var bad1 = msgs.copy()
     bad1[1][0] ^= 1
-    var wb1 = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), bad1^, r.copy())
-    assert_equal(_verdict(prove_workload[p, Blake3, SOD](ctx, wb1), verifier, inputs), "wiring grand product is not the public factor")
+    var wb1 = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), bad1^, r.copy())
+    assert_equal(_verdict(_prove_as(ctx, wb1, inputs), verifier, inputs), "wiring grand product is not the public factor")
     # signed attributes changed: their digest is not the signed limb
     var bad2 = msgs.copy()
     bad2[2][60] ^= 1
-    var wb2 = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), bad2^, r.copy())
+    var wb2 = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), bad2^, r.copy())
     assert_equal(_verdict(prove_workload[p, Blake3, SOD](ctx, wb2), verifier, inputs), "wiring grand product is not the public factor")
     # other random bytes: the commitment digest is not the public one
     var r1 = r.copy()
     r1[3] ^= 1
-    var wr = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), msgs.copy(), r1^)
+    var wr = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), msgs.copy(), r1^)
     assert_equal(_verdict(_prove_as(ctx, wr, inputs), verifier, inputs), "wiring grand product is not the public factor")
     # another key pair with the same m (s'^3 = m + n'): the RSA lane holds, the committed n is not its modulus
-    var wn = SOD(2, 2, Big.from_hex(S_FORGED_HEX), Big.from_hex(N_FORGED_HEX), m, lengths.copy(), embeds.copy(), msgs.copy(), r.copy(), committed=n)
+    var wn = SOD(2, 2, Big.from_hex(S_FORGED_HEX), Big.from_hex(N_FORGED_HEX), m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope.copy(), msgs.copy(), r.copy(), committed=n)
     assert_equal(_verdict(prove_workload[p, Blake3, SOD](ctx, wn), verifier, inputs), "wiring grand product is not the public factor")
+    # the disclosed window is not DG1's: the nationality byte in the public inputs differs from the trace's
+    var claim = inputs.copy()
+    claim[HEAD + 32 + 32] ^= 1
+    assert_equal(_verdict(_prove_as(ctx, w, claim), verifier, claim), "wiring grand product is not the public factor")
+    var claim1 = inputs.copy()                        # the window's last byte: the wd segment (s0 = 88, the last 11 bytes)
+    claim1[HEAD + 32 + 32 + 31] ^= 1
+    assert_equal(_verdict(_prove_as(ctx, w, claim1), verifier, claim1), "wiring grand product is not the public factor")
+    # another scope in the trace than in the public inputs: the scope window and the nullifier both break
+    var scope1 = scope.copy()
+    scope1[0] ^= 1
+    var ws = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope1^, msgs.copy(), r.copy())
+    assert_equal(_verdict(_prove_as(ctx, ws, inputs), verifier, inputs), "wiring grand product is not the public factor")
+    var scope2 = scope.copy()                         # the scope's last byte: the u1 segment
+    scope2[31] ^= 1
+    var ws2 = SOD(2, 2, s, n, m, lengths.copy(), embeds.copy(), WINDOW_OFFSET, scope2^, msgs.copy(), r.copy())
+    assert_equal(_verdict(_prove_as(ctx, ws2, inputs), verifier, inputs), "wiring grand product is not the public factor")
     # more limbs than the statement's: refused before any public data is indexed
     var limbs = inputs.copy()
     limbs[0] = 3

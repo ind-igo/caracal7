@@ -44,7 +44,8 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `ecdsa` | one secp256k1 signature verification on the mulmod chains | `docs/ecdsa.md` |
 | `rsa` | one RSA-2048 signature verification (e = 65537, 17 modmuls), squaring symmetry | `docs/decisions.md` |
 | `sha256g` | SHA-256 as a row group on the 144-row chain, digests wired between groups | `docs/decisions.md` |
-| `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify with the DSC key committed, one proof | `docs/passport.md` |
+| `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify with the DSC key committed, a disclosed MRZ window and a nullifier, one proof | `docs/passport.md` |
+| `mrz` | the verifier's predicates on the disclosed window: nationality, birth, expiry, age | `docs/passport.md` |
 | `dsc` | the DSC certificate check: SHA(certificate body), RSA verify by the CSCA key, the committed DSC key inside the body | `docs/passport.md` |
 
 ## Run
@@ -91,11 +92,12 @@ M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
 | RSA-2048 verify | 1888 | 586 | 594 | 627,000 |
-| passport SOD (3 x SHA-256 + commitment + RSA-2048, s and n witness) | 2068 | 1536 | 526 | 1,082,000 |
+| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 2101 | 1672 | 562 | 1,108,000 |
 | DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2146 | 1377 | 718 | 1,042,000 |
 
-A passport is the two proofs sharing one commitment digest: 2.9 s prove, 2.1 MB, 1.25 s verify. The verify
-is host-side field arithmetic over the proof; its public data is under 1 MB (`docs/public-columns.md`).
+A passport is the two proofs sharing one commitment digest: 3.0 s prove, 2.15 MB, 1.3 s verify; the SOD proof
+discloses the MRZ fields and a nullifier per scope. The verify is host-side field arithmetic over the proof;
+its public data is under 1 MB (`docs/public-columns.md`).
 The next steps are in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA

@@ -544,3 +544,23 @@ def sha256_digest_factor(entry: Int, entries: Int, digest: List[UInt8]) -> List[
         for z in range(SLOT):
             v[(entry + i) * ROWS + BASE + 3 * SLOT + z] = (digest[4 * i + z // 8] >> UInt8(7 - z % 8)) & 1
     return v^
+
+
+def sha256_window_factor(entry: Int, entries: Int, seg: Tuple[Int, Int, Int, Int], window: List[UInt8]) -> List[UInt8]:
+    """The public factor's columns for a 32-byte window on an accumulator of `entries` ingest terms whose five
+    `embedded` terms (t2, v, t1, u1, wd) start at `entry`: ROWS bytes per entry, cA's rows >= s0 on the
+    first two entries, cB's rows on the next two, cC's first s0 bits on the last rows of the fifth (the
+    verifier's masks keep the live transport of each pair). `seg` is `ShaGroup.segments` of the window."""
+    var s0 = seg[3]
+    var v = List[UInt8](length=entries * ROWS, fill=0)
+    for b in range(8 * len(window)):
+        var bit = (window[b // 8] >> UInt8(7 - b % 8)) & 1
+        if b < STREAM - s0:
+            v[entry * ROWS + BASE + s0 + b] = bit
+            v[(entry + 1) * ROWS + BASE + s0 + b] = bit
+        elif b < 2 * STREAM - s0:
+            v[(entry + 2) * ROWS + BASE + b - (STREAM - s0)] = bit
+            v[(entry + 3) * ROWS + BASE + b - (STREAM - s0)] = bit
+        else:
+            v[(entry + 4) * ROWS + ROWS - 1 - s0 + b - (2 * STREAM - s0)] = bit
+    return v^
