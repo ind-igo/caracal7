@@ -69,10 +69,13 @@ None of these cut security. In order of payoff:
    lived in F2*, where 4032 allowed three slots plus the factors and the RSA lane uses four; since
    decisions.md "Wiring ids in F4" they are elements of F4* and the slot count is free. The axis-2 plans run the odd part 63 as one radix stage and the quotient's coset
    inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
-   per compression block"), 4032 is unmeasured. The RSA lane is 89 percent of the chains; a public modulus
-   does not cut its bit products, the limb split (item 4) is the lever. Order: measure a 144 x 4032 grid
-   against 2688 per row; then the fold, only if the per-row cost stays near 1 and the lane
-   shrinks by 5 percent. A union of both statements as extra columns on one 2688 grid gains nothing: the
+   per compression block"); 4032 measured at the same cells per second as 2688 on the SHA-256 chain bench
+   (96 x 2688 at 53 M cells/s, 96 x 4032 at 53, back to back, `bench_sha256_chain`), with a smaller proof
+   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms, the public columns and the
+   small grid grow with the grid). The RSA lane is 89 percent of the chains; a public modulus
+   does not cut its bit products, the limb split (item 4) is the lever. Order: the RSA limb split (item 4)
+   until the passport is under 4032 chains, then the fold; the verify time of one 4032 proof against two
+   2688 proofs decides whether it pays. A union of both statements as extra columns on one 2688 grid gains nothing: the
    opened columns double with the columns.
 2. Verify time. The fingerprint sums run one row at a time; a batched Horner over all groups is a small
    change worth maybe 20 to 30 percent of the 0.56 s. Cheap, revisit second.
