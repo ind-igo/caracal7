@@ -64,10 +64,18 @@ verifier checks itself in microseconds.
 
 None of these cut security. In order of payoff:
 
-1. One proof instead of two. The two proofs sum to about 4250 chains; the 4032 grid is one coset short and
-   its slot rule gives three wiring slots where the RSA lane uses four. A slot merge, or an RSA lane on three
-   slots, folds the passport into one proof: one Merkle root, one row combination, one set of opened columns,
-   about half the verify time. Revisit first, it changes every number below.
+1. One proof instead of two. About 4200 chains at real sizes (the bench fixture's 650-byte certificate gives
+   4085), 5 percent over 4032, the largest grid with accumulators (the small grid needs a coset of G2, of
+   order 2 h2, inside F2*). Three prover limits meet here, none of them passport-specific. The wiring ids live
+   in F2*: 4032 allows three slots plus the factors where the RSA lane uses four; ids in F4 lift this (the
+   ids are constants embedded in E, kappa from `f4_primitive`, sigma four bytes wide; no change to the
+   soundness argument). The axis-2 plans run the odd part 63 as one radix stage and the quotient's coset
+   inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
+   per compression block"), 4032 is unmeasured. The RSA lane is 89 percent of the chains; a public modulus
+   does not cut its bit products, the limb split (item 4) is the lever. Order: measure a 144 x 4032 grid
+   against 2688 per row; ids in F4; then the fold, only if the per-row cost stays near 1 and the lane
+   shrinks by 5 percent. A union of both statements as extra columns on one 2688 grid gains nothing: the
+   opened columns double with the columns.
 2. Verify time. The fingerprint sums run one row at a time; a batched Horner over all groups is a small
    change worth maybe 20 to 30 percent of the 0.56 s. Cheap, revisit second.
 3. The commitment group SHA(n || r), 81 chains in both proofs. A commitment to the digest of n would be
