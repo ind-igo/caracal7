@@ -39,9 +39,9 @@ Buffers (bytes; slowest ... fastest), per accumulator:
     z2           (x2 + 1, e)  Z2(1) = 1, Z2(omega2 x2) = Z2(x2) chain_prod(x2) (7.3, (W) for (P)); entry h2 is 1
 
 Wiring (polynomial-mulmod "Wiring"): a copy constraint on the chain-end values of slot columns, PLONK-style.
-Slot s (a Z block) on chain j has the value w = R(e1, omega2^j) and the id kappa_s omega2^j in F2 (kappa_s a
-coset representative, so ids are distinct); sigma (Shape.sigma, F2 per slot and chain) is the public
-permutation. A wiring product (WIRE record: two slots, family) is the Z2 line of the per-chain factors
+Slot s (a Z block) on chain j has the value w = R(e1, omega2^j) and the id kappa^s omega2^j in F4 (tables.node_id;
+kappa generates F4*, so the slots' cosets are distinct); sigma (Shape.sigma, one id per slot and chain) is
+the public permutation. A wiring product (WIRE record: two slots, family) is the Z2 line of the per-chain factors
     N = prod_s (w_s + beta_w id_s + gamma_w),  D = prod_s (w_s + beta_w sigma_s + gamma_w)
 with beta_w, gamma_w the two wiring elements (squeezed after the derivation table). k_wire_factors writes
 the four factor lines (n0, n1, d0, d1: (4, x2, e)) for the small grid and chain_prod = N / D for k_z2; a NONE
@@ -56,11 +56,12 @@ from std.math import ceildiv
 from std.gpu import global_idx
 from max.gpu.host import DeviceContext
 
-from core.field import F2, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_inv0, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
+from core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_inv0, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
 from core.params import Params
+from core.tables import node_id
 from core.backend import BACKEND
 from core.bytes import Base, Buf, u16
-from relations.ir import ACC, ENTRY, WIRE, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED, ENT_A, ENT_B, ENT_COEF, ENT_CHAL
+from relations.ir import ACC, ENTRY, WIRE, ID, NONE, KIND_LOOKUP, KIND_HORNER, CHAL, CHAL_ADD, CHAL_ONE, SAMPLED, ENT_A, ENT_B, ENT_COEF, ENT_CHAL
 from core.arena import Arena, Bump, ST_ACC, ST_SG
 
 
@@ -229,10 +230,10 @@ def k_z2[p: Params](base: Base, chain_prod: Buf[E_BYTES], z2: Buf[E_BYTES], coun
 
 
 def k_wire_factors[p: Params](base: Base, zval: Buf[E_BYTES], wires: Buf[1], sigma: Buf[1], columns_w: Int32, wchal: Buf[E_BYTES],
-                              ka: UInt8, kb: UInt8, wa: UInt8, wb: UInt8, chain_prod: Buf[E_BYTES], lines: Buf[E_BYTES], count: Int32):
+                              k0: UInt8, k1: UInt8, k2: UInt8, k3: UInt8, wa: UInt8, wb: UInt8, chain_prod: Buf[E_BYTES], lines: Buf[E_BYTES], count: Int32):
     """One thread per (wiring product g < count, chain): the factor lines (4, x2, e) of product g at lines
     + 4 g and N / D into chain_prod line g (module docstring). Product g's slots are 2 g and 2 g + 1 with
-    coset representatives kappa^(2 g), kappa^(2 g + 1); (ka, kb) is kappa, (wa, wb) omega2."""
+    the ids kappa^(2 g) x, kappa^(2 g + 1) x; (k0, k1, k2, k3) is kappa, (wa, wb) omega2."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
     var t = global_idx.x
@@ -241,6 +242,7 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[E_BYTES], wires: Buf[1], sig
     var g = t // h2
     var j = t % h2
     var x = ext_pow[1](F2(wa, wb), j)
+    var kappa = F4(k0, k1, k2, k3)
     var beta = wchal.load(base, 0)
     var gamma = wchal.load(base, 1)
     var n = ext_one[E_LEVEL]()
@@ -251,10 +253,10 @@ def k_wire_factors[p: Params](base: Base, zval: Buf[E_BYTES], wires: Buf[1], sig
         var col = u16(base, wires.at(g * WIRE + 2 * s))
         if col != NONE:
             var w = zval.load(base, ((col - Int(columns_w)) // p.e) * p.N() + j * h1 + h1 - 1)
-            var kappa = ext_pow[1](F2(ka, kb), 2 * g + s)
-            var sg = F2(sigma.load(base, ((2 * g + s) * h2 + j) * 2), sigma.load(base, ((2 * g + s) * h2 + j) * 2 + 1))
+            var at = ((2 * g + s) * h2 + j) * ID
+            var sg = F4(sigma.load(base, at), sigma.load(base, at + 1), sigma.load(base, at + 2), sigma.load(base, at + 3))
             var wg = f_add(w, gamma)
-            ns = f_add(wg, ext_mul[E_LEVEL](beta, ext_embed[E_LEVEL](ext_mul[1](kappa, x))))
+            ns = f_add(wg, ext_mul[E_LEVEL](beta, ext_embed[E_LEVEL](node_id(kappa, 2 * g + s, x))))
             ds = f_add(wg, ext_mul[E_LEVEL](beta, ext_embed[E_LEVEL](sg)))
         lines.store(base, (4 * g + s) * h2 + j, ns)
         lines.store(base, (4 * g + 2 + s) * h2 + j, ds)
@@ -343,12 +345,12 @@ def horner[p: Params](ctx: DeviceContext, arena: Arena, trace: Int, families: In
 
 
 def wiring[p: Params](ctx: DeviceContext, arena: Arena, A: AccLayout, count: Int, pi0: Int, wires: Int, sigma: Int, columns_w: Int, wchal: Int,
-                      kappa: F2, omega2: F2) raises:
+                      kappa: F4, omega2: F2) raises:
     """The `count` wiring products (product indices pi0, pi0 + 1, ...): their factor lines into A.wlines
     (product, 4, h2, e) and their Z2 lines, two launches for all of them."""
     comptime B = BACKEND.block
     ctx.enqueue_function[k_wire_factors[p]](arena.buf, Buf[E_BYTES](A.zval), Buf[1](wires), Buf[1](sigma), Int32(columns_w), Buf[E_BYTES](wchal),
-                                            kappa[0], kappa[1], omega2[0], omega2[1], Buf[E_BYTES](A.chain_prod), Buf[E_BYTES](A.wlines), Int32(count),
+                                            kappa[0], kappa[1], kappa[2], kappa[3], omega2[0], omega2[1], Buf[E_BYTES](A.chain_prod), Buf[E_BYTES](A.wlines), Int32(count),
                                             grid_dim=ceildiv(count * p.h2(), B), block_dim=B)
     ctx.enqueue_function[k_z2[p]](arena.buf, Buf[E_BYTES](A.chain_prod), Buf[E_BYTES](A.z2_at(pi0)), Int32(count), grid_dim=ceildiv(count, B), block_dim=B)
 

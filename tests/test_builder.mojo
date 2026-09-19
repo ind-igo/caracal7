@@ -10,7 +10,7 @@ from core.hash import Blake3
 from proof import Shape
 from prover import Prover, load_trace, load_advice
 from verifier import verify
-from relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES
+from relations import KIND_PERM, KIND_LOOKUP, FIX_ONE, FIX_E, CHAL_MUL, CHAL_ADD, CHAL_ONE, RES, ID
 from relations.statement import Statement, Term, Read, BIT, LIMB6, BYTE, GATE_1, GATE_2, pad_trace, advice, restriction_line, chain_values
 from relations.ir import Families
 from workloads.synthetic import synthetic_statement, synthetic_table, wiring_statement, SYNTHETIC_PUBLIC_M
@@ -179,8 +179,8 @@ def test_every_check_has_a_failing_case() raises:
     assert_true(ws.compile[p]().shape.wiring_products() == 1, "a single slot pads to one product")
     var wc = wiring_statement(p.h2()).compile[p]()
     var sigma = wc.shape.sigma.copy()
-    sigma[2] = sigma[0]                                # slot 0 on chains 0 and 1 map to one id
-    sigma[3] = sigma[1]
+    for t in range(ID):                                # slot 0 on chains 0 and 1 map to one id
+        sigma[ID + t] = sigma[t]
     try:
         _ = Shape.__init__[p](wc.layout.columns_w(), wc.families, wc.shape.accs, wc.shape.tables, wc.shape.publics, wc.shape.restrictions,
                               wc.shape.point_list, wc.shape.chals, wc.shape.ends, wc.shape.wires, sigma, wc.shape.pubf)

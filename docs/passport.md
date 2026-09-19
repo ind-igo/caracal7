@@ -38,9 +38,8 @@ Plan and background: notes vault `wiki/projects/caracal7/passport-demo.md`. This
 
 ## Why two proofs
 
-One proof would hold the SOD, the body hash and the second RSA verify: about 4200 chains, above the 4032 grid,
-and that grid allows three wiring slots plus the factors (F2* has 16128 endpoints) where the RSA lane uses four
-and the fingerprints one. Two proofs on 2688 need no slot merge; the link between them is the commitment,
+One proof would hold the SOD, the body hash and the second RSA verify: about 4200 chains, above the 4032 grid
+(the largest with accumulators; deferred item 1 below). Two proofs on 2688 fit; the link between them is the commitment,
 which the DSC key needs anyway: with n public, the DSC check would be a proof about public data that the
 verifier checks itself in microseconds.
 
@@ -66,14 +65,13 @@ None of these cut security. In order of payoff:
 
 1. One proof instead of two. About 4200 chains at real sizes (the bench fixture's 650-byte certificate gives
    4085), 5 percent over 4032, the largest grid with accumulators (the small grid needs a coset of G2, of
-   order 2 h2, inside F2*). Three prover limits meet here, none of them passport-specific. The wiring ids live
-   in F2*: 4032 allows three slots plus the factors where the RSA lane uses four; ids in F4 lift this (the
-   ids are constants embedded in E, kappa from `f4_primitive`, sigma four bytes wide; no change to the
-   soundness argument). The axis-2 plans run the odd part 63 as one radix stage and the quotient's coset
+   order 2 h2, inside F2*). Three prover limits meet here, none of them passport-specific. The wiring ids
+   lived in F2*, where 4032 allowed three slots plus the factors and the RSA lane uses four; since
+   decisions.md "Wiring ids in F4" they are elements of F4* and the slot count is free. The axis-2 plans run the odd part 63 as one radix stage and the quotient's coset
    inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
    per compression block"), 4032 is unmeasured. The RSA lane is 89 percent of the chains; a public modulus
    does not cut its bit products, the limb split (item 4) is the lever. Order: measure a 144 x 4032 grid
-   against 2688 per row; ids in F4; then the fold, only if the per-row cost stays near 1 and the lane
+   against 2688 per row; then the fold, only if the per-row cost stays near 1 and the lane
    shrinks by 5 percent. A union of both statements as extra columns on one 2688 grid gains nothing: the
    opened columns double with the columns.
 2. Verify time. The fingerprint sums run one row at a time; a batched Horner over all groups is a small

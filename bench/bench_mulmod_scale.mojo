@@ -1,7 +1,7 @@
 """Prover cost against the chain count: a squaring chain of n 256-bit products on the 144 x n mulmod grid,
 ECDSA's columns. 576 is ECDSA's grid, 1152 about one RSA-2048 verify as 3-level Karatsuba block products
-(17 modmuls x 2 products x 27 blocks = 918). The largest mulmod grid is 1344 (11 wiring slots x h2 <= |F2*|),
-whose circuit header pushes the transcript prefix past PREFIX_MAX (a pinned circuit carries none). Warm prove, proof size, verify (docs/decisions.md 2026-09-17, "RSA-2048 on the mulmod chain")."""
+(17 modmuls x 2 products x 27 blocks = 918). The largest mulmod grid was 1344 while the ids lived in F2 (11 wiring slots x h2 <= |F2*|),
+and its circuit header pushed the transcript prefix past PREFIX_MAX until sigma went in by digest. Warm prove, proof size, verify (docs/decisions.md 2026-09-17, "RSA-2048 on the mulmod chain")."""
 
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext

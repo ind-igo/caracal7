@@ -69,6 +69,14 @@ def f4_primitive() raises -> F4:
     raise Error("no primitive element of F4 found")
 
 
+@always_inline
+def node_id(kappa: F4, s: Int, x: F2) -> F4:
+    """The wiring id of slot s at the chain point x of H2: kappa^s x in F4 (accumulate.mojo "Wiring"). kappa
+    generates F4*, so the cosets kappa^s H2 are distinct for s below F4_ORDER / h2: the slot count is not a
+    constraint of the grid (it was, with ids in F2*: six cosets at h2 = 2688, decisions.md)."""
+    return ext_mul[2](ext_pow[2](kappa, s), ext_embed[2](x))
+
+
 def f4_subgroup_generator(order: Int) raises -> F4:
     """An element of exact order `order` (order | 161280) in F4*."""
     for lo in range(1, 127):

@@ -18,10 +18,10 @@ from proof import Shape, ProofReader, VERSION, prefix_bytes
 from relations.statement import Compiled
 from core.transcript import HostTranscript, DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_CLEAR, DS_TAIL_ROOT, DS_TAIL_ROUND
 from core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
-from core.tables import Domains, RsDomain, f2_primitive
+from core.tables import Domains, RsDomain, f4_primitive, node_id
 from pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from relations import ENTRY, NONE, ACC, END, WIRE, PUBF, GRP, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_terms, eval_line, lagrange, column_offsets, TERMS
+from relations import ENTRY, NONE, ACC, END, WIRE, ID, PUBF, GRP, id_at, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_terms, eval_line, lagrange, column_offsets, TERMS
 from core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -226,7 +226,7 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
         return
     var one = _one()
     var at_end = point_index(shape.point_list, FIX_E, FIX_E)
-    var kappa = f2_primitive()
+    var kappa = f4_primitive()
     var e2f = ext_pow[1](d.omega2, p.h2() - 1)
     var bw = list_e(wchal, 0)
     var gw = list_e(wchal, 1)
@@ -242,8 +242,8 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
             if col == NONE:
                 continue
             var wg = f_add(_coords_at[p](openings, shape, at_end, col), gw)
-            var sg = F2(shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2], shape.sigma[((2 * g + sl) * p.h2() + p.h2() - 1) * 2 + 1])
-            lhs = ext_mul[E_LEVEL](lhs, f_add(wg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](ext_mul[1](ext_pow[1](kappa, 2 * g + sl), e2f)))))
+            var sg = id_at(shape.sigma, ((2 * g + sl) * p.h2() + p.h2() - 1) * ID)
+            lhs = ext_mul[E_LEVEL](lhs, f_add(wg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](node_id(kappa, 2 * g + sl, e2f)))))
             rhs = ext_mul[E_LEVEL](rhs, f_add(wg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](sg))))
     var off = len(public)                                     # the factors' columns end the public data
     for i in range(len(shape.pubf) // PUBF):
@@ -255,7 +255,7 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
             cols.append(public[off + t])
         off += n
         var k = get_u16(shape.pubf, i * PUBF)
-        var sel = selector_values[p](families, shape.accs, k, shape.publics, public, shape.columns_w + shape.columns_z, get_u16(shape.pubf, i * PUBF + 6))
+        var sel = selector_values[p](families, shape.accs, k, shape.publics, public, shape.columns_w + shape.columns_z, get_u16(shape.pubf, i * PUBF + 2 + 2 * ID))
         var selected = False
         for t in range(len(sel)):
             if sel[t] != 0:
@@ -263,8 +263,8 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
         if not selected:
             raise Error("public factor's selector is zero on its chain")
         var vg = f_add(horner_chain_end[p](families, shape.accs, k, cols, stage1, sel), gw)
-        var f_id = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](F2(shape.pubf[i * PUBF + 2], shape.pubf[i * PUBF + 3]))))
-        var f_sg = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](F2(shape.pubf[i * PUBF + 4], shape.pubf[i * PUBF + 5]))))
+        var f_id = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](id_at(shape.pubf, i * PUBF + 2))))
+        var f_sg = f_add(vg, ext_mul[E_LEVEL](bw, ext_embed[E_LEVEL](id_at(shape.pubf, i * PUBF + 2 + ID))))
         if f_id.reduce_or() == 0 or f_sg.reduce_or() == 0:
             raise Error("zero public factor")
         lhs = ext_mul[E_LEVEL](lhs, f_id)
@@ -282,7 +282,7 @@ def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
     var one = _one()
     var at_e1 = point_index(shape.point_list, FIX_E, 0)          # (e1, z2)
     var at_next = point_index(shape.point_list, FIX_ONE, 2)      # (1, omega2 z2)
-    var kappa = f2_primitive()
+    var kappa = f4_primitive()
     var e2 = ext_embed[E_LEVEL](ext_pow[1](d.omega2, p.h2() - 1))
     var w2 = ext_embed[E_LEVEL](d.omega2)
     var r2 = E(0)
@@ -308,8 +308,8 @@ def _small_grid[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
             if col == NONE:
                 continue
             var wg = f_add(_coords_at[p](openings, shape, at_e1, col), list_e(wchal, 1))
-            var sig = interp_cyclic(shape.sigma, (2 * g + sl) * p.h2(), p.h2(), d.omega2, z2, 2)
-            nn = ext_mul[E_LEVEL](nn, f_add(wg, ext_mul[E_LEVEL](ext_mul[E_LEVEL](list_e(wchal, 0), ext_embed[E_LEVEL](ext_pow[1](kappa, 2 * g + sl))), z2)))
+            var sig = interp_cyclic(shape.sigma, (2 * g + sl) * p.h2(), p.h2(), d.omega2, z2, ID)
+            nn = ext_mul[E_LEVEL](nn, f_add(wg, ext_mul[E_LEVEL](ext_mul[E_LEVEL](list_e(wchal, 0), ext_embed[E_LEVEL](ext_pow[2](kappa, 2 * g + sl))), z2)))
             dd = ext_mul[E_LEVEL](dd, f_add(wg, ext_mul[E_LEVEL](list_e(wchal, 0), sig)))
         var term = ext_mul[E_LEVEL](f_sub(z2, e2), f_sub(ext_mul[E_LEVEL](zb, dd), ext_mul[E_LEVEL](za, nn)))
         r2 = f_add(r2, ext_mul[E_LEVEL](ext_pow[E_LEVEL](alpha, get_u16(shape.wires, g * WIRE + 4)), term))

@@ -39,8 +39,8 @@ not below n: the statement proves s^e = m (mod n) for the public m, which a veri
 
 Wiring: modmul 0 squares s (public factors on ha and rb); modmul m squares r of m - 1 (the cz hints of
 its heads), the last one multiplies r by s. q_i's occurrences are wired to their first; n_j is a public
-factor on every QN chain; the last modmul's r_p are the public factors m_p. Slots: ha, rb, cy, cz (a slot
-costs h2 of the 16128 endpoints F2* holds, factors included). Public inputs: limbs, muls, then s, n, m as
+factor on every QN chain; the last modmul's r_p are the public factors m_p. Slots: ha, rb, cy, cz. Public
+inputs: limbs, muls, then s, n, m as
 limbs x 32 bytes little endian (pinned head: limbs and muls)."""
 
 from std.memory import unsafe_memcpy
@@ -60,7 +60,7 @@ comptime BIAS = 258         # K = 2^BIAS (+ 4 on head 0): above the two subtract
 comptime SLOT_HA = 0
 comptime SLOT_RB = 1
 comptime SLOT_CY = 2
-comptime SLOT_CZ = 3         # four slots; the SOD adds one and the factors take one coset (2016 chains: eight cosets of F2*)
+comptime SLOT_CZ = 3         # four slots; the SOD adds one
 comptime SRC_S = 0          # public factor sources
 comptime SRC_N = 1
 comptime SRC_M = 2

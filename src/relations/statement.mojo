@@ -29,9 +29,9 @@ from core.field import F2, f_add, f_pow, ext_mul, ext_pow, E_BYTES
 from core.params import Params
 from core.tables import Domains
 from core.bytes import set_u16, get_u16, append_u32
-from relations.ir import PubTerm, pack_terms, Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, group_record, NONE, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
-from core.field import F2, ext_mul, ext_pow
-from core.tables import Domains, f2_primitive, F2_ORDER
+from relations.ir import PubTerm, pack_terms, Families, standard_chals, shift_points, chal_count, wire_record, public_factor_record, group_record, ID, NONE, CHAL_ADD, CHAL_MUL, CHAL_ONE, FIX_ONE, FIX_E, PUB, RES, ZERO, ACC, ACC_W_MAX, KIND_PERM, KIND_LOOKUP, KIND_HORNER, acc_kind, acc_table
+from core.field import F4, ext_pow
+from core.tables import Domains, f4_primitive, node_id, F4_ORDER
 from proof import Shape
 
 comptime BIT = 0
@@ -808,19 +808,18 @@ struct Statement(Movable):
             comptime h2 = p.h2()
             var ns = len(self.slots)
             var nf = len(self.factors)
-            if (ns + (nf + h2 - 1) // h2) * h2 > F2_ORDER:
-                raise Error("wiring slots and public factors exceed the cosets of H2 in F2*")
+            if (ns + (nf + h2 - 1) // h2) * h2 > F4_ORDER:
+                raise Error("wiring slots and public factors exceed the cosets of H2 in F4*")
             for i in range(ns):
                 if i % 2 == 0:
                     wires.extend(wire_record(fam_index, w + self.slots[i] * p.e, -1 if i + 1 == ns else w + self.slots[i + 1] * p.e))
                     fam_index += 1
-            var kappa = f2_primitive()
+            var kappa = f4_primitive()
             var omega2 = Domains.__init__[p]().omega2
-            var ids = List[F2]()                      # node s h2 + j is slot s on chain j; node ns h2 + i the factor i
+            var ids = List[F4]()                      # node s h2 + j is slot s on chain j; node ns h2 + i the factor i
             for s in range(ns + (nf + h2 - 1) // h2):
-                var k = ext_pow[1](kappa, s)
                 for j in range(h2):
-                    ids.append(ext_mul[1](k, ext_pow[1](omega2, j)))
+                    ids.append(node_id(kappa, s, ext_pow[1](omega2, j)))
             var parent = List[Int](length=len(ids), fill=0)
             for n in range(len(ids)):
                 parent[n] = n
@@ -854,7 +853,8 @@ struct Statement(Movable):
                 for i in range(len(e.value)):
                     succ[e.value[i]] = e.value[(i + 1) % len(e.value)]
             for n in range(ns * h2):
-                sigma.extend([ids[succ[n]][0], ids[succ[n]][1]])
+                for t in range(ID):
+                    sigma.append(ids[succ[n]][t])
             for i in range(nf):
                 pubf.extend(public_factor_record(self.factors[i][1], ids[ns * h2 + i], ids[succ[ns * h2 + i]], self.factors[i][3]))
         var points = shift_points(f.bytes, res, len(f.accs) > 0, zeros)

@@ -11,7 +11,7 @@ from core.hash import Blake3
 from proof import Shape, ProofReader, tail_schedule
 from prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from verifier import verify
-from relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS
+from relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS, ID
 from core.bytes import set_u16
 from relations.statement import restriction_line, chain_values
 from workload import prove_workload, verify_workload
@@ -505,7 +505,7 @@ def test_prove_and_verify_with_wiring() raises:
     var c = wiring_statement(p.h2()).compile[p]()
     assert_equal(c.shape.wiring_products(), 1)
     assert_equal(c.shape.products(), 1)
-    assert_equal(len(c.shape.sigma), 2 * 2 * p.h2())
+    assert_equal(len(c.shape.sigma), ID * 2 * p.h2())
     var proof = prove_workload[p, Blake3](ctx, w)
     print("wiring proof bytes:", len(proof))
     assert_true(verify_workload[p, Blake3](proof^, w, w.public_inputs[p]()))
@@ -513,7 +513,7 @@ def test_prove_and_verify_with_wiring() raises:
     var cf = wiring_statement(p.h2(), True).compile[p]()
     assert_equal(cf.shape.wiring_products(), 2)
     assert_equal(cf.shape.products(), 3)
-    assert_equal(len(cf.shape.sigma), 2 * 3 * p.h2())
+    assert_equal(len(cf.shape.sigma), ID * 3 * p.h2())
     var pf = prove_workload[p, Blake3](ctx, wf)
     assert_true(verify_workload[p, Blake3](pf^, wf, wf.public_inputs[p]()))
     var shape = wiring_statement(p.h2(), True).compile[p]().take_shape()

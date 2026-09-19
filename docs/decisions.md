@@ -595,7 +595,7 @@ verifier-side factors of its grand product. Decisions:
 
 - **A wiring product is one more Z2 line.** Slot s (a Z block) on chain j has the value R(e1, omega2^j) and the
   id kappa^s omega2^j in F2 (kappa a primitive element of F2*, so the slots' ids are cosets of H2 and id_s(X2)
-  = kappa^s X2 has degree 1); the public permutation sigma is one F2 element per slot and chain
+  = kappa^s X2 has degree 1); the public permutation sigma is one F2 element per slot and chain (an F4 element since "Wiring ids in F4", 2026-09-19)
   (`Shape.sigma`, hashed in the prefix). Per chain N = prod_s (w + beta_w id + gamma_w), D the same with
   sigma; `k_wire_factors` writes the four factor lines and N / D, `k_z2` the running product. Two slots per
   product (`WIRE` records), so the small-grid term (X2 - e2)(Z(omega2 X2) d0 d1 - Z(X2) n0 n1) stays below
@@ -2487,3 +2487,32 @@ carries a nullifier; both are public factors on the fingerprint accumulator, no 
   0.9 s); the outer proof's 4.6 M gates are the six recursive verifiers.
 - **Not measured.** Witness generation in Node on their side, `Session` preparation on ours; their EVM
   variant; their phone numbers.
+
+## Wiring ids in F4 (2026-09-19)
+
+The wiring copy constraint gave slot s on chain j the id kappa^s omega2^j with kappa a primitive element
+of F2*, so a grid with h2 chains had 16128 / h2 cosets for its slots and public factors: six at 2688,
+four at 4032, where the RSA lane alone takes four slots and the fingerprints one. The passport's one-proof
+fold (passport.md, deferred item 1) is the first statement to hit that wall, the zkVM and the lookup IR
+are next.
+
+The ids are now elements of F4: `tables.node_id(kappa, s, x) = kappa^s x` with kappa a generator of F4*
+(`f4_primitive`) and x the chain point in H2. The cosets kappa^s H2 are distinct for s below
+F4_ORDER / h2, about 96,000 at 2688, so the slot count is not a property of the grid. Nothing else
+moves: the trace domain H1 x H2 stays in F2 with its DFT plans, the ids are constants embedded into E
+(E = F4[v], the low four coordinates), and both the kernel `k_wire_factors` and the verifier's two id
+evaluations form the same product term `w + beta_w id + gamma_w`. The prover's cost is one F4 power and
+product per slot and chain, the verifier interpolates the sigma line with four-byte values.
+
+Format: `ID = 4` bytes per id; `Shape.sigma` holds one id per slot and chain; the public factor record
+`PUBF` grows from 8 to 12 bytes (accumulator u16, id, sigma, chain u16); `ir.id_at` reads an id. The
+statement's rule stays the exact one, `(slots + ceil(factors / h2)) * h2 <= F4_ORDER`. The small grid's
+coset of G2 still lives in F2*, so h2 stays below 8064 and a at most 7 (passport.md item 1, next).
+
+Sigma doubled to 4 h2 bytes per slot, and the transcript prefix carried it in the clear against
+PREFIX_MAX = 2^16: the real-size DSC prefix came to 69,679 bytes (the SOD's 58,245) and the prover would
+have refused it. Codex caught this; the test suite did not, since the tests prove small grids and only
+the benches prove the passport sizes. The prefix now binds sigma and the public factor records by one
+digest, as it already did the lookup tables: the DSC prefix is 2,791 bytes, the SOD's 4,377, and the slot
+count no longer meets the prefix region either. Tests: builder, prover, RSA, accumulate, small grid,
+SOD, DSC, CSCA pass; the SOD and DSC benches prove and verify at 144 x 2688.

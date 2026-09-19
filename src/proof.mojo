@@ -25,10 +25,10 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from core.params import Params, domain_for, query_count
 from core.arena import Arena
-from relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, PUBF, GRP, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index
+from relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, ID, PUBF, GRP, id_at, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index
 from core.hash import Hash
-from core.tables import F2_ORDER, Domains, f2_primitive
-from core.field import ext_mul, ext_pow
+from core.tables import F4_ORDER, Domains, f4_primitive, node_id
+from core.field import F2, F4, ext_mul
 from core.bytes import append_u32, get_u16, host_base, check_field_bytes
 
 comptime VERSION: UInt32 = 1
@@ -77,6 +77,11 @@ def tail_schedule[p: Params]() raises -> List[TailLevel]:
     return levels^
 
 
+def _id_key(x: F4) -> Int:
+    """The four bytes of a wiring id as one Int, a dictionary key."""
+    return Int(x[0]) | Int(x[1]) << 8 | Int(x[2]) << 16 | Int(x[3]) << 24
+
+
 def _log2(x: Float64) -> Float64:
     return log2(x)
 
@@ -97,7 +102,7 @@ struct Shape(Writable):
     var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact
     var ends: List[UInt8]       # chain-end terms on the small grid (END bytes each, smallgrid.mojo), part of the artifact
     var wires: List[UInt8]      # wiring products (WIRE bytes each, accumulate.mojo), part of the artifact
-    var sigma: List[UInt8]      # the wiring permutation: F2 per slot and chain, slot-major, part of the artifact
+    var sigma: List[UInt8]      # the wiring permutation: one id (ID bytes, F4) per slot and chain, slot-major, part of the artifact
     var pubf: List[UInt8]       # public factors (PUBF bytes each): virtual slots whose value the verifier fingerprints from the public data
     var zeros: List[UInt8]      # zero rows (ZERO bytes each): a column's opening at (1, z2) or (e1, z2) is zero, part of the artifact
     var pinned: List[UInt8]     # the public inputs must start with these bytes (a circuit description the statement was compiled from), part of the artifact
@@ -272,10 +277,10 @@ struct Shape(Writable):
             for h in range(g):
                 if get_u16(wires, h * WIRE + 4) == fam:
                     raise Error("wiring products must carry distinct family indices")
-        if slots * p.h2() > F2_ORDER:
-            raise Error("wiring slots exceed the cosets of H2 in F2*")
-        if len(sigma) != 2 * slots * p.h2():
-            raise Error("sigma holds one F2 element per wiring slot and chain")
+        if slots * p.h2() > F4_ORDER:
+            raise Error("wiring slots exceed the cosets of H2 in F4*")
+        if len(sigma) != ID * slots * p.h2():
+            raise Error("sigma holds one id per wiring slot and chain")
         for b in sigma:
             if Int(b) >= 127:
                 raise Error("sigma bytes must be canonical field elements (< 127)")
@@ -283,10 +288,10 @@ struct Shape(Writable):
             var k = get_u16(pubf, i * PUBF)
             if len(wires) == 0 or k >= len(accs) // ACC or acc_kind(accs, k) != KIND_HORNER:
                 raise Error("public factor names a horner accumulator of a wired statement")
-            for t in range(2, 6):
+            for t in range(2, 2 + 2 * ID):
                 if Int(pubf[i * PUBF + t]) >= 127:
                     raise Error("public factor id and sigma must be canonical field elements (< 127)")
-            if get_u16(pubf, i * PUBF + 6) >= p.h2():
+            if get_u16(pubf, i * PUBF + 2 + 2 * ID) >= p.h2():
                 raise Error("public factor chain is below h2")
         for off in group_offsets(groups):
             var base = get_u16(groups, off)
@@ -304,21 +309,20 @@ struct Shape(Writable):
                     raise Error("group shifts lie below h2")
         if slots > 0:                                  # sigma is a permutation of the ids: the slots' cosets kappa^s H2 and the public factors' own
             var ids = Dict[Int, Int]()
-            var kappa = f2_primitive()
+            var kappa = f4_primitive()
             var omega2 = Domains.__init__[p]().omega2
             for s in range(slots):
-                var x = ext_pow[1](kappa, s)
+                var x = F2(1, 0)
                 for _ in range(p.h2()):
-                    ids[Int(x[0]) | Int(x[1]) << 8] = 1
+                    ids[_id_key(node_id(kappa, s, x))] = 1
                     x = ext_mul[1](x, omega2)
             for i in range(len(pubf) // PUBF):
-                var key = Int(pubf[i * PUBF + 2]) | Int(pubf[i * PUBF + 3]) << 8
+                var key = _id_key(id_at(pubf, i * PUBF + 2))
                 if key in ids:
                     raise Error("public factor id collides with another id")
                 ids[key] = 1
             for i in range(slots * p.h2() + len(pubf) // PUBF):
-                var at = i * 2 if i < slots * p.h2() else (i - slots * p.h2()) * PUBF + 4
-                var key = Int(sigma[at]) | Int(sigma[at + 1]) << 8 if i < slots * p.h2() else Int(pubf[at]) | Int(pubf[at + 1]) << 8
+                var key = _id_key(id_at(sigma, i * ID)) if i < slots * p.h2() else _id_key(id_at(pubf, (i - slots * p.h2()) * PUBF + 2 + ID))
                 if key not in ids or ids[key] == 0:
                     raise Error("sigma must map every slot to a distinct id")
                 ids[key] = 0
@@ -421,8 +425,8 @@ struct Shape(Writable):
 
 def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _], mut families: List[UInt8]) -> List[UInt8]:
     """The transcript prefix of spec 9.4: version, field and grid parameters, domains and rates per
-    level, shape, public inputs, H(family table) as the statement artifact hash of
-    statement-layer 6 step 1, and H(lookup tables). Prover and verifier build the same bytes."""
+    level, shape, public inputs, H(sigma, public factors), H(family table) as the statement artifact hash
+    of statement-layer 6 step 1, and H(lookup tables). Prover and verifier build the same bytes."""
     var bytes = List[UInt8]()
     append_u32(bytes, Int(VERSION))
     for v in [p.e, p.a1, p.m1, p.a2, p.m2, p.L0, p.m_cosets, p.leaf_bytes, p.tail_digits, p.tail_clear_max,
@@ -452,17 +456,20 @@ def prefix_bytes[p: Params, H: Hash](shape: Shape, public_inputs: Span[UInt8, _]
     bytes.extend(shape.ends.copy())
     append_u32(bytes, len(shape.wires))
     bytes.extend(shape.wires.copy())
-    append_u32(bytes, len(shape.sigma))
-    bytes.extend(shape.sigma.copy())
-    append_u32(bytes, len(shape.pubf))
-    bytes.extend(shape.pubf.copy())
+    var wiring = List[UInt8]()                         # the permutation by digest: sigma is ID h2 bytes per slot, past the prefix region at a few slots
+    append_u32(wiring, len(shape.sigma))
+    wiring.extend(shape.sigma.copy())
+    append_u32(wiring, len(shape.pubf))
+    wiring.extend(shape.pubf.copy())
+    var digest = List[UInt8](length=H.DIGEST, fill=0)
+    H.leaf(host_base(wiring), len(wiring), host_base(digest))
+    bytes.extend(digest.copy())
     append_u32(bytes, len(shape.zeros))
     bytes.extend(shape.zeros.copy())
     append_u32(bytes, len(shape.pinned))
     bytes.extend(shape.pinned.copy())
     append_u32(bytes, len(shape.groups))
     bytes.extend(shape.groups.copy())
-    var digest = List[UInt8](length=H.DIGEST, fill=0)
     H.leaf(host_base(families), len(families), host_base(digest))
     bytes.extend(digest.copy())
     var tabs = List[UInt8]()                           # the tables by digest: a table can exceed the prefix region

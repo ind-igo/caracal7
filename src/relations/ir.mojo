@@ -29,7 +29,7 @@ ponytail: collapsing shared reads into one kappa (statement-layer 5) is the comp
 real family list exists; the kernel does not care.
 """
 
-from core.field import F2, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv, E_LEVEL, E_BYTES
+from core.field import F2, F4, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv, E_LEVEL, E_BYTES
 from core.bytes import get_u16, set_u16, list_e, check_field_bytes
 from core.params import Params
 
@@ -56,7 +56,8 @@ comptime HORNER_TRANSITIONS = 2 * E_BYTES   # linear entries Families.horner emi
 # TODO(memory): KIND_MEMORY = 3 when spec 6.4 lands.
 comptime END = 10       # chain-end term (smallgrid.mojo): col_a, col_b, family u16; coef, chal, gate u8; pad. A line is a Z block at (e1, X2).
 comptime WIRE = 6       # wiring product (accumulate.k_wire_factors): slot columns col_a, col_b (NONE: one slot) u16, family u16
-comptime PUBF = 8       # public factor: accumulator u16 (the fingerprint convention), virtual slot id F2, its sigma F2, chain u16 (where its public reads are taken)
+comptime ID = 4         # a wiring node id (tables.node_id): an F4 element, four canonical bytes; sigma and PUBF store ids
+comptime PUBF = 12      # public factor: accumulator u16 (the fingerprint convention), virtual slot id ID, its sigma ID, chain u16 (where its public reads are taken)
 comptime GRP = 8        # group public column record head: first chain u16, chain count u16, public column u16, exact u8, shift count u8, then the shifts as u16: the column's public data is the group's mask for the shifts (exact) or zero off it (support)
 comptime NONE = 65535
 comptime NO_BASIS = 255
@@ -393,13 +394,25 @@ def group_mask(groups: Span[UInt8, _], off: Int, x2: Int, h2: Int) -> Bool:
     return True
 
 
-def public_factor_record(acc: Int, id: F2, sigma: F2, chain: Int) raises -> List[UInt8]:
+def id_at(bytes: List[UInt8], at: Int) -> F4:
+    """The wiring id stored at byte offset `at` (ID bytes)."""
+    return F4(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3])
+
+
+def public_factor_record(acc: Int, id: F4, sigma: F4, chain: Int) raises -> List[UInt8]:
     """A public value in the copy constraint: a virtual slot with id `id` whose value is the fingerprint of
     the public data by Horner accumulator `acc` (horner_chain_end, its selectors read on `chain`), and
     `sigma` the id it is wired to."""
     if acc < 0 or acc > 65535 or chain < 0 or chain > 65535:
         raise Error("public factor: accumulator index and chain are u16")
-    return [UInt8(acc & 255), UInt8(acc >> 8), id[0], id[1], sigma[0], sigma[1], UInt8(chain & 255), UInt8(chain >> 8)]
+    var r: List[UInt8] = [UInt8(acc & 255), UInt8(acc >> 8)]
+    for t in range(ID):
+        r.append(id[t])
+    for t in range(ID):
+        r.append(sigma[t])
+    r.append(UInt8(chain & 255))
+    r.append(UInt8(chain >> 8))
+    return r^
 
 
 def horner_chain_end[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, cols: Span[UInt8, _], chals: Span[UInt8, _],

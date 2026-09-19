@@ -15,9 +15,9 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from std.memory import unsafe_memcpy
 from core.params import Params
-from core.field import F2, ext_pow
+from core.field import F2, F4, ext_pow
 from core.arena import Arena, Bump, ST_LOAD, ST_SORT, ST_W, ST_ACC, ST_Z, ST_SG, ST_LDE, ST_RES, ST_QUO, ST_Q, ST_OPEN, ST_FOLD, ST_RUN0, ST_TAIL, ST_END
-from core.tables import F2_ORDER, Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f2_primitive
+from core.tables import F2_ORDER, Domains, TableLayout, RsDomain, RsTables, build_tables, build_rs_tables, f4_primitive
 from pcs.encode import EncLayout, encode, idft2
 from core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, squeeze_positions, grind
 from core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
@@ -192,7 +192,7 @@ struct ProverLayout:
     var accs: Int                   # (accumulator, ACC)    accumulator descriptors
     var shifts: Int                 # (P, POINT)            opening points as (dj1, dj2) on G
     var wires: Int                  # (wiring product, WIRE)
-    var sigma: Int                  # (slot, x2, 2)         the wiring permutation
+    var sigma: Int                  # (slot, x2, ID)        the wiring permutation
     var acc: AccLayout
     var sort: SortLayout
     var sg: SmallGridLayout
@@ -260,7 +260,7 @@ struct Prover[p: Params, H: Hash]:
     var layout: ProverLayout
     var arena: Arena
     var domains: Domains
-    var kappa: F2                   # a primitive element of F2*: wiring slot s has the ids kappa^s H2 (accumulate.mojo)
+    var kappa: F4                   # a generator of F4*: wiring slot s has the ids kappa^s H2 (tables.node_id)
     var profile: Bool               # prove(profile=True): synchronize after every stage and record its time
     var t0: Int                     # the last profile mark
     var profile_names: List[String]     # filled by prove(profile=True): stage label and ms, in order
@@ -284,7 +284,7 @@ struct Prover[p: Params, H: Hash]:
         self.layout = ProverLayout.__init__[Self.p, Self.H](self.shape, keep)
         self.arena = Arena(ctx, self.layout.bytes)
         self.domains = Domains.__init__[Self.p]()
-        self.kappa = f2_primitive()
+        self.kappa = f4_primitive()
         self.profile = False
         self.t0 = 0
         self.profile_names = List[String]()
