@@ -105,3 +105,8 @@ None of these cut security. In order of payoff:
    slot rule to take seven cosets. Look after item 1, which changes the grid anyway.
 6. Proof size. 1.1 MB per proof is the Ligero opening; it scales with the square root of the trace. A
    smaller proof needs another commitment, out of scope for F127.
+7. Units grouped across the odd index. `query_units` emits five units per odd index r and evaluation
+   weight (item 1: 262 M units, M = m1 m2, folded three times per tail level). A unit with an r1 block and
+   an r2 block (a Kronecker product; the x1 digits depend on r1 only, the x2 digits on r2 only) shares the
+   factor lists across r. Cuts about 0.3 s of the 0.62 s verify on 2688 and most of the 3x on 2016 and
+   4032. Do it before the fold's verify-time comparison, or the comparison charges the fold for it.
