@@ -48,6 +48,7 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `mrz` | the verifier's predicates on the disclosed window: nationality, birth, expiry, age | `docs/passport.md` |
 | `dsc` | the DSC certificate check: SHA(certificate body), RSA verify by the CSCA key, the committed DSC key inside the body | `docs/passport.md` |
 | `csca` | the verifier's side of a passport: the CSCA registry (a list of key ids and exponents), the PKCS#1 padding limbs, one commitment in both proofs | `docs/passport.md` |
+| `passport` | the whole passport in one proof: the SOD groups, the certificate body and two RSA verifies on one grid, the DSC key a wire, no commitment | `docs/passport.md` |
 
 ## Run
 
@@ -85,20 +86,23 @@ The csp-benchmarks harness is `csp-rust/`, a Criterion crate over the prover's C
 
 ## Benchmarks
 
-### RSA-2048 and the passport SOD
+### RSA-2048 and the passport
 
 M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench/bench_sod.mojo` and
-`bench/bench_dsc.mojo` on 144 x 2688):
+`bench/bench_dsc.mojo` on 144 x 2688, `bench/bench_passport.mojo` on 144 x 4032):
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
 | RSA-2048 verify | 1745 | 593 | 300 | 642,000 |
 | passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 1750 | 250 | 1,123,000 |
 | DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 1390 | 410 | 1,064,000 |
+| passport in one proof (4 x SHA-256 + nullifier + 2 x RSA-2048, the DSC key a wire) | 3799 | 2520 | 650 | 1,355,000 |
 
-A passport is the two proofs sharing one commitment digest: 3.1 s prove, 2.2 MB, 0.66 s verify; the SOD proof
-discloses the MRZ fields and a nullifier per scope. The verify is host-side field arithmetic over the proof;
-its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
+A passport is one proof: the SOD's hashes, the certificate body's hash and both RSA verifies on one grid, the
+DSC key wired from the body to the SOD's verify, no commitment; it discloses the MRZ fields and a nullifier
+per scope. The two-proof form (the SOD and the DSC check sharing a commitment digest, 3.1 s prove, 2.2 MB,
+0.66 s verify) stays for grids that hold no more than 2688 chains. The verify is host-side field arithmetic
+over the proof; its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
 proved with Barretenberg on the same machine, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s
 recursive outer proof) for a 14.7 KB proof that verifies in 0.09 s and is zero-knowledge; the recipe and the
 per-circuit numbers are in `bench/zkpassport/README.md`.

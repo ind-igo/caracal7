@@ -447,7 +447,17 @@ def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: 
     off them, as on the idle chains). `m_wired` leaves limb 0 of m to a wire the caller adds to the cz slot
     on chain base + `m_chain`(0); `s_wired` makes s a witness; `n_wired` leaves limb j of n to wires the
     caller adds to the rb slot on the chains base + `n_chains`(j) (the plain fingerprint of the limb: a
-    SHA-256 group's 32-byte window, sha256g). Returns the slots ha, rb, cy, cz. Pins limbs and muls."""
+    SHA-256 group's 32-byte window, sha256g). Returns the slots ha, rb, cy, cz. Pins limbs and muls.
+    One instance: `rsa_columns` once and `rsa_instance` per base put several verifies on one column set."""
+    var slots = rsa_columns(st, limbs, muls)
+    rsa_instance(st, slots, limbs, muls, base, m_wired, s_wired, n_wired)
+    return slots^
+
+
+def rsa_columns(mut st: Statement, limbs: Int, muls: Int) raises -> List[Int]:
+    """The RSA columns, public masks, accumulators, families and bounds on `st`, shared by every instance
+    (the masks are functions of the cell geometry, the same at every base). Returns the slots ha, rb, cy,
+    cz. Pins limbs and muls."""
     if limbs < 1 or limbs > 255 or muls < 1 or muls > 255:
         raise Error("limbs and muls are bytes, at least 1")
     product_columns(st)
@@ -507,16 +517,26 @@ def rsa_build(mut st: Statement, limbs: Int, muls: Int, base: Int = 0, m_wired: 
     _bound(st, "u", "um")
     _bound(st, "cy", "ym")
     _bound(st, "cz", "zm")
-    var names: List[String] = ["ha", "rb", "cy", "cz"]
     var slots = List[Int]()
-    for name in names:
+    for name in _slot_names():
         slots.append(st.slot(name))
+    return slots^
+
+
+def _slot_names() -> List[String]:
+    return ["ha", "rb", "cy", "cz"]
+
+
+def rsa_instance(mut st: Statement, slots: List[Int], limbs: Int, muls: Int, base: Int, m_wired: Bool = False,
+                 s_wired: Bool = False, n_wired: Bool = False, prefix: String = "f") raises:
+    """One verify on the chains from `base`: its public factors (named prefix + index, in `_factors` order)
+    and wires (`rsa_build`'s flags)."""
     var fs = _factors(limbs, muls, m_wired, s_wired, n_wired)
+    var names = _slot_names()
     for i in range(len(fs)):
-        st.public_factor("f" + String(i), names[fs[i][1]], slots[fs[i][1]], base + fs[i][0])
+        st.public_factor(prefix + String(i), names[fs[i][1]], slots[fs[i][1]], base + fs[i][0])
     for w in _wires(limbs, muls, s_wired):
         st.wire(slots[w[0]], base + w[1], slots[w[2]], base + w[3])
-    return slots^
 
 
 # ---- host ----
@@ -630,6 +650,13 @@ def _add_bits(mut pile: List[Int], v: Big, sign: Int, shift: Int, limit: Int) ra
 
 def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, m: Big, base: Int = 0) raises -> List[UInt8]:
     """The whole grid's W columns, the RSA chains from `base`; the other columns and chains stay zero."""
+    var trace = List[UInt8](length=layout.columns_w() * p.N(), fill=0)
+    rsa_trace_into[p](layout, limbs, muls, s, n, m, base, trace)
+    return trace^
+
+
+def rsa_trace_into[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, m: Big, base: Int, mut trace: List[UInt8]) raises:
+    """Fill the RSA chains from `base` of one verify into `trace` (columns_w x N, column major)."""
     comptime h1 = p.h1()
     comptime N = p.N()
     if h1 != ROWS or base + chain_count(limbs, muls) > p.h2():
@@ -650,7 +677,8 @@ def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, 
     for x in range(len(cells) - 1, -1, -1):
         first[cells[x].m] = x
     var columns = layout.columns_w()
-    var trace = List[UInt8](length=columns * N, fill=0)
+    if len(trace) != columns * N:
+        raise Error("the trace is columns_w x N")
     var ca = _cols(layout, "a", True)
     var cb = _cols(layout, "b", False)
     var cr = _cols(layout, "r", False)
@@ -728,7 +756,6 @@ def rsa_trace[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: Big, 
     for x2 in range(p.h2()):
         if failed[x2] != 0:
             raise Error(errors[x2])
-    return trace^
 
 
 def rsa_inputs(limbs: Int, muls: Int, s: Big, n: Big, m: Big) raises -> List[UInt8]:
@@ -743,69 +770,89 @@ def rsa_public_data[p: Params](layout: Layout, inputs: List[UInt8], base: Int = 
                                n_wired: Bool = False) raises -> List[UInt8]:
     """The public columns in declaration order, each in term form (`pack_terms`: one term per distinct
     (value, weight range) of `_mask_range` over the live chains), then the factors' ingest columns
-    (`rsa_build`'s base and wiring flags; a wired value's bytes in `inputs` are ignored)."""
+    (`rsa_build`'s base and wiring flags; a wired value's bytes in `inputs` are ignored). One instance:
+    `rsa_public_columns` over every base, then `rsa_factor_data` per instance, for several."""
     if len(inputs) < 2:
         raise Error("public inputs start with limbs and muls")
+    var data = rsa_public_columns[p](Int(inputs[0]), Int(inputs[1]), [base])
+    data.extend(rsa_factor_data(inputs, m_wired, s_wired, n_wired))
+    return data^
+
+
+def rsa_factor_data(inputs: List[UInt8], m_wired: Bool = False, s_wired: Bool = False, n_wired: Bool = False) raises -> List[UInt8]:
+    """The factors' ingest columns of one instance in `_factors` order; `inputs` are limbs, muls, then s, n, m."""
     var limbs = Int(inputs[0])
     var muls = Int(inputs[1])
     var lb = LIMB // 8 * limbs
-    if p.h1() != ROWS or len(inputs) != 2 + 3 * lb or base + chain_count(limbs, muls) > p.h2():
-        raise Error("public inputs are limbs, muls, then s, n, m of limbs x 32 bytes; the grid holds every chain")
+    if len(inputs) != 2 + 3 * lb:
+        raise Error("public inputs are limbs, muls, then s, n, m of limbs x 32 bytes")
     var vals = List[List[Big]]()
     for k in range(3):
         var bytes = List[UInt8]()
         for i in range(lb):
             bytes.append(inputs[2 + k * lb + i])
         vals.append(limbs_of(Big.from_bytes(bytes), limbs))
+    var data = List[UInt8]()
+    for f in _factors(limbs, muls, m_wired, s_wired, n_wired):
+        data.extend(_columns(vals[f[2]][f[3]].bits(FOLDED), f[1] == SLOT_HA))
+    return data^
+
+
+def rsa_public_columns[p: Params](limbs: Int, muls: Int, bases: List[Int]) raises -> List[UInt8]:
+    """The mask and constant public columns in declaration order, in term form over the live chains of every
+    instance (`bases`, each `chain_count` chains)."""
+    for base in bases:
+        if p.h1() != ROWS or base + chain_count(limbs, muls) > p.h2():
+            raise Error("the grid holds every chain of every instance")
     var cells = _cells(limbs, muls)
     var names = _mask_names(cells)
     var data = List[UInt8]()
     for name in names:
         var keys = Dict[Int, Int]()
         var terms = List[PubTerm]()
-        for x2 in range(len(cells)):
-            var r = _mask_range(cells[x2], limbs, name)
-            if r[0] == 0:
-                continue
-            var key = (r[0] * 1024 + r[1]) * 1024 + r[2]
-            if key not in keys:
-                keys[key] = len(terms)
-                var row = List[UInt8](length=ROWS, fill=0)
-                for x1 in range(ROWS):
-                    if _weight_rows(r[1], r[2], x1):
-                        row[x1] = UInt8(r[0])
-                terms.append(PubTerm(row^, List[Int]()))
-            terms[keys[key]].chains.append(base + x2)
+        for base in bases:
+            for x2 in range(len(cells)):
+                var r = _mask_range(cells[x2], limbs, name)
+                if r[0] == 0:
+                    continue
+                var key = (r[0] * 1024 + r[1]) * 1024 + r[2]
+                if key not in keys:
+                    keys[key] = len(terms)
+                    var row = List[UInt8](length=ROWS, fill=0)
+                    for x1 in range(ROWS):
+                        if _weight_rows(r[1], r[2], x1):
+                            row[x1] = UInt8(r[0])
+                    terms.append(PubTerm(row^, List[Int]()))
+                terms[keys[key]].chains.append(base + x2)
         data.extend(pack_terms(terms, ROWS))
     for name in ["kc", "k4", "kt"]:
         for j in range(Q):
             var keys = Dict[Int, Int]()
             var terms = List[PubTerm]()
-            for x2 in range(len(cells)):
-                if cells[x2].block != 0 or cells[x2].head < 0:
-                    continue
-                var pp = cells[x2].head
-                var four = j == 2 % Q
-                var bias = name == "kc" and j == BIAS % Q
-                if name == "kc":
-                    four = four and pp == 0
-                elif name == "kt":
-                    four = four and pp == 2 * limbs - 1
-                var key = (2 if bias else 0) + (1 if four else 0)
-                if key == 0:
-                    continue
-                if key not in keys:
-                    keys[key] = len(terms)
-                    var row = List[UInt8](length=ROWS, fill=0)
-                    if bias:
-                        row[_row(BIAS)] = 1
-                    if four:
-                        row[_row(2)] = 1
-                    terms.append(PubTerm(row^, List[Int]()))
-                terms[keys[key]].chains.append(base + x2)
+            for base in bases:
+                for x2 in range(len(cells)):
+                    if cells[x2].block != 0 or cells[x2].head < 0:
+                        continue
+                    var pp = cells[x2].head
+                    var four = j == 2 % Q
+                    var bias = name == "kc" and j == BIAS % Q
+                    if name == "kc":
+                        four = four and pp == 0
+                    elif name == "kt":
+                        four = four and pp == 2 * limbs - 1
+                    var key = (2 if bias else 0) + (1 if four else 0)
+                    if key == 0:
+                        continue
+                    if key not in keys:
+                        keys[key] = len(terms)
+                        var row = List[UInt8](length=ROWS, fill=0)
+                        if bias:
+                            row[_row(BIAS)] = 1
+                        if four:
+                            row[_row(2)] = 1
+                        terms.append(PubTerm(row^, List[Int]()))
+                    terms[keys[key]].chains.append(base + x2)
             data.extend(pack_terms(terms, ROWS))
-    for f in _factors(limbs, muls, m_wired, s_wired, n_wired):
-        data.extend(_columns(vals[f[2]][f[3]].bits(FOLDED), f[1] == SLOT_HA))
     return data^
 
 

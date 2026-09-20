@@ -13,8 +13,10 @@ registry that ignored it would trust a signature under another exponent of a lis
 `passport_check` is the verifier's whole check of the two proofs' public inputs: the CSCA key on the list,
 the PKCS#1 v1.5 padding limbs of both m canonical (the proof shows s^e = m for the public upper limbs of m
 and the low limb wired to the digest; a prover chooses the upper limbs, so the verifier pins them to the
-encoding: 00 01 FF..FF 00 DigestInfo(SHA-256)), and the one commitment digest in both. It runs beside
-`verify` on each proof, never instead of it: the proof binds the public inputs, this checks their values.
+encoding: 00 01 FF..FF 00 DigestInfo(SHA-256)), and the one commitment digest in both. `passport_check_one`
+is the same for the passport in one proof (`passport.mojo`), where the DSC key is a wire and there is no
+commitment. Both run beside `verify`, never instead of it: the proof binds the public inputs, this checks
+their values.
 
 This check is on the verifier's side: a wrong CSCA key does not break the proof, it breaks the trust in it,
 so it costs no chains. A Merkle path inside the proof would hide which CSCA signed, but the disclosed MRZ
@@ -23,6 +25,7 @@ window names the country anyway; that path waits for the masking layer."""
 from workloads.bigint import Big
 from workloads.dsc import HEAD
 from workloads.sod import HEAD as SOD_HEAD
+from workloads.passport import HEAD as ONE_HEAD
 from workloads.rsa import LIMB
 from workloads.sha256 import sha256
 
@@ -91,8 +94,9 @@ struct Registry(Copyable, Movable):
     def trusts(self, public_inputs: List[UInt8]) raises -> Bool:
         """The DSC proof's CSCA key and exponent are in the registry. Runs before `verify` or after it, never
         instead: the proof binds the public inputs, this checks their values."""
-        var id = csca_key_id_of(public_inputs)
-        var muls = Int(public_inputs[1])
+        return self.trusts_key(csca_key_id_of(public_inputs), Int(public_inputs[1]))
+
+    def trusts_key(self, id: List[UInt8], muls: Int) -> Bool:
         for i in range(len(self.ids)):
             if self.ids[i] == id and self.muls[i] == muls:
                 return True
@@ -133,3 +137,20 @@ def passport_check(sod_inputs: List[UInt8], dsc_inputs: List[UInt8], registry: R
     for i in range(32):
         if sod_inputs[SOD_HEAD + lb - 32 + i] != dsc_inputs[HEAD + 2 * lb - 32 + i]:
             raise Error("the two proofs do not open one commitment")
+
+
+def passport_check_one(inputs: List[UInt8], registry: Registry) raises:
+    """`passport_check` for a passport in one proof (`passport.mojo`): the CSCA key on the list and both m's
+    padding limbs canonical; the DSC key is a wire inside the proof, so there is no commitment to compare."""
+    if len(inputs) < ONE_HEAD:
+        raise Error("public inputs are cut short")
+    var lb = LIMB // 8 * Int(inputs[0])
+    if len(inputs) < ONE_HEAD + 3 * lb - 64:
+        raise Error("public inputs are cut short")
+    var n_at = ONE_HEAD + lb - 32
+    if not registry.trusts_key(_id(List[UInt8](inputs[n_at:n_at + lb])), Int(inputs[1])):
+        raise Error("the CSCA key is not in the registry")
+    var upper = pkcs1_upper(Int(inputs[0]))
+    for i in range(lb - 32):
+        if inputs[ONE_HEAD + i] != upper[i] or inputs[n_at + lb + i] != upper[i]:
+            raise Error("the padding limbs are not PKCS#1 v1.5 with a SHA-256 DigestInfo")

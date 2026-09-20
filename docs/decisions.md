@@ -2678,3 +2678,35 @@ q2 = z2^-1 rho2^(c2 r2) depend on r, and every level folded each of the 262 M un
   geometric split; no defect. Opus asked for a fold test through a twisted x2 digit (a grid with a1 = 2,
   added) and removed a dead helper. `tests/test_tensor.mojo` checks the units against `slot_weight` on
   grids with (m1, m2) = (9, 1), (1, 3), (3, 3) and the fold against the vector fold on three grids.
+
+## Passport in one proof (2026-09-21, M1 Pro)
+
+`workloads/passport.mojo`, `bench/bench_passport.mojo`. The passport was two proofs on 144 x 2688 (the SOD and
+the DSC certificate check) linked by a commitment SHA(n_dsc || r) in both public inputs. One proof on
+144 x 4032 holds the SOD's three groups, the nullifier group, the certificate body group and two RSA-2048
+verifies: 3799 chains with the bench fixture's 650-byte body.
+
+- **Two verifies on one column set.** `rsa_build` is now `rsa_columns` (the columns, masks, accumulators,
+  families and bounds, once: the masks are functions of the cell geometry, the same at every base) and
+  `rsa_instance` (the public factors, named by a prefix, and the wires at a chain base); `rsa_public_data`
+  is `rsa_public_columns` (the mask and constant terms over every instance's chains, one term per distinct
+  (value, range) with both instances' chains) and `rsa_factor_data` per instance; `rsa_trace_into` fills
+  an existing trace. The old entry points wrap them for one instance. One pinned (limbs, muls) covers
+  both verifies: the DSC and CSCA keys have one size and one exponent in this form.
+- **The DSC key is a wire.** The body's 32-byte windows at the key's offset are wired to the rb slot of
+  every q n product of the SOD's verify (`wire_windows`, the commitment group's role before), and the
+  body's digest to the second verify's m low limb. The commitment groups (81 chains each) and r are gone;
+  the verifier's check of the public inputs is `passport_check_one` (the CSCA key on the registry, both
+  paddings canonical; nothing to compare).
+- **Measured** (A/B back to back, load average 13 from other work; both forms prove the same fixtures):
+  one proof 2.5 s prove, 1.36 MB, 0.65 s verify against the two proofs' 3.1 s (1.7 + 1.4), 2.19 MB and
+  0.66 s (0.25 + 0.41). The 4032 verify: boundaries 0.29 s, clear vector 0.24 s (1134 entries for 756),
+  small grid 0.05 s; the tail 0.05 s. Before the units were grouped across the odd index (the entry
+  above) the 4032 grid's odd part 63 would have tripled the tail.
+- **Reviewed** (Opus 5 and Codex): the public data order against the declaration order, the input offsets,
+  the factor entry indices, the bindings (n_dsc on every product chain of every modmul, both m low limbs,
+  both s, n_csca public), the single-instance equivalence of the split, the term merging across bases;
+  no defect. Opus asked for the shared exponent in the docstring and an unused pair of parameters
+  removed. `tests/test_passport.mojo` on 144 x 192 with the 2-limb fixtures of test_sod and test_dsc
+  (the same DSC key): accepted; a body with another key, another CSCA key claimed and a forged CSCA
+  signature refused; the verifier's check on the registry.
