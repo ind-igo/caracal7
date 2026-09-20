@@ -34,11 +34,11 @@ Plan and background: notes vault `wiki/projects/caracal7/passport-demo.md`. This
   the body and r never reach the verifier. The prover is not zero-knowledge (the spec leaves it out of scope):
   witness means "not given", the proof's opened rows still leak witness bytes until a masking layer exists.
 - Public columns in term form (docs/public-columns.md): the verifier's public data is under 1 MB per proof.
-- Numbers (M1 Pro, warm, `bench/bench_sod.mojo`, `bench/bench_dsc.mojo`, 2026-09-20): SOD 1.83 s prove,
-  1.12 MB, 0.67 s verify; DSC 1.49 s prove, 1.06 MB, 0.74 s verify. A passport: 3.3 s prove, 2.2 MB, 1.4 s
-  verify. Grids of 144 x 2688. The SOD fits 2016 now: 1.28 s prove, the same proof size, 1.1 s verify (103
-  queries at rate 0.225 against 80 at 0.15), so the bench stays on 2688 (decisions.md "RSA rectangles
-  without tails").
+- Numbers (M1 Pro, warm, `bench/bench_sod.mojo`, `bench/bench_dsc.mojo`, 2026-09-21): SOD 1.75 s prove,
+  1.12 MB, 0.25 s verify; DSC 1.39 s prove, 1.06 MB, 0.41 s verify. A passport: 3.1 s prove, 2.2 MB, 0.66 s
+  verify. Grids of 144 x 2688. The SOD fits 2016 too: 1.28 s prove, the same proof size, 0.23 s verify
+  (decisions.md "Units grouped across the odd index"); the bench stays on 2688 until the fold decides the
+  grid.
 
 ## Why two proofs
 
@@ -79,19 +79,17 @@ None of these cut security. In order of payoff:
    inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
    per compression block"); 4032 measured at the same cells per second as 2688 on the SHA-256 chain bench
    (96 x 2688 at 53 M cells/s, 96 x 4032 at 53, back to back, `bench_sha256_chain`), with a smaller proof
-   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms). The verify cost is the odd
-   part of the grid, not its size: `query_units` emits five units per odd index r for every evaluation
-   weight (their factor bases q1, q2 depend on r), so the tail holds about 262 M units, M = m1 m2, and
-   every level folds each of them three times. M is 189 on 2688 (21 x 9) and 567 on 2016 and 4032
-   (63 x 9): the SOD on 2016 measured 148k units against 50k and 0.7 s against 0.25 s in the tail levels,
-   1.05 s against 0.62 s in sum (profiled, back to back). A one-proof fold on 4032 pays the same 3x.
-   A unit form that shares factor lists across r (a Kronecker of an r1 block and an r2 block) would cut
-   the tail on every grid; the 2688 grid's tail is about 0.3 s of 0.62. Next: the fold itself, a statement with the SOD groups, the body hash
+   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms) before the verifier's units
+   were grouped across the odd index (item 7, done): that cost was the odd part 63 of the grid, not its
+   size, and it is gone. Next: the fold itself, a statement with the SOD groups, the body hash
    and two RSA verifies on 144 x 4032, n wired from the SOD's RSA to the body's windows with no commitment
    group; the verify time of one 4032 proof against two 2688 proofs decides whether it pays. A union of
    both statements as extra columns on one 2688 grid gains nothing: the opened columns double with the columns.
-2. Verify time. The fingerprint sums run one row at a time; a batched Horner over all groups is a small
-   change worth maybe 20 to 30 percent of the 0.56 s. Cheap, revisit second.
+2. Verify time. After the grouped units (item 7) the SOD verify is 0.25 s: the clear vector 0.14 s (about
+   300 units against 756 clear entries), the small grid 0.04 s; the DSC verify is 0.41 s, of which the
+   boundaries are 0.19 s (the body's fingerprint sums, one row at a time; a batched Horner over all groups
+   is a small change). The clear check could materialize the unit sum once per r-free index instead of
+   per unit. Cheap, revisit second.
 3. The commitment group SHA(n || r), 81 chains in both proofs. A commitment to the digest of n would be
    smaller but the DSC proof needs n in limbs, so it needs a hash-to-limbs wire. Not obvious; leave.
 4. One level of Karatsuba on the q n block: three 4 x 4 rectangles (48 products) for one 8 x 8 (64), 16
@@ -105,8 +103,6 @@ None of these cut security. In order of payoff:
    slot rule to take seven cosets. Look after item 1, which changes the grid anyway.
 6. Proof size. 1.1 MB per proof is the Ligero opening; it scales with the square root of the trace. A
    smaller proof needs another commitment, out of scope for F127.
-7. Units grouped across the odd index. `query_units` emits five units per odd index r and evaluation
-   weight (item 1: 262 M units, M = m1 m2, folded three times per tail level). A unit with an r1 block and
-   an r2 block (a Kronecker product; the x1 digits depend on r1 only, the x2 digits on r2 only) shares the
-   factor lists across r. Cuts about 0.3 s of the 0.62 s verify on 2688 and most of the 3x on 2016 and
-   4032. Do it before the fold's verify-time comparison, or the comparison charges the fold for it.
+7. Done: units grouped across the odd index (decisions.md "Units grouped across the odd index"). Verify
+   0.67 -> 0.25 s on the SOD, 0.74 -> 0.41 s on the DSC, 0.61 -> 0.30 s on the RSA verify, and the odd
+   part no longer sets the verify time, so 2016 and 4032 verify like 2688.

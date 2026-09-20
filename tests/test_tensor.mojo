@@ -14,6 +14,7 @@ from pcs.tensor import Unit, query_units, consistency_units, row_units, clear_va
 comptime p = CLIENT.grid(72, 32)      # a1 = 3, m1 = 9, a2 = 5, m2 = 1
 comptime q = CLIENT.grid(64, 24)      # a1 = 6, m1 = 1, a2 = 3, m2 = 3
 comptime b = CLIENT.grid(24, 24)      # both odd parts: m1 = m2 = 3
+comptime c = CLIENT.grid(12, 24)      # a1 = 2, m1 = 3, a2 = 3, m2 = 3
 
 
 def _e(seed: Int) -> E:
@@ -28,13 +29,14 @@ def _materialize(units: List[Unit], first: Int, digits: Int, m: Int) -> List[UIn
     var count = digits - first
     var out = List[UInt8](length=m * (1 << count) * E_BYTES, fill=0)
     for i in range(len(units)):
+        var m1 = len(units[i].s1)
         for idx in range(1 << count):
-            var w = units[i].at(first, idx, count)
-            for k in range(len(units[i].scalars)):
-                var at = idx + (1 << count) * (units[i].r0 + k)
-                var s = f_add(list_e(out, at), ext_mul[E_LEVEL](w, units[i].scalars[k]))
-                for t in range(E_BYTES):
-                    out[at * E_BYTES + t] = s[t]
+            for r2 in range(len(units[i].s2)):
+                for r1 in range(m1):
+                    var at = idx + (1 << count) * (r1 + m1 * r2)
+                    var s = f_add(list_e(out, at), units[i].at(first, idx, count, r1, r2))
+                    for t in range(E_BYTES):
+                        out[at * E_BYTES + t] = s[t]
     return out^
 
 
@@ -109,7 +111,7 @@ def test_row_units_are_powers() raises:
     var pt = d.level1.point(11)
     var units = List[Unit]()
     comptime D = q.a1 + q.a2
-    row_units(pt, _e(5), 3, D, q.m1 * q.m2, units)
+    row_units(pt, _e(5), 3, D, q.m1, q.m2, units)
     var w = _materialize(units, 3, D, q.m1 * q.m2)
     var pw = ext_embed[E_LEVEL](F4(1, 0, 0, 0))
     var be = ext_embed[E_LEVEL](pt)
@@ -118,7 +120,7 @@ def test_row_units_are_powers() raises:
         pw = ext_mul[E_LEVEL](pw, be)
 
 
-def test_fold_matches_the_vector_fold() raises:
+def _check_fold[q: Params]() raises:
     comptime D = q.a1 + q.a2
     var d = Domains.__init__[q]()
     var units = List[Unit]()
@@ -146,6 +148,12 @@ def test_fold_matches_the_vector_fold() raises:
     for i in range(len(y) // E_BYTES):
         lhs = f_add(lhs, ext_mul[E_LEVEL](list_e(folded, i), list_e(y, i)))
     assert_true(clear_value(units, y, 3, D) == lhs)
+
+
+def test_fold_matches_the_vector_fold() raises:
+    _check_fold[q]()      # the folded digits are t and two of x1', twisted by r1 (m1 = 1)
+    _check_fold[b]()      # a1 = 3: t, both digits of x1' twisted by r1 over m1 = 3; x2 stays, twisted by r2
+    _check_fold[c]()      # a1 = 2: t, the one digit of x1', then the first digit of x2, twisted by r2
 
 
 def main() raises:

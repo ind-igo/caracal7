@@ -2648,3 +2648,33 @@ passed (30 test files and 16 benchmarks). A fresh ledger run matched all
 20 prior reports exactly. Local links and `git diff --check` passed. The
 review corrections affect documentation only. Pre-existing uncommitted
 documentation and AGENTS.md remain outside this commit.
+
+## Units grouped across the odd index (2026-09-21, M1 Pro)
+
+`pcs/tensor.mojo`. The SOD on the 2016 grid verified in 1.05 s against 0.62 s on 2688, and the 4032 grid
+had measured 2.5x the verify time of 2688 on the SHA-256 chain bench. The queries explained 1.3x of it;
+the rest was the tail levels, 0.7 s against 0.25 s, with 148 K units against 50 K. The unit count scales
+with the odd part M = m1 m2 of the grid (189 on 2688, 567 on 2016 and 4032): the five query unit kinds
+with Par factors stayed single per odd index r, since their geometric bases q1 = z1^-1 rho1^(c1 r1) and
+q2 = z2^-1 rho2^(c2 r2) depend on r, and every level folded each of the 262 M units three times.
+
+- **Now.** The odd index r = r1 + m1 r2 enters every functional as a product of an r1 part and an r2 part:
+  the query's scalars (the table's r1 and r2 factors, K1, K2, K1 q1^H1) and the geometric row scalars
+  br^r = br^r1 (br^m1)^r2 factor outright, and q1^x1 = z1^-x1 rho1^(c1 r1 x1), so a digit of x1 carries
+  the r-free base z1^-(2^k) and a twist rho1^(c1 2^k r1). A `Unit` holds a scalar, a per-r1 list, a
+  per-r2 list and a per-digit twist exponent; folding a twisted digit multiplies the m1 or m2 scalars of
+  its axis instead of one scalar, an untwisted one the scalar as before. The clear check takes the
+  r-free product once per index and collapses the set twisted bits to one exponent per axis (rho^126 = 1,
+  the exponents reduce mod 126). Sixteen units per point, about 300 in the SOD's tail for 50 K, and the
+  count no longer grows with M.
+- **Measured** (A/B back to back, load average 12 to 17 from other work; prove unchanged): verify of the
+  RSA statement on 2016 608 -> 302 ms, the SOD on 2688 601 to 773 -> 249 to 258, the DSC on 2688 699 to
+  722 -> 404 to 412; the SOD on 2016 1043 -> 231, the same as on 2688 now. Profile of the SOD verify:
+  the tail levels 293 -> 26 ms, the running claim 91 -> 20, the clear vector 227 -> 136 after its loop
+  was reordered (the first form applied `at` per entry and cost 500 ms). What remains: the clear vector
+  (300 units against 756 entries) and, in the DSC, the boundaries at 185 ms (the body's fingerprint sums).
+- **Reviewed** (Opus 5 and Codex, the diff against the old unit form): the twist algebra, the sixteen kinds'
+  scalars, the fold formula against tail.mojo, the clear check's index order and exponent collapse, the
+  geometric split; no defect. Opus asked for a fold test through a twisted x2 digit (a grid with a1 = 2,
+  added) and removed a dead helper. `tests/test_tensor.mojo` checks the units against `slot_weight` on
+  grids with (m1, m2) = (9, 1), (1, 3), (3, 3) and the fold against the vector fold on three grids.

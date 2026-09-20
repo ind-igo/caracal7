@@ -401,7 +401,6 @@ struct _Tail[p: Params]:
         """Committed level i: its root, the previous level's multiproofs, the expected symbols from the
         opened rows, the batching scalars, three sumcheck rounds, and the fold of the query."""
         comptime D = Self.p.a1 + Self.p.a2
-        comptime M = Self.p.m1 * Self.p.m2
         comptime e = Self.p.e
         var lvl = shape.tail[i]
         var root = r.take(H.DIGEST)
@@ -440,7 +439,7 @@ struct _Tail[p: Params]:
         else:
             for q in range(count):
                 for cw in range(n_prev):
-                    row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q * n_prev + cw), self.folded, D, M, self.units, cw, n_prev)
+                    row_units(self.doms[i - 1].point(prev.positions[q]), list_e(batch, 1 + q * n_prev + cw), self.folded, D, Self.p.m1, Self.p.m2, self.units, cw, n_prev)
         var rounds = r.field_bytes(9 * e)
         var r_l = List[UInt8]()
         for dgt in range(3):

@@ -24,7 +24,7 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Commitment layer (layer 1).** Ligerito as published, with a subfield first round. Every committed column is a Reed-Solomon codeword over `F4` on a domain of one to four cosets of a subgroup of `F4*` (order dividing 161280), rate at most 1/16, and the codeword rows sit in Blake3 Merkle trees with 1024-byte leaves. Three trees: the witness, the accumulators, the quotients. After the opening challenge the folds are not sent; each fold is committed as the next level, and the tail is Ligerito's batched partial sumcheck, three binary digits per level, with the last level in the clear. The verifier opens query rows per level and checks them against the fold. The query count is sized at the Johnson radius (BCHKS25, Theorem 1.5, p. 9) with 20 bits of grinding on the query seeds, for a per-level target of 112 bits.
 
-**Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads and in about half a second for the RSA and passport statements, most of it the tail levels.
+**Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads and in a few hundred milliseconds for the RSA and passport statements, most of it the clear vector and the public data.
 
 **Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
@@ -92,11 +92,11 @@ M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
-| RSA-2048 verify | 1745 | 634 | 630 | 642,000 |
-| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 1830 | 670 | 1,123,000 |
-| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 1490 | 740 | 1,064,000 |
+| RSA-2048 verify | 1745 | 593 | 300 | 642,000 |
+| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 1750 | 250 | 1,123,000 |
+| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 1390 | 410 | 1,064,000 |
 
-A passport is the two proofs sharing one commitment digest: 3.3 s prove, 2.2 MB, 1.4 s verify; the SOD proof
+A passport is the two proofs sharing one commitment digest: 3.1 s prove, 2.2 MB, 0.66 s verify; the SOD proof
 discloses the MRZ fields and a nullifier per scope. The verify is host-side field arithmetic over the proof;
 its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
 proved with Barretenberg on the same machine, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s
