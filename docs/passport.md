@@ -79,8 +79,14 @@ None of these cut security. In order of payoff:
    inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
    per compression block"); 4032 measured at the same cells per second as 2688 on the SHA-256 chain bench
    (96 x 2688 at 53 M cells/s, 96 x 4032 at 53, back to back, `bench_sha256_chain`), with a smaller proof
-   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms, the public columns and the
-   small grid grow with the grid). Next: the fold itself, a statement with the SOD groups, the body hash
+   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms). The verify cost is the odd
+   part of the grid, not its size: `query_units` emits five units per odd index r for every evaluation
+   weight (their factor bases q1, q2 depend on r), so the tail holds about 262 M units, M = m1 m2, and
+   every level folds each of them three times. M is 189 on 2688 (21 x 9) and 567 on 2016 and 4032
+   (63 x 9): the SOD on 2016 measured 148k units against 50k and 0.7 s against 0.25 s in the tail levels,
+   1.05 s against 0.62 s in sum (profiled, back to back). A one-proof fold on 4032 pays the same 3x.
+   A unit form that shares factor lists across r (a Kronecker of an r1 block and an r2 block) would cut
+   the tail on every grid; the 2688 grid's tail is about 0.3 s of 0.62. Next: the fold itself, a statement with the SOD groups, the body hash
    and two RSA verifies on 144 x 4032, n wired from the SOD's RSA to the body's windows with no commitment
    group; the verify time of one 4032 proof against two 2688 proofs decides whether it pays. A union of
    both statements as extra columns on one 2688 grid gains nothing: the opened columns double with the columns.
