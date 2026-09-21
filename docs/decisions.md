@@ -2710,3 +2710,32 @@ verifies: 3799 chains with the bench fixture's 650-byte body.
   removed. `tests/test_passport.mojo` on 144 x 192 with the 2-limb fixtures of test_sod and test_dsc
   (the same DSC key): accepted; a body with another key, another CSCA key claimed and a forged CSCA
   signature refused; the verifier's check on the registry.
+
+## The protocol written as a box; the stage and byte profile (2026-09-21, M1 Pro)
+
+`docs/protocol.md` is the implemented protocol as a paper writes one: setup objects, an eighteen-step box
+in the code's transcript order (commits, challenges, the boundary, wiring, small-grid, residual and
+restriction checks, the running claim, the Ligerito levels with their five sub-steps, the clear vector),
+what each check certifies with its ledger name and where P1 to P5 sit, Fiat-Shamir as implemented, why the
+shape (one quotient, chains, product-form accumulators, Ligerito), and a step-to-module map. Written from
+the code, then reviewed against it by Opus and Codex (thirty-odd corrections applied: the point list is
+`required_points`' conditional list without `(1, 1)`; grand products start at 1 and Horner chains at their
+start value; wiring has only `Z2` lines; both grid gates; the optional chain-end gate; `R2` computed on a
+coset of `G2`; the abort when `z2` lies in `G2`; tail codeword splits in the rows and symbols; one 8-byte
+nonce per opened level; the last check against the folded row; the `ell = 0` branch; sixteen units per
+point; the fixed-corner closures are not Schwartz-Zippel checks; `horner_identities` charges the chain-end
+identities, the recurrence is `grid_identity`; nine domain separators; coordinate bytes; the `Q` tree enters
+the encoder at its coefficients).
+
+`docs/profile.md` records, from one run of `bench/bench_breakdown.mojo` (new: every benchmark workload,
+the prover's stage profile, the verifier's step profile, and the proof bytes walked region by region with
+`ProofReader`), where the time and the bytes go. Findings that were not in the repo's numbers: on the
+RSA-based statements the openings (every column at every point, 50-plus points from the limb lanes'
+cyclic-read offsets) are the largest proof region, 514 KB of the passport's 1.36 MB, ahead of the `Z2`
+and `Q3` lines (400 KB) and the level-1 rows (317 KB); the tail levels are about 90 KB on every
+statement; the verifier's time on those statements is the boundaries (wiring product and public-factor
+fingerprints) and the clear vector, not the commitment. `docs/passport.md` item 6 corrected accordingly
+(it said the level-1 rows dominate; true for the hash statements and ECDSA only). README points to both
+documents. The regime question was measured and left as is: the unique regime at tail rate 1/8 would give
+110 conditional bits with no J1 to J3 for 28 percent more proof bytes on ECDSA and 9 percent on the
+passport; the MCA comparisons already put the Johnson configuration above 100 bits, so the profile stays.

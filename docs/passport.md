@@ -109,9 +109,11 @@ None of these cut security. In order of payoff:
    reduction or Montgomery do not help, and 17 modmuls is minimal for e = 65537.
 5. Grid slack. The 2688 grid wastes about 590 chains in the SOD proof; a 2304 grid (h2 = 2^8 * 9) needs the
    slot rule to take seven cosets. Look after item 1, which changes the grid anyway.
-6. Proof size. Most of the proof is the level-1 opened rows: queries times the row width, 4 n_cw bytes per
-   column (spec 9.5). The tail levels are small. The levers are the column count and the rate, not the
-   commitment: a taller, narrower grid at the same cell count gives a smaller proof.
+6. Proof size (docs/profile.md). On the passport the three large regions are the openings, every column at
+   every point (514 KB: 485 columns times 53 points), the Z2 and Q3 lines (400 KB, five lines of h2
+   elements) and the level-1 opened rows (317 KB); the tail levels are 97 KB. The levers are the point
+   count (the limb lanes' cyclic-read offsets), the column count and h2, then the level-1 rate; not the
+   commitment.
 7. Done: units grouped across the odd index (decisions.md "Units grouped across the odd index"). Verify
    0.67 -> 0.25 s on the SOD, 0.74 -> 0.41 s on the DSC, 0.61 -> 0.30 s on the RSA verify, and the odd
    part no longer sets the verify time, so 2016 and 4032 verify like 2688.

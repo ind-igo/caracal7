@@ -26,6 +26,8 @@ Herder is the lookup, permutation and read-write memory argument. The prover com
 
 **Transcript and verifier.** Blake3 over the proof bytes, computed on the device in the prover, so the host never reads a challenge. The verifier is a separate host program (`verifier.mojo`): it rebuilds the transcript, evaluates the public columns and the statement's public data, checks the quotient identity at the opening points, and walks the Ligerito levels. A proof verifies in tens of milliseconds for the hash workloads and in a few hundred milliseconds for the RSA and passport statements, most of it the clear vector and the public data.
 
+**The protocol and the profile.** `docs/protocol.md` writes the implemented protocol as one numbered box, every message, challenge and check in transcript order, with what each check certifies and where the ledger charges it; `docs/profile.md` measures where the prover's time and the proof's bytes go, stage by stage and region by region, for every benchmark workload.
+
 **Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional bits on every csp-benchmarks case. The reported `security_bits: 112` is the query target, not a verified total.
 
 The [E20 linear MCA research comparison](docs/soundness.md#e20-linear-mca-research-comparison)
