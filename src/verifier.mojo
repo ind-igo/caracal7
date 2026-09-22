@@ -74,10 +74,11 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var z1 = list_e(z, 0)
     var z2 = list_e(z, 1)
 
-    # openings -> beta per column, gamma per point
-    var openings = r.field_bytes(shape.points * shape.columns() * p.e)
+    # openings -> beta per opened column, gamma per point; beta per stored column for the level-1 symbols
+    var openings = r.field_bytes(shape.points * shape.opened() * p.e)
     t.absorb(DS_OPENINGS, openings)
-    var beta_gamma = t.elements(shape.columns() + shape.points)
+    var beta_gamma = t.elements(shape.opened() + shape.points)
+    var beta_full = _expand_beta[p](shape, beta_gamma)
     var d = Domains.__init__[p]()
     _vmark(profile, "transcript and openings", tv)
 
@@ -96,9 +97,9 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
     var tail = _Tail[p](shape, openings, beta_gamma, z1, z2, d)
     _vmark(profile, "running claim", tv)
     for i in range(len(shape.tail)):
-        tail.level[H](r, t, shape, i, root_w, root_z, root_q, beta_gamma, d)
+        tail.level[H](r, t, shape, i, root_w, root_z, root_q, beta_full, d)
     _vmark(profile, "tail levels", tv)
-    tail.clear[H](r, t, shape, root_w, root_z, root_q, beta_gamma, d)
+    tail.clear[H](r, t, shape, root_w, root_z, root_q, beta_full, d)
     _vmark(profile, "clear vector", tv)
     return True
 
@@ -389,11 +390,11 @@ struct _Tail[p: Params]:
             var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
             var z1p = point_coord(z1, dj1, d.g1, Self.p.h1())
             var z2p = point_coord(z2, dj2, d.g2, Self.p.h2())
-            var gamma = list_e(beta_gamma, shape.columns() + pt)
+            var gamma = list_e(beta_gamma, shape.opened() + pt)
             query_units[Self.p](z1p, z2p, gamma, d.rho1, d.rho2, self.units)
             var claim = E(0)
-            for c in range(shape.columns()):
-                claim = f_add(claim, ext_mul[E_LEVEL](list_e(beta_gamma, c), _opening[Self.p](openings, shape, pt, c)))
+            for c in range(shape.opened()):
+                claim = f_add(claim, ext_mul[E_LEVEL](list_e(beta_gamma, c), list_e(openings, pt * shape.opened() + c)))
             self.running = f_add(self.running, ext_mul[E_LEVEL](gamma, claim))
 
     def level[H: Hash](mut self, mut r: ProofReader, mut t: HostTranscript[Self.p, H], shape: Shape, i: Int,
@@ -546,8 +547,20 @@ def _index_of(opened: List[Int], s: Int) raises -> Int:
     raise Error("sampled position was not opened")
 
 
+def _expand_beta[p: Params](shape: Shape, beta_gamma: List[UInt8]) -> List[UInt8]:
+    """beta per stored column from beta per opened column: coordinate column t of an E-valued column gets
+    beta_v b_t, so sum_c beta_c stored(c) over the stored columns is the fold of the opened ones."""
+    var out = List[UInt8](capacity=shape.columns() * E_BYTES)
+    for c in range(shape.columns()):
+        var b = E(0)
+        b[(c - shape.columns_w) % p.e if c >= shape.columns_w else 0] = 1
+        _push_e(out, ext_mul[E_LEVEL](list_e(beta_gamma, shape.opened_index(c)), b))
+    return out^
+
+
 def _level1_symbol[p: Params](o: Opened, shape: Shape, beta: Span[UInt8, _], idx: Int, cw: Int, tau: Int) -> E:
-    """sum_c beta_c coord_tau(X[s, c, cw]) over the three trees at opened row idx; a row is (column, codeword, 4)."""
+    """sum_c beta_c coord_tau(X[s, c, cw]) over the three trees at opened row idx, beta per stored column
+    (`_expand_beta`); a row is (column, codeword, 4)."""
     comptime W = 4 * p.n_cw()
     var acc = E(0)
     var wz = shape.columns_w + shape.columns_z
@@ -597,7 +610,8 @@ def encode_at[p: Params](y: Span[UInt8, _], pt: F4, cw: Int = 0) -> InlineArray[
 
 
 def _opening[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, column: Int) -> E:
-    return list_e(openings, point * shape.columns() + column)
+    """The opened value of a witness column, or of the E-valued column holding coordinate column `column`."""
+    return list_e(openings, point * shape.opened() + shape.opened_index(column))
 
 
 struct _PublicReads[p: Params]:
@@ -606,7 +620,8 @@ struct _PublicReads[p: Params]:
     costs one product per row value and per chain against the point's Lagrange values, cached per point (axis 1)
     and per (point, m) (axis 2); a dense period is interpolated in full (`eval_values`)."""
     var base: Int               # columns_w + columns_z: the first public index
-    var columns: Int            # shape.columns(), the openings stride
+    var columns_w: Int
+    var columns: Int            # shape.opened(), the openings stride
     var points: Int
     var publics: List[UInt8]
     var public: List[UInt8]
@@ -625,7 +640,8 @@ struct _PublicReads[p: Params]:
 
     def __init__(out self, shape: Shape, public: List[UInt8], offs: List[Int], pts: List[UInt8], z1: E, z2: E, d: Domains):
         self.base = shape.columns_w + shape.columns_z
-        self.columns = shape.columns()
+        self.columns_w = shape.columns_w
+        self.columns = shape.opened()
         self.points = shape.points
         self.publics = shape.publics.copy()
         self.public = public.copy()
@@ -643,8 +659,15 @@ struct _PublicReads[p: Params]:
         self.l2 = Dict[Int, List[E]]()
 
     def read(mut self, openings: Span[UInt8, _], point: Int, column: Int) raises -> E:
-        if column < self.base:
+        if column < self.columns_w:
             return list_e(openings, point * self.columns + column)
+        if column < self.base:
+            # coordinate column t of an accumulator: its entries are e copies with basis t (ir.mojo), and
+            # sum_t b_t Z_t(z) is the one opened value, so it stands in at t = 0 (b_0 = 1) and the rest read 0
+            var i = column - self.columns_w
+            if i % Self.p.e != 0:
+                return E(0)
+            return list_e(openings, point * self.columns + self.columns_w + i // Self.p.e)
         var i = column - self.base
         var slot = i * self.points + point
         if not self.valid[slot]:
@@ -689,13 +712,9 @@ def _factor_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, ne
 
 
 def _coords_at[p: Params](openings: Span[UInt8, _], shape: Shape, point: Int, col0: Int) -> E:
-    """An E-valued column at a point from its e coordinate columns: sum_tau b_tau <w_z, coord_tau>."""
-    var acc = E(0)
-    for tau in range(p.e):
-        var basis = E(0)
-        basis[tau] = 1
-        acc = f_add(acc, ext_mul[E_LEVEL](basis, _opening[p](openings, shape, point, col0 + tau)))
-    return acc
+    """An E-valued column at a point, opened as one value: sum_tau b_tau <w_z, coord_tau> (the prover's
+    `compact_openings`), tested by the fold as the one vector sum_tau b_tau stored(coord_tau)."""
+    return _opening[p](openings, shape, point, col0)
 
 
 def _quotient_at[p: Params](openings: Span[UInt8, _], shape: Shape, q: Int) -> E:

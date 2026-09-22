@@ -1,8 +1,9 @@
 """Openings and the level-1 fold (design section 4, spec 9.1).
 
     w_z       (slot, P, e)      the evaluation query of every opening point, on the Frobenius-real slots
-    openings  (P, column, e)    alpha_{c,p} = <w_{z_p}, stored(c)>, witness columns then quotient columns
-    fold_y    (slot, e)         y = sum_c beta_c stored(c) over both trees, the level-2 message
+    open_full (P, column, e)    <w_{z_p}, stored(c)> per stored column, the three trees in order
+    openings  (P, opened, e)    alpha_{c,p}: a witness column's value, an E-valued column's one value sum_t b_t <w_{z_p}, stored(c_t)>
+    fold_y    (slot, e)         y = sum_c beta_c stored(c) over the trees, beta_v b_t on a coordinate column, the level-2 message
 
 Opening point p is (g1^dj1 z1, g2^dj2 z2) for the (dj1, dj2) pair at `shifts + POINT p`, or a fixed coordinate (residual.mojo)
 (residual.shift_points); point 0 is z itself. The weight of a slot (t, x1', x2, r) is L(r) times
@@ -456,3 +457,50 @@ def fold[p: Params, acc: Bool](ctx: DeviceContext, arena: Arena,
     comptime kf = k_fold[acc]
     ctx.enqueue_function[kf](arena.buf, Buf[E_BYTES](beta), Buf[1](stored), Int32(columns), Int32(N), Buf[E_BYTES](y),
                                  grid_dim=ceildiv(N, BACKEND.block), block_dim=BACKEND.block)
+
+
+def k_expand_beta(base: Base, beta: Buf[E_BYTES], columns_w: Int32, columns: Int32, dst: Buf[E_BYTES]):
+    """beta per stored column from beta per opened column: a witness column's own; coordinate column t of an
+    E-valued column gets beta_v b_t, so the fold of the stored columns is the fold of the opened ones."""
+    var c = Int(global_idx.x)
+    if c >= Int(columns):
+        return
+    if c < Int(columns_w):
+        dst.store(base, c, beta.load(base, c))
+        return
+    var i = c - Int(columns_w)
+    var b = E(0)
+    b[i % E_BYTES] = 1
+    dst.store(base, c, fp_canonical(fp_ext_mul[E_LEVEL](to_f32(beta.load(base, Int(columns_w) + i // E_BYTES)), to_f32(b))))
+
+
+def k_compact_openings(base: Base, full: Buf[E_BYTES], P: Int32, columns: Int32, columns_w: Int32, opened: Int32, dst: Buf[E_BYTES]):
+    """dst[p, v] from the per-stored-column openings full[p, c]: a witness column's value, or
+    sum_t b_t full[p, col0 + t] for an E-valued column, its one opened value."""
+    var i = Int(global_idx.x)
+    if i >= Int(P) * Int(opened):
+        return
+    var pt = i // Int(opened)
+    var v = i % Int(opened)
+    if v < Int(columns_w):
+        dst.store(base, i, full.load(base, pt * Int(columns) + v))
+        return
+    var col0 = Int(columns_w) + (v - Int(columns_w)) * E_BYTES
+    var acc = EF(0)
+    for t in range(E_BYTES):
+        var b = E(0)
+        b[t] = 1
+        acc += fp_ext_mul[E_LEVEL](to_f32(b), to_f32(full.load(base, pt * Int(columns) + col0 + t)))
+        if t % 4 == 3:
+            acc = fp_reduce(acc)
+    dst.store(base, i, fp_canonical(acc))
+
+
+def expand_beta(ctx: DeviceContext, arena: Arena, beta: Int, columns_w: Int, columns: Int, dst: Int) raises:
+    ctx.enqueue_function[k_expand_beta](arena.buf, Buf[E_BYTES](beta), Int32(columns_w), Int32(columns), Buf[E_BYTES](dst),
+                                        grid_dim=ceildiv(columns, BACKEND.block), block_dim=BACKEND.block)
+
+
+def compact_openings(ctx: DeviceContext, arena: Arena, full: Int, P: Int, columns: Int, columns_w: Int, opened: Int, dst: Int) raises:
+    ctx.enqueue_function[k_compact_openings](arena.buf, Buf[E_BYTES](full), Int32(P), Int32(columns), Int32(columns_w), Int32(opened),
+                                             Buf[E_BYTES](dst), grid_dim=ceildiv(P * opened, BACKEND.block), block_dim=BACKEND.block)

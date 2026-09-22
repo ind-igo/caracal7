@@ -2768,3 +2768,34 @@ residual reveals on the restriction lines and at the corner) is the one with per
 Nothing is built; the build order starts with the single-value openings, which need no zero
 knowledge. Prover cost is estimated at +10 to +15 percent, proof size smaller than today on every
 statement, Keccak's small grid the one to measure first (its extension is 40 percent of `N`).
+
+## Single-value openings of `E`-valued columns (2026-09-22, M1 Pro)
+
+Build order item 1 of `docs/zk.md` (section 3.5), a proof-size change with no zero knowledge in it.
+An accumulator `Z_k` and the quotient pieces `A`, `B`, `Q2` stay committed as `e` coordinate
+columns, but each is now opened at every point as one `E` value, `sum_t b_t <w_z, stored(c_t)>`
+(`pcs/open.k_compact_openings` after the opening GEMM, which still produces every stored column's
+value into `open_full`). The transcript samples one beta per opened column (`Shape.opened()` =
+witness columns + accumulators + 3) and one gamma per point; the fold over the stored columns uses
+`beta_v b_t` on coordinate column `t` (`k_expand_beta` on the device, `_expand_beta` on the host
+for the level-1 symbols), so `y` is the fold of the opened vectors and the running claim is
+`sum_{v,p} beta_v gamma_p alpha_{v,p}`. The verifier's residual reads a coordinate column `Z_t` as
+the one opened value at `t = 0` and zero at `t > 0`: an accumulator's entries are `e` copies that
+differ only in the basis factor inside kappa, so the sum over `t` is the same; `Shape` now rejects
+a family table that reads an accumulator column any other way (basis not `t`, an incomplete bundle
+of copies, or as `col_b`), which closes the hole Codex found (a lone extra read of one coordinate
+would have vanished from the verifier's identity). Zero rows and restrictions are pinned to witness
+columns, as the builder always documented.
+
+Soundness: the fold tests `sum_t b_t stored(c_t)` as one vector; since the `b_t` are an `F`-basis
+and the stored symbols `F`-valued, agreement of that vector with a codeword on a set of positions
+forces every coordinate column's agreement on the same set, so nothing the identities need is lost,
+and the batched-vector count in `bench_soundness.mojo` (`list_bind`, the section-4 `M`) is now
+`opened()` rather than `columns()`, a smaller count; the recorded projections in `docs/soundness.md`
+that quote `M = columns - 1` predate this and shift by under a bit.
+
+Proof bytes (`docs/profile.md`): sha256 216,956 -> 194,828; keccak 317,712 -> 286,048; poseidon
+396,213 -> 321,285; ecdsa 544,324 -> 469,860; rsa-2048 642,314 -> 580,402; sod 1,123,434 ->
+930,154; dsc 1,063,602 -> 874,498; passport 1,355,046 -> 1,151,566. Prover and verifier times are
+unchanged within noise (the compaction is one thread per opened value). Reviewed by Opus and Codex;
+both found `fixed_bytes` still counting the old layout (fixed) and the validation gap above.

@@ -16,6 +16,7 @@ and passport fixtures are the bench files' (2048-bit keys, e = 65537).
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | grid | 32 x 2688 | 64 x 384 | 64 x 896 | 144 x 576 | 144 x 2016 | 144 x 2688 | 144 x 2688 | 144 x 4032 |
 | columns W/Z/Q | 43/0/60 | 142/0/60 | 78/80/60 | 236/260/60 | 172/120/60 | 285/140/60 | 252/140/60 | 285/140/60 |
+| opened columns | 46 | 145 | 85 | 252 | 181 | 295 | 262 | 295 |
 | opening points | 20 | 28 | 28 | 12 | 18 | 52 | 50 | 53 |
 | level-1 queries | 76 | 104 | 88 | 74 | 103 | 80 | 80 | 103 |
 | clear vector, E elements | 21 | 6 | 14 | 162 | 567 | 756 | 756 | 1134 |
@@ -73,27 +74,35 @@ These are the items of `docs/passport.md`, deferred optimization 2.
 
 ## Proof bytes
 
+Measured after the single-value openings of `E`-valued columns (`docs/zk.md` 3.5): an accumulator
+or a quotient piece is one opened column, not twenty. The multiproof bytes vary by a few hundred
+between runs with the sampled positions.
+
 | region | sha256 | keccak | poseidon | ecdsa | rsa-2048 | sod | dsc | passport |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | header and public inputs | 2,088 | 2,088 | 73 | 168 | 778 | 374 | 526 | 826 |
 | W root | 32 | 32 | 32 | 32 | 32 | 32 | 32 | 32 |
 | Z root and Z2 lines | 0 | 0 | 32 | 69,152 | 80,672 | 161,312 | 161,312 | 241,952 |
 | Q root and Q3 | 32 | 32 | 35,872 | 23,072 | 80,672 | 107,552 | 107,552 | 161,312 |
-| openings (points x columns x 20 B) | 41,200 | 113,120 | 122,080 | 133,440 | 126,720 | 504,400 | 452,000 | 514,100 |
-| level-1 rows and multiproofs | 81,344 | 130,160 | 153,204 | 238,068 | 251,732 | 245,972 | 237,140 | 316,704 |
-| tail levels: roots, rounds, rows, multiproofs | 91,840 | 72,160 | 84,640 | 77,152 | 90,368 | 88,672 | 89,920 | 97,440 |
+| openings (points x opened columns x 20 B) | 18,400 | 81,200 | 47,600 | 60,480 | 65,160 | 306,800 | 262,000 | 312,700 |
+| level-1 rows and multiproofs | 81,856 | 130,352 | 153,012 | 235,956 | 251,348 | 249,428 | 238,772 | 314,304 |
+| tail levels: roots, rounds, rows, multiproofs | 92,000 | 72,224 | 84,384 | 77,760 | 90,400 | 89,536 | 89,184 | 97,760 |
 | clear vector | 420 | 120 | 280 | 3,240 | 11,340 | 15,120 | 15,120 | 22,680 |
-| total | 216,956 | 317,712 | 396,213 | 544,324 | 642,314 | 1,123,434 | 1,063,602 | 1,355,046 |
+| total | 194,828 | 286,048 | 321,285 | 469,860 | 580,402 | 930,154 | 874,498 | 1,151,566 |
 
-Reading it: the level-1 rows are the largest region on the hash statements and on ECDSA, as the
-layout rule of spec 9.5 says. On the RSA-based statements the openings lead: every column is opened at
-every point, and those statements declare 50 or more points (the cyclic-read offsets of the limb
-lanes), so 485 columns times 53 points is 514 KB of the passport's 1.36 MB, with the `Z2` lines
+Before the change the openings were 41,200 / 113,120 / 122,080 / 133,440 / 126,720 / 504,400 /
+452,000 / 514,100 bytes in the same order, and the totals 216,956 / 317,712 / 396,213 / 544,324 /
+642,314 / 1,123,434 / 1,063,602 / 1,355,046.
+
+Reading it: the level-1 rows are the largest region on every statement but the SOD, DSC and
+passport, as the layout rule of spec 9.5 says. On those three the openings still lead: every opened
+column at every point, and they declare 50 or more points (the cyclic-read offsets of the limb
+lanes), so 295 opened columns times 53 points is 313 KB of the passport's 1.15 MB, with the `Z2` lines
 another 242 KB (three product lines times 4032 rows times 20 bytes) and `Q3` 161 KB. The tail levels
 are about 90 KB on every statement: a level's rows are 160 bytes, so the tail's size is the query
 count times the levels, independent of the statement. The levers on the large proofs are therefore
-the point count and the column count, then `h2` through the clear lines, and the level-1 rate only
-after those.
+the point count and the witness column count, then `h2` through the clear lines, and the level-1
+rate only after those.
 
 ## How to refresh
 

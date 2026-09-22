@@ -342,13 +342,16 @@ hundred bytes.
 ### 3.5 Single-value openings of `E`-valued columns
 
 An `E`-valued column (`Z_k`, `R_k`, `A`, `B`, `Q2`, the lines of 3.6) is committed as twenty
-coordinate columns and opened today as twenty `E` values per point, four hundred `F` functionals
+coordinate columns and was opened as twenty `E` values per point, four hundred `F` functionals
 for the twenty the identity needs. The claim `A(z) = sum_i b_i A_i(z)`, `b_i` the basis elements, is a claim on the
 virtual column `sum_i b_i stored(A_i)`, a fixed vector, tested by the fold with one `beta` under the
 shared functional; the verifier needs nothing else. Openings of `E`-valued columns become one `E`
-value per point: on the passport the `Z` and `Q` openings drop from 200 columns to 10. Worth
-doing before any zero knowledge: about 200 KB off the passport proof, 73 KB off ECDSA, at no
-prover cost. Without it the masks would have to hide twenty coordinate openings per point.
+value per point: on the passport the `Z` and `Q` openings drop from 200 columns to 10. Done
+before any zero knowledge (build order 1, `docs/profile.md` has the sizes): the prover's
+`compact_openings` and `expand_beta`, the verifier's `_expand_beta`, and its residual reading a
+coordinate column `Z_t` as the one value at `t = 0` and zero at `t > 0`, since an accumulator's
+entries are twenty copies that differ only in the basis factor. Without it the masks would have
+to hide twenty coordinate openings per point.
 
 ### 3.6 The small-grid lines
 
@@ -497,8 +500,8 @@ Zero knowledge, each an own obligation with a numerical check before the proof:
 
 ## 7. Build order
 
-1. Single-value `E` openings (3.5). No zero knowledge yet; a proof-size win on its own, and the
-   virtual-column claim is what 3.6 needs. Measurable against `docs/profile.md`.
+1. Single-value `E` openings (3.5). Done. No zero knowledge yet; a proof-size win on its own, and the
+   virtual-column claim is what 3.6 needs.
 2. The extension mechanism (2.1 without the random symbols): `stored_ext`, the layout, the
    extended functionals and consistency rows, the tail's longer row index, and the level-1 rate
    and query recomputation with it (the message is longer from this step on).

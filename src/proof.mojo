@@ -7,7 +7,8 @@ Order, every integer little-endian, every field element e bytes:
     W root      H.DIGEST
     Z root      H.DIGEST; Z2 per accumulator (h2 e)
     Q root      H.DIGEST; Q3 (2 h2 e) when there are accumulators
-    openings    alpha_{c,p}: P x (columns_w + columns_z + columns_q) x e
+    openings    alpha_{c,p}: P x opened x e, opened = columns_w + accumulators + 3: a witness column's
+                value, an E-valued column's one value sum_t b_t <w_z, stored(c_t)> over its coordinate columns
     per level l = 2 .. ell-1:
                 Mat(y_l) root 32 B; multiproof(s) of level l-1 (u32 length + bytes each; three at
                 level 1: W, Z, Q); three sumcheck messages (9 e)
@@ -25,11 +26,11 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from core.params import Params, domain_for, query_count
 from core.arena import Arena
-from relations import ENTRY, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, ID, PUBF, GRP, id_at, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index
+from relations import ENTRY, ENT_A, ENT_BASIS, NONE, NO_BASIS, ACC, ACC_W_MAX, END, WIRE, ID, PUBF, GRP, id_at, KIND_LOOKUP, KIND_HORNER, HORNER_TRANSITIONS, group_offsets, acc_z_col, acc_start, acc_kind, acc_table, acc_family, PUB, RES, ZERO, POINT, CHAL, CHAL_ADD, CHAL_MUL, CHAL_ONE, SAMPLED, FIX_ONE, FIX_E, entry, shift_points, required_points, standard_chals, chal_count, point_index
 from core.hash import Hash
 from core.tables import F4_ORDER, Domains, f4_primitive, node_id
 from core.field import F2, F4, ext_mul
-from core.bytes import append_u32, get_u16, host_base, check_field_bytes
+from core.bytes import append_u32, get_u16, set_u16, host_base, check_field_bytes
 
 comptime VERSION: UInt32 = 1
 
@@ -177,12 +178,13 @@ struct Shape(Writable):
             var col = Int(restrictions[i * RES]) | Int(restrictions[i * RES + 1]) << 8
             var coord = Int(restrictions[i * RES + 2]) | Int(restrictions[i * RES + 3]) << 8
             var count = Int(restrictions[i * RES + 4]) | Int(restrictions[i * RES + 5]) << 8
-            if col >= opened or (coord != FIX_ONE and coord != FIX_E) or count == 0 or count > p.h1():
-                raise Error("restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
+            if col >= columns_w or (coord != FIX_ONE and coord != FIX_E) or count == 0 or count > p.h1():
+                raise Error("restriction needs a witness column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
         for i in range(len(zeros) // ZERO):
             var coord = Int(zeros[i * ZERO + 2]) | Int(zeros[i * ZERO + 3]) << 8
-            if (Int(zeros[i * ZERO]) | Int(zeros[i * ZERO + 1]) << 8) >= opened or (coord != FIX_ONE and coord != FIX_E):
-                raise Error("zero row needs an opened column and a fixed axis-1 coordinate")
+            if (Int(zeros[i * ZERO]) | Int(zeros[i * ZERO + 1]) << 8) >= columns_w or (coord != FIX_ONE and coord != FIX_E):
+                raise Error("zero row needs a witness column and a fixed axis-1 coordinate")
+        var bundles = Dict[String, List[Int]]()     # an accumulator entry's bytes with t removed -> copies per t
         for k in range(self.entries):
             var en = entry(families, k)
             var pub_a = en.col_a >= opened
@@ -197,6 +199,25 @@ struct Shape(Writable):
                 raise Error("a quadratic entry may read at most one public column")
             if en.mult > 2 or (en.mult == 2 and en.col_b != NONE) or en.coef >= 127 or (en.basis != NO_BASIS and en.basis >= p.e) or (en.basis2 != NO_BASIS and en.basis2 >= p.e):
                 raise Error("family entry gate, coefficient, or basis out of range")
+            if en.col_b != NONE and en.col_b >= columns_w and en.col_b < opened:
+                raise Error("an accumulator column is read as col_a of its entries, never as col_b")
+            if en.col_a >= columns_w and en.col_a < opened:
+                # the verifier reads coordinate column t of an accumulator from its one opened value (verifier
+                # _PublicReads.read): exact only for e copies of an entry, one per t with basis t (ir.mojo)
+                var t = (en.col_a - columns_w) % p.e
+                if en.basis != t:
+                    raise Error("an accumulator coordinate column t is read with basis t")
+                var key = List[UInt8](capacity=ENTRY)
+                for b in range(ENTRY):
+                    key.append(families[k * ENTRY + b])
+                set_u16(key, ENT_A, en.col_a - t)
+                key[ENT_BASIS] = 0
+                var ks = String()
+                for b in key:
+                    ks += String(Int(b)) + ","
+                if ks not in bundles:
+                    bundles[ks] = List[Int](length=p.e, fill=0)
+                bundles[ks][t] += 1
         for k in range(len(accs) // ACC):
             if (Int(accs[k * ACC]) | Int(accs[k * ACC + 1]) << 8) != columns_w + k * p.e:
                 raise Error("accumulator z_col must be columns_w + k e in registration order (the Z tree packs Z_k at that block)")
@@ -240,6 +261,10 @@ struct Shape(Writable):
                     for j in range(w_num):
                         if accs[k * ACC + 6 + 2 * i] == accs[k * ACC + 22 + 2 * j] and accs[k * ACC + 7 + 2 * i] == accs[k * ACC + 23 + 2 * j]:
                             raise Error("lookup record and sorted columns must be distinct")
+        for item in bundles.items():
+            for t in range(1, p.e):
+                if item.value[t] != item.value[0]:
+                    raise Error("an accumulator column's entries come as e copies, one per coordinate t with basis t")
         for i in range(len(ends) // END):
             var ca = get_u16(ends, i * END)
             var cb = get_u16(ends, i * END + 2)
@@ -404,13 +429,23 @@ struct Shape(Writable):
     def columns(self) -> Int:
         return self.columns_w + self.columns_z + self.columns_q
 
+    def opened(self) -> Int:
+        """Columns opened at a point and given a beta: every witness column and every E-valued column
+        (an accumulator, or A, B, Q2) as one value; the fold tests sum_t b_t stored(c_t) as one vector."""
+        var e = self.columns_q // 3
+        return self.columns_w + self.columns_z // e + 3
+
+    def opened_index(self, column: Int) -> Int:
+        """The opened column holding stored column `column`: itself, or its E-valued column's."""
+        return column if column < self.columns_w else self.columns_w + (column - self.columns_w) // (self.columns_q // 3)
+
     def fixed_bytes[p: Params, digest: Int](self, public_bytes: Int) -> Int:
         """Proof length without the multiproof bodies: their u32 prefixes are counted, one per tree
         opened (three at level 1: W, Z, Q). Mirrors ProofWriter's order exactly."""
         var n = 4 + 4 + public_bytes + 2 * digest
         if self.accumulators() > 0:                    # Z root, Z2 (products only), Q3 exist only with accumulators
             n += digest + self.products() * p.h2() * p.e + 2 * p.h2() * p.e
-        n += self.points * self.columns() * p.e
+        n += self.points * self.opened() * p.e
         for i in range(len(self.tail)):
             n += digest + (self.trees() if i == 0 else 1) * 4 + 9 * p.e
         n += self.clear_length * p.e + (self.trees() if len(self.tail) == 0 else 1) * 4

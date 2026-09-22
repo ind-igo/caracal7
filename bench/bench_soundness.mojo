@@ -302,7 +302,7 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
         ("pcs_batch", batch),
         ("sumcheck", sumcheck),
         ("opening_batch", 2 * size),
-        ("list_bind", bind_numerator(s.columns(), p.h1(), p.h2(), size)),
+        ("list_bind", bind_numerator(s.opened(), p.h1(), p.h2(), size)),
     ])
     return (terms^, queries)
 
@@ -314,7 +314,7 @@ def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
     var queries = String(q1)
     var error = Float64(tail_list_bound(s, 0, regime, p.eta_inv)) * query_error(p.L(), p.K(), q1, regime, p.eta_inv)
-    var m1 = (s.columns() - 1) if section4 else 1
+    var m1 = (s.opened() - 1) if section4 else 1
     var gap = add_numerator(0, gap_numerator(p.L(), p.K(), regime, p.eta_inv, section4, pairs), m1)
     for i in range(len(s.tail)):
         var q = query_count(per_level, Float64(s.tail[i].rows) / Float64(s.tail[i].L), regime, p.eta_inv)

@@ -23,7 +23,7 @@ from core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, s
 from core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from core.hash import Hash
-from pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, table_len, factor_len, TAIL_F4
+from pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, expand_beta, compact_openings, table_len, factor_len, TAIL_F4
 from pcs import DOM_BYTES, ROUND_ROWS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
 from relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, tile_values
 from relations.statement import Compiled
@@ -91,7 +91,8 @@ struct OpenLayout(TrivialRegisterPassable):
     """The openings at the P points (open.mojo) and the fold to the level-2 message."""
     var w_tab: Int          # (P, table_len, e)     per-point powers and Lagrange factors, then (P, factor_len, e)
     var w_z: Int            # (slot, P, e)          evaluation queries
-    var openings: Int       # (P, column, e)
+    var open_full: Int      # (P, column, e)        <w_z, stored(c)> per stored column
+    var openings: Int       # (P, opened, e)        the sent openings: one value per opened column (Shape.opened)
     var open_partial: Int   # (splits, column, P, e) split-K partials of `open`
     var fold_y: Int         # (slot, e)             y = sum beta_c stored(c), the level-2 message
     var running0: Int       # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
@@ -101,7 +102,8 @@ struct OpenLayout(TrivialRegisterPassable):
         var widest = max(shape.columns_w, max(shape.columns_z, shape.columns_q))
         self.w_tab = bump.alloc(shape.points * (table_len[p]() + factor_len[p]()) * p.e, ST_OPEN, ST_OPEN)
         self.w_z = bump.alloc(shape.points * N * p.e, ST_OPEN, ST_RUN0)
-        self.openings = bump.alloc(shape.points * shape.columns() * p.e, ST_OPEN)
+        self.open_full = bump.alloc(shape.points * shape.columns() * p.e, ST_OPEN, ST_OPEN)
+        self.openings = bump.alloc(shape.points * shape.opened() * p.e, ST_OPEN)
         self.open_partial = bump.alloc(shape.points * open_splits[p]() * widest * p.e, ST_OPEN, ST_OPEN)
         self.fold_y = bump.alloc(N * p.e, ST_FOLD, ST_TAIL)             # tail level 0 folds it (or it is the clear vector)
         self.running0 = bump.alloc(N * p.e, ST_RUN0, ST_TAIL)
@@ -114,7 +116,8 @@ struct ChalLayout(TrivialRegisterPassable):
     var wchal: Int          # (2, e)                beta_w, gamma_w of the wiring copy constraint
     var alpha: Int          # (1, e)
     var z: Int              # (2, e)
-    var beta_gamma: Int     # (columns + P, e)      beta per column, gamma per point
+    var beta_gamma: Int     # (opened + P, e)       beta per opened column, gamma per point
+    var beta_full: Int      # (columns, e)          beta per stored column: beta_v b_t on a coordinate column
     var batch: Int          # (max v_count + 1, e)  tail batching scalars
     var r: Int              # (3, e)                sumcheck round challenges of the current level
 
@@ -124,7 +127,8 @@ struct ChalLayout(TrivialRegisterPassable):
         self.wchal = bump.alloc(2 * p.e)
         self.alpha = bump.alloc(p.e)
         self.z = bump.alloc(2 * p.e)
-        self.beta_gamma = bump.alloc((shape.columns() + shape.points) * p.e)
+        self.beta_gamma = bump.alloc((shape.opened() + shape.points) * p.e)
+        self.beta_full = bump.alloc(shape.columns() * p.e)
         self.batch = bump.alloc((max_v + 1) * p.e)
         self.r = bump.alloc(3 * p.e)
 
@@ -385,9 +389,10 @@ struct Prover[p: Params, H: Hash]:
 
         # 11. openings at the P points -> beta per column, gamma per point
         self._openings(ctx)
-        absorb[Self.p, Self.H](ctx, self.arena, T, DS_OPENINGS, L.open.openings, S.points * S.columns() * e)
-        self.proof.stage(self.arena, L.open.openings, S.points * S.columns() * e)
-        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.chal.beta_gamma, S.columns() + S.points)
+        absorb[Self.p, Self.H](ctx, self.arena, T, DS_OPENINGS, L.open.openings, S.points * S.opened() * e)
+        self.proof.stage(self.arena, L.open.openings, S.points * S.opened() * e)
+        squeeze_elements[Self.p, Self.H](ctx, self.arena, T, L.chal.beta_gamma, S.opened() + S.points)
+        expand_beta(ctx, self.arena, L.chal.beta_gamma, S.columns_w, S.columns(), L.chal.beta_full)
         self._mark(ctx, "transcript openings")
 
         # 12. fold to the level-2 message
@@ -399,7 +404,7 @@ struct Prover[p: Params, H: Hash]:
         var y_len = N
         var running = L.open.running0
         if len(S.tail) > 0:
-            running0[Self.p](ctx, self.arena, L.open.w_z, L.chal.beta_gamma + S.columns() * e, S.points, L.open.running0)
+            running0[Self.p](ctx, self.arena, L.open.w_z, L.chal.beta_gamma + S.opened() * e, S.points, L.open.running0)
         for i in range(len(S.tail)):
             self._tail_level(ctx, i, T, y, y_len, running)
             y = L.tail[i].y
@@ -509,7 +514,8 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, "quotient")
 
     def _openings(mut self, ctx: DeviceContext) raises:
-        """The evaluation queries at the P points, then every committed column's opening at each."""
+        """The evaluation queries at the P points, every stored column's opening at each, then the sent
+        openings: one value per opened column, an E-valued column's the sum of its coordinates' with b_t."""
         ref L = self.layout
         ref S = self.shape
         comptime e = Self.p.e
@@ -519,18 +525,19 @@ struct Prover[p: Params, H: Hash]:
             if t[0].enc.columns == 0:
                 continue                                    # no Z tree without accumulators
             open[Self.p](ctx, self.arena, L.open.w_z, S.points, t[0].enc.stored, t[0].enc.columns, L.open.open_partial,
-                         L.open.openings + t[1] * e, S.columns())
+                         L.open.open_full + t[1] * e, S.columns())
+        compact_openings(ctx, self.arena, L.open.open_full, S.points, S.columns(), S.columns_w, S.opened(), L.open.openings)
         self._mark(ctx, "open")
 
     def _fold(mut self, ctx: DeviceContext) raises:
-        """The level-2 message y = sum_c beta_c stored(c) over the three trees."""
+        """The level-2 message y = sum_c beta_c stored(c) over the three trees, beta per stored column (beta_full)."""
         ref L = self.layout
         ref S = self.shape
         comptime e = Self.p.e
-        fold[Self.p, False](ctx, self.arena, L.chal.beta_gamma, L.w.enc.stored, S.columns_w, L.open.fold_y)
+        fold[Self.p, False](ctx, self.arena, L.chal.beta_full, L.w.enc.stored, S.columns_w, L.open.fold_y)
         if S.columns_z > 0:
-            fold[Self.p, True](ctx, self.arena, L.chal.beta_gamma + S.columns_w * e, L.z.enc.stored, S.columns_z, L.open.fold_y)
-        fold[Self.p, True](ctx, self.arena, L.chal.beta_gamma + (S.columns_w + S.columns_z) * e, L.q.enc.stored, S.columns_q, L.open.fold_y)
+            fold[Self.p, True](ctx, self.arena, L.chal.beta_full + S.columns_w * e, L.z.enc.stored, S.columns_z, L.open.fold_y)
+        fold[Self.p, True](ctx, self.arena, L.chal.beta_full + (S.columns_w + S.columns_z) * e, L.q.enc.stored, S.columns_q, L.open.fold_y)
 
     def _tail_level(mut self, ctx: DeviceContext, i: Int, T: TranscriptLayout, y: Int, y_len: Int, running: Int) raises:
         """Tail level i (spec 9.3): commit Enc(y), open the level before it, sample the batching

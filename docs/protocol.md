@@ -12,7 +12,10 @@ Notation. `F = F127`, `F2 = F[i]`, `F4 = F2[j]`, `E = F4[u] / (u^5 - g)`, twenty
 generates `H_l`, `e_l = omega_l^{-1}`, `G_l` the group of order `2 h_l` containing `H_l`.
 `Z_{H_l}(X) = X^{h_l} - 1`. A column is a function `H -> F`; it is identified with its polynomial of
 bidegree below `(h1, h2)`. An `E`-valued column (an accumulator, a quotient) is committed as its
-twenty coordinate columns. `stored(c)` is a column in the mixed basis of spec 9.1, `N` bytes. `Enc`
+twenty coordinate columns `c_t` and opened as the one value `sum_t b_t c_t(z)`, `b_t` the basis
+elements; "column" in steps 7, 8 and 14 means a witness column or an `E`-valued column, so
+`stored(c)` of an `E`-valued column is `sum_t b_t stored(c_t)`, `N` values of `E` fixed by the
+commitment. `stored(c)` of a witness column is the column in the mixed basis of spec 9.1, `N` bytes. `Enc`
 is the level-1 code: pack four stored bytes into one `F4` symbol and Reed-Solomon encode over `F4`
 on the domain `D`, `|D| = L`, a union of one to four cosets of a subgroup of `F4*`; a column whose
 symbols exceed the rate is split into `n_cw` codewords. `Merkle` is a Blake3 tree over rows of
@@ -79,8 +82,11 @@ one with Blake3 (section 4); the message and challenge order is the code's.
        their descriptor says so), Q3 = R2 / Z_{H2} of degree below 2 h2. C_Q <- Merkle(Enc of the
        A, B, Q2 coordinate columns); send C_Q and, with accumulators, Q3 as its 2 h2 values on G2.
  6. V: sample z = (z1, z2) in E^2; this fixes the point list z_1 .. z_P.
- 7. P: send the openings alpha_{c,p} = c(z_p) for every column c of W, Z, Q and every point p.
- 8. V: sample beta_c in E per column and gamma_p in E per point.
+ 7. P: send the openings alpha_{c,p} = c(z_p) for every column c of W, Z, Q (one value for an
+       E-valued column) and every point p.
+ 8. V: sample beta_c in E per opened column and gamma_p in E per point; a coordinate column c_t of an
+       E-valued column c takes beta_c b_t, so sum over the stored columns below is the sum over the
+       opened ones.
  9. V, with accumulators: boundaries. Z_k(1, z2) = 1 and R_k(1, z2) = start_k from the openings at
        (1, z2); for every grand product: Z2_k(1) = 1 and Z2_k(e2) Z_k(e1, e2) N_k(e1, e2) = D_k(e1, e2)
        (for a lookup, the table constant) from the openings at (e1, e2). For every zero row:
@@ -241,6 +247,6 @@ bits and small limbs; a dense integer dot product has no cheap relation here (`d
 | 3 accumulators | `relations/accumulate` | `_boundaries`, `_wiring` (steps 9, 10) |
 | 5 quotients | `relations/residual` (`lde`, `residual`, `quotient`), `relations/smallgrid` | `_residual`, `_small_grid` (steps 11, 12) |
 | 13 restrictions | | `_restrictions` |
-| 7 openings | `pcs/open` (`k_build_queries`, `open`, `fold`) | `_opening`, `_PublicReads` |
+| 7 openings | `pcs/open` (`k_build_queries`, `open`, `compact_openings`, `expand_beta`, `fold`) | `_opening`, `_PublicReads`, `_expand_beta` |
 | 14 to 17 tail | `Prover._tail_level`, `_open_previous`, `pcs/tail` | `_Tail` on `pcs/tensor` units, `_open_previous`, `pcs/merkle.check_multiproof` |
 | section 4 transcript | `core/transcript` on the device | `HostTranscript` |

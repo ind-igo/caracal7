@@ -11,9 +11,9 @@ from core.hash import Blake3
 from proof import Shape, ProofReader, tail_schedule
 from prover import Prover, ProverLayout, load_trace, load_advice, load_public
 from verifier import verify
-from relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_COEF, ENT_BASIS, ID
+from relations import shift_points, standard_chals, POINT, CHAL_MUL, CHAL_ADD, CHAL_ONE, ENTRY, HORNER_TRANSITIONS, ENT_CHAL, ENT_A, ENT_B, ENT_COEF, ENT_FAMILY, ENT_BASIS, ID, NONE, NO_BASIS, entry
 from core.bytes import set_u16
-from relations.statement import restriction_line, chain_values
+from relations.statement import restriction_line, chain_values, Compiled
 from workload import prove_workload, verify_workload
 from workloads.synthetic import Synthetic, SyntheticHorner, SyntheticWiring, horner_statement, horner_trace, wiring_statement, wiring_trace
 from workloads.synthetic import synthetic_statement, synthetic_trace, synthetic_table, synthetic_advice, synthetic_public_values, SYNTHETIC_COLUMNS, SYNTHETIC_LOOKUP_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS
@@ -29,6 +29,7 @@ def test_tail_schedule_reference_is_clear_at_level_2() raises:
     var shape = synthetic_statement(53).compile[p]().take_shape()
     assert_equal(shape.clear_length, p.N())
     assert_equal(shape.columns(), 53 + 2 * E_BYTES + 3 * E_BYTES)
+    assert_equal(shape.opened(), 53 + 2 + 3)
     # the spec 9.5 rule (unique regime, tail rate 1/32) folds while binary digits remain: 8 -> two folds -> 36 = 9 x 4 in the clear
     comptime spec = SPEC95.grid(72, 32)
     var f = tail_schedule[spec]()
@@ -92,8 +93,8 @@ def test_layout_plans_the_arena() raises:
     # every offset is inside the arena and 256-aligned
     for off in [L.w.tree, L.z.tree, L.q.tree, L.families, L.accs, L.shifts, L.acc.num, L.acc.den, L.acc.scratch, L.acc.zval, L.acc.chain_prod,
                 L.acc.z2, L.acc.n_end, L.acc.d_end, L.sg.lines, L.sg.q3, L.lde.ltmp, L.lde.lde, L.lde.residual, L.lde.quotient, L.open.w_tab,
-                L.open.w_z, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
-                L.query.positions, L.query.stage, L.prefix, L.chal.stage1, L.chal.alpha, L.chal.z, L.chal.beta_gamma, L.chal.batch, L.chal.r]:
+                L.open.w_z, L.open.open_full, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
+                L.query.positions, L.query.stage, L.prefix, L.chal.stage1, L.chal.alpha, L.chal.z, L.chal.beta_gamma, L.chal.beta_full, L.chal.batch, L.chal.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 5 e columns:", L.bytes // (1 << 20), "MiB")
 
@@ -170,12 +171,12 @@ def test_prove_and_verify() raises:
     assert_true(verify[p, Blake3](proof.copy(), shape, List[UInt8](), c.families))
     var q3_bytes = 8 + 3 * 32 + shape.accumulators() * p.h2() * p.e
     var openings = q3_bytes + 2 * p.h2() * p.e
-    var clear = openings + shape.points * shape.columns() * p.e
+    var clear = openings + shape.points * shape.opened() * p.e
     var multiproof = clear + shape.clear_length * p.e
     # a changed clear vector moves S, so the multiproof no longer parses; the consistency check
     # itself only sees a dishonest y with a matching frontier, which no byte flip produces
     var z2_bytes = 8 + 2 * 32
-    var z_open = openings + (shape.columns() + shape.columns_w) * p.e         # Z coordinate 0 at point 1 = (1, z2)
+    var z_open = openings + (shape.opened() + shape.columns_w) * p.e          # Z_0 at point 1 = (1, z2)
     for tamper in [(openings + 5, "residual identity fails at z"),
                    (z2_bytes + 1, "Z2(1) is not 1"),
                    (z2_bytes + (p.h2() - 1) * p.e + 2, "accumulator grand product is not 1"),
@@ -194,7 +195,7 @@ def test_prove_and_verify() raises:
         assert_true(stopped.startswith(tamper[1]), stopped)
     _reject_noncanonical[p](proof, shape, c.families,
         [(z2_bytes, shape.products() * p.h2() * p.e), (q3_bytes, 2 * p.h2() * p.e),
-         (openings, shape.points * shape.columns() * p.e), (clear, shape.clear_length * p.e)])
+         (openings, shape.points * shape.opened() * p.e), (clear, shape.clear_length * p.e)])
     _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
 
 
@@ -421,7 +422,7 @@ def test_prove_and_verify_with_tail() raises:
     print("proof bytes (tail):", len(proof), " fixed:", shape.fixed_bytes[big, 32](0),
           " prove", (t1 - t0) // 1000000, "ms  verify", (t2 - t1) // 1000000, "ms (host, tensor form)")
     # a flipped byte in the first level's sumcheck messages: after its root and the three level-1 multiproofs
-    var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + 2 * big.h2() * big.e + shape.points * shape.columns() * big.e + 32
+    var pos = 8 + 3 * 32 + shape.accumulators() * big.h2() * big.e + 2 * big.h2() * big.e + shape.points * shape.opened() * big.e + 32
     if big.grind_bits > 0:
         pos += 8                                  # the level-1 query seed's nonce
     for _ in range(3):
@@ -467,6 +468,44 @@ def test_horner_descriptor_needs_its_transition_entries() raises:
         with assert_raises(contains="transition entries"):
             _ = Shape.__init__[p](c.layout.columns_w(), fam, c.shape.accs, chals=c.shape.chals, ends=c.shape.ends,
                                   pubf=c.shape.pubf, wires=c.shape.wires, sigma=c.shape.sigma)
+
+
+def test_accumulator_entries_come_in_coordinate_bundles() raises:
+    """The verifier reads a coordinate column of an accumulator from its one opened value, exact only when the
+    entries reading it are e copies with basis t: one copy less, a lone extra read, or a Z column as col_b is rejected."""
+    var c = synthetic_statement().compile[p]()
+    var z_col = Int(c.shape.accs[0]) | Int(c.shape.accs[1]) << 8
+    var k0 = -1
+    for k in range(len(c.families) // ENTRY):
+        if entry(c.families, k).col_a == z_col + 1:
+            k0 = k
+            break
+    assert_true(k0 >= 0)
+    var lone = List[UInt8](length=ENTRY, fill=0)
+    set_u16(lone, ENT_A, z_col + 1)
+    set_u16(lone, ENT_B, NONE)
+    lone[ENT_COEF] = 1
+    lone[ENT_BASIS] = 1
+    lone[ENT_BASIS + 1] = UInt8(NO_BASIS)
+    set_u16(lone, ENT_FAMILY, 7)
+    var wrong_basis = c.families.copy()
+    wrong_basis[k0 * ENTRY + ENT_BASIS] = 0
+    var extra = c.families.copy()
+    extra.extend(lone^)
+    var as_b = c.families.copy()
+    set_u16(as_b, k0 * ENTRY + ENT_B, z_col)
+    assert_true("read with basis t" in _shape_error(c, wrong_basis))
+    assert_true("e copies" in _shape_error(c, extra))
+    assert_true("never as col_b" in _shape_error(c, as_b))
+
+
+def _shape_error(c: Compiled, fam: List[UInt8]) -> String:
+    try:
+        _ = Shape.__init__[p](c.layout.columns_w(), fam, c.shape.accs, chals=c.shape.chals, ends=c.shape.ends,
+                              pubf=c.shape.pubf, wires=c.shape.wires, sigma=c.shape.sigma)
+    except e:
+        return String(e)
+    return String("")
 
 
 def test_prove_and_verify_with_horner_accumulators() raises:

@@ -56,8 +56,8 @@ def sizes[p: Params](proof: List[UInt8], shape: Shape) raises:
     if shape.accumulators() > 0:
         _ = r.field_bytes(2 * p.h2() * p.e)
     region("Q root and Q3", r, pos)
-    _ = r.field_bytes(shape.points * shape.columns() * p.e)
-    region("openings (" + String(shape.points) + " points x " + String(shape.columns()) + " columns)", r, pos)
+    _ = r.field_bytes(shape.points * shape.opened() * p.e)
+    region("openings (" + String(shape.points) + " points x " + String(shape.opened()) + " opened columns)", r, pos)
     for i in range(len(shape.tail)):
         _ = r.take(Blake3.DIGEST)
         if p.grind_bits > 0:

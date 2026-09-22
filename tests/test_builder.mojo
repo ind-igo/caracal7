@@ -114,7 +114,7 @@ def test_every_check_has_a_failing_case() raises:
     assert_equal(_fails(st^), "unknown accumulator nope")
     st = synthetic_statement()
     st.restrict("c1", FIX_E, p.h1() + 1)
-    assert_equal(_fails(st^), "restriction needs an opened column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
+    assert_equal(_fails(st^), "restriction needs a witness column, a fixed axis-2 coordinate, and a coefficient count in [1, h1]")
     st = synthetic_statement()
     st.family("bad", [Term(1, st.read("c2"), chal=9)])
     assert_equal(_fails(st^), "family entry names a challenge element past the derivation table")

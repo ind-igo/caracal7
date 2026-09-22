@@ -60,9 +60,11 @@ def test_openings_and_fold() raises:
     var P = shape.points
     var z = _dl(ctx, prover, L.chal.z, 2 * p.e)
     var coeff = _dl(ctx, prover, L.w.enc.coeff, SYNTHETIC_COLUMNS * N * 2)
-    var openings = _dl(ctx, prover, L.open.openings, P * C * p.e)
+    var O = shape.opened()
+    var openings = _dl(ctx, prover, L.open.openings, P * O * p.e)
     var scratch = _dl(ctx, prover, L.lde.quotient, 6 * N * p.e)
-    var beta = _dl(ctx, prover, L.chal.beta_gamma, C * p.e)
+    var beta = _dl(ctx, prover, L.chal.beta_full, C * p.e)
+    var beta_v = _dl(ctx, prover, L.chal.beta_gamma, O * p.e)
     var stored_w = _dl(ctx, prover, L.w.enc.stored, SYNTHETIC_COLUMNS * N)
     var stored_z = _dl(ctx, prover, L.z.enc.stored, shape.columns_z * N)
     var stored_q = _dl(ctx, prover, L.q.enc.stored, shape.columns_q * N)
@@ -81,18 +83,18 @@ def test_openings_and_fold() raises:
         var z2 = point_coord(list_e(z, 1), dj2, d.g2, p.h2())
         for c in range(SYNTHETIC_COLUMNS):
             var want = _horner(coeff, c * N * 2, 2, 2, z1, z2, h2)
-            assert_true(want == list_e(openings, pt * C + c), "witness opening mismatch")
-    # quotient coordinate columns at z: sum_tau e_tau alpha_tau = Q(z) from the coefficient tables
+            assert_true(want == list_e(openings, pt * O + c), "witness opening mismatch")
+    # beta per stored column is beta per opened column times the coordinate's basis element
+    for c in range(C):
+        var b = E(0)
+        b[(c - SYNTHETIC_COLUMNS) % p.e if c >= SYNTHETIC_COLUMNS else 0] = 1
+        assert_true(list_e(beta, c) == ext_mul[E_LEVEL](list_e(beta_v, shape.opened_index(c)), b), "beta expansion mismatch")
+    # the quotient columns at z, opened as one value each: Q(z) from the coefficient tables
     var q1coef = h1 * G2 * p.e
     var srcs: List[Int] = [q1coef, q1coef + h2 * h1 * p.e, q1coef + G2 * h1 * p.e]
     for q in range(3):
         var want = _horner(scratch, srcs[q], p.e, p.e, list_e(z, 0), list_e(z, 1), h2)
-        var got = E(0)
-        for tau in range(p.e):
-            var basis = E(0)
-            basis[tau] = 1
-            got = f_add(got, ext_mul[E_LEVEL](basis, list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z + q * p.e + tau)))
-        assert_true(want == got, "quotient opening mismatch")
+        assert_true(want == list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z // p.e + q), "quotient opening mismatch")
     # fold at a few slots
     var slots: List[Int] = [0, 1, 77, N // 2, N - 1]
     for slot in slots:
