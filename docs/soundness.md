@@ -1,10 +1,21 @@
-# Soundness ledger for the CSP configuration
+# Soundness ledger for covered configurations
 
 Status: **conditional analysis, not certification**. The executable ledger
 uses the current source with `E=F_(127^20)` and query target 112. This note
 records checked citations, our proof steps, and the remaining composition
 conditions. A successful calculation or test does not establish a security
 level. Configuration and review history are in `docs/decisions.md`.
+
+**Current assurance checkpoint:** [security-assurance.md](security-assurance.md)
+covers 20 cases, including RSA, SOD, DSC, and passport. The DKT26 joint-list
+comparison gives **87.50-88.37 conditional interactive bits** and
+**107.12-108.18 conditional work bits**. ECDSA gives **88.21 / 108.03**.
+These have different models. Earlier tables below include the grinding
+work discount; they are not undiscounted interactive error bounds. No complete
+implementation guarantee is established. The compact E-column fold needs
+an explicit connection to the Bend MCA/descent model (P1/P4), and the
+cryptographic work reduction remains open (P5). Read the checkpoint before
+reusing a historical number.
 
 The benchmark metadata says `security_bits: 112`. In `core/params.mojo`, 112 is the per-level
 **fixed-message query target**, sized as 92 bits of queries at the Johnson radius `1 - sqrt(rate) - 1/16` (BCHKS25
@@ -26,17 +37,17 @@ The main Hab25 result remains the conservative baseline.
 uv run mojo run --Werror -I src bench/bench_soundness.mojo
 ```
 
-The program runs its arithmetic self-checks, compiles all 16 benchmark cases, and prints their
+The program runs its arithmetic self-checks, compiles 20 main cases and four tail-rate comparisons, and prints their
 actual `Params`, `Shape`, tail levels, query error, and named field-error numerators. It neither
 constructs a GPU context nor generates a witness or proof. SHA-256 and Keccak input bytes,
 Poseidon elements, and ECDSA signature values do not affect the compiled statement at a fixed grid.
 The ECDSA report calls the workload's `statement()` and its fixed `Ecdsa.circuit()` without a live walk.
 
-The case whitelist mirrors `cli/ffi.mojo` and `cli/main.mojo`. Those routes must be compared again
+The first 16 cases cover the grid geometries in `cli/ffi.mojo` and `cli/main.mojo`;
+four more use the primary RSA, SOD, DSC, and passport benchmark statements. Those routes must be compared again
 when adding sizes or changing routing. All dimensions, descriptors, and counts after routing come
 from production compilation; there is no copied table of shape counts or reimplementation of the
-domain/tail planner. The ledger rejects Herder lookup/permutation accumulators (the four benchmark
-workloads have none), split tail codewords, other tail arities, and challenge-dependent ordinary families that would need
+domain/tail planner. The ledger rejects Herder lookup/permutation accumulators (the covered workloads have none), split tail codewords, other tail arities, and challenge-dependent ordinary families that would need
 another argument. This is scoped to these workloads, not a generic IR security checker.
 
 Output:
@@ -60,8 +71,15 @@ Output:
   The new non-gap list terms are included. These comparisons do not supply
   the packed-alphabet proof. `capacity_conjecture` has no proven gap or list
   bound; its field terms are placeholders, not a security claim.
-- `conditional_iop_bits` is `-log2(query_error + sum(A)/127^e)`, rounded
-  down to two decimals. The e16/e20 projections change only the denominator.
+- `conditional_interactive_bits` uses `query_error_per_attempt + sum(A)/127^e`.
+- `conditional_work_bits` uses `query_error_per_attempt / 2^grind_bits + sum(A)/127^e`.
+  It replaces the misleading `conditional_iop_bits` label. This discount has
+  not been proved for the implemented transcript. Both displays round down
+  to two decimals. The e16/e20 projections change only the denominator.
+- `johnson_dkt26_joint_list_conditional` uses the same DKT26 scalar charge
+  and the checked integer block-list allowance described in the checkpoint.
+  The main Hab25 and DKT26 old-list comparisons remain available.
+  `numeric_code` prints each actual compiled level for certificate comparison.
 
 Calculations use Float64 for diagnostic sizing, not interval arithmetic or a machine-checked proof.
 Exit zero means the calculation succeeded. The program always reports unresolved obligations and
@@ -545,15 +563,16 @@ hypotheses. J1 is discharged as a mathematical derivation, subject to review.
 It does not prove MCA on every agreement set, descent for `E tensor F4`,
 or soundness of openings. Those are separate steps in J2/J3 and P1/P4.
 
-**Grinding.** Before every level's positions are sampled the prover absorbs an 8-byte nonce whose
-grind word (the first u32 of squeeze block 0) has `grind_bits` leading zeros; the positions come from
-block 1 on (`transcript.grind`, `HostTranscript.grind`). Finding it costs `2^grind_bits` hashes per
-level per attempt, so a prover that makes `W` transcript attempts pays `W 2^grind_bits` hashes; the
-ledger charges the query term per attempt divided by `2^grind_bits`, the usual grinding accounting
-(ethSTARK, section 6.2 of the Ligerito note), and sizes `s_i` from `lambda' - grind_bits`. This is a
-computational bound in the random-oracle model, not a statistical one: it is part of P5's claim, and
-the field terms are untouched by it. The search runs on device (smallest passing nonce, 3 ms at 20
-bits on the M1 Pro) and ends with probability 1.
+**Grinding.** Each level absorbs an 8-byte nonce. Squeeze block zero must
+pass the leading-zero test; positions use block one onward. The executable
+prints undiscounted interactive error and a separate work diagnostic that
+divides only the query error by `2^grind_bits`. A fresh ideal probe passes
+with probability `2^-grind_bits`; this does not prove a deterministic cost
+per accepted attempt or a concrete adversarial success bound. Prefix reuse,
+adaptive attempts, Fiat-Shamir, and hash binding remain in P5. The device
+search probes only 32 nonce bits and can repeat after wraparound. It does
+not have a probability-one termination guarantee for a fixed state. See
+[the checkpoint](security-assurance.md) for the exact scope.
 
 `A_pcs_batch` is conservatively the number of scalar claims batched before each three-round
 sumcheck: `4*s_previous+1` at the first tail level, `s_previous+1` subsequently. The factor four
@@ -619,7 +638,7 @@ compilation in P5.
 
 | ID | Obligation | Evidence / remaining work |
 |---|---|---|
-| P1 | Packed level-1 columns admit the scalar RS guarantee in the block metric | Vault spec 12.1 and the list proof in 12.3; scalar citations checked above. Independently review descent, reconstruction of F-valued coordinates, and the joint opening claim |
+| P1 | Packed level-1 columns admit the scalar RS guarantee in the block metric | Vault spec 12.1/12.3 and the Bend transfers are conditional. The current `_expand_beta` uses one independent weight per logical E column and physical weights `beta*b_t`; the existing Bend fixed-raw-coordinate model needs an explicit grouped tensor/descent bridge. See [checkpoint](security-assurance.md) |
 | P2 | Two-grid identities imply all intended row and chain-end constraints | `relations/statement.compile`, `proof.Shape`, `verifier._residual`, `_small_grid`, `_boundaries`, `_restrictions`. Review degree bounds and adaptive transcript composition, including the shared alpha and z |
 | P3 | Integer/curve/hash constraints faithfully express the workloads | `workloads/sha256`, `keccak`, `poseidon`, `mulmod`, `ecdsa`. Check carries, selectors, canonical values, idle rows, hints, and the nonzero-polynomial argument for Horner/wiring; degree counting alone cannot establish it |
 | P4 | The tail is the analyzed scalar tensor-fold protocol | `_Tail.level`, `_Tail.clear`, `pcs/tensor`, `pcs/tail`. Review row basis, mixed digits, four-coordinate first batch, last clear check, and per-round adaptivity |

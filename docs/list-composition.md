@@ -222,5 +222,7 @@ Next establish the packing, encoding, opening, and fold identities assumed
 above for every admitted message and supported shape. Existing `test_open`,
 `test_tensor`, and `test_tail` checks support these identities on fixtures;
 they are not universal proofs. Then prove the fixed-projection relation
-contracts, starting with Horner recurrence and endpoints. The separate Bend
-development remains paused until resumed.
+contracts, starting with Horner recurrence and endpoints. The separate Bend development now checks the abstract scalar, affine,
+interleaved, tensor, and packed-list transfers. Its current field and
+fixed-coordinate assumptions still need a connection to the compact
+E-valued column openings. See [security-assurance.md](security-assurance.md).

@@ -2799,3 +2799,55 @@ Proof bytes (`docs/profile.md`): sha256 216,956 -> 194,828; keccak 317,712 -> 28
 930,154; dsc 1,063,602 -> 874,498; passport 1,355,046 -> 1,151,566. Prover and verifier times are
 unchanged within noise (the compaction is one thread per opened value). Reviewed by Opus and Codex;
 both found `fixed_bytes` still counting the old layout (fixed) and the validation gap above.
+
+
+## Prover-wide numerical assurance checkpoint (2026-09-22)
+
+Expanded `bench/bench_soundness.mojo` from 16 main CSP cases to 20 cases by
+adding the primary RSA2048, SOD, DSC, and passport benchmark statements.
+They use public fixture metadata and real statement compilation; no witness
+or GPU work is needed. The guards for one codeword, three tail digits,
+Horner accumulators, and handled ordinary families are unchanged. The four
+historical ECDSA tail-rate comparisons remain separate. This is not coverage
+of arbitrary workload shapes or the full IR.
+
+The separate `caracal7-fv` catalogue now checks 53 distinct scalar numeric
+certificates and exact ceilings of the existing Johnson sufficient list
+ratio. The new conditional comparison uses those smaller per-code caps in
+every list-dependent term. The main Hab25 and old-list DKT26 results remain.
+All prior 20 reports (16 main plus four rate variants) were compared to the
+fresh output and matched after removing added output and changed labels.
+No runtime parameter or proof format changed.
+
+The old `conditional_iop_bits` label included a grinding discount. Renamed
+it to `conditional_work_bits` and added `conditional_interactive_bits` with
+undiscounted query error. The ranges for the 20 main cases are 107.12-108.18 work bits
+and 87.50-88.37 interactive bits. ECDSA gives 108.03 and 88.21. These are
+conditional diagnostics with different models, not a full security claim.
+The source comment and soundness note no longer claim probability-one
+termination for a search over a finite 32-bit nonce space. Runtime behavior
+is unchanged; its exhaustion path and the cryptographic work reduction
+remain open.
+
+The implementation review found a missing connection to the compact
+E-column protocol. `_expand_beta` uses one independent weight per logical
+column, then fixed basis multiples on its physical coordinates. The existing
+Bend model's independent-input-weight and raw-fixation premises do not follow
+from this automatically. Prove the grouped tensor/basis map and descent
+connection next. All four tensor coordinates remain in the implementation;
+this finding does not demonstrate a forgery. Relation event coverage, actual
+field/domain/layout connections, and P5 remain open. The scope and current
+tables are in `docs/security-assurance.md` and linked at the top of soundness.
+
+Two independent native subagent reviews found no substantive defect. Both
+checked all 53 scalar/list certificates, the 20 case mappings, list factors,
+and the proof/implementation boundaries. Their public proof and focused
+checks passed, including the two targeted mutation rejections. Claude was
+not used. A separate exact-rational and 100-digit calculation checked all 24
+new compiled reports, their field totals, query unions, and displayed bits.
+
+Validation passed: `uv run mojo build --Werror -I src
+bench/bench_soundness.mojo`, its full output run, and `sh run_tests.sh`
+(31 test files and 18 bench files, including execution of the soundness
+self-check). Working and staged whitespace checks passed. Pre-existing
+unrelated soundness/decision edits and the local AGENTS file were excluded.

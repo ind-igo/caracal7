@@ -1,4 +1,4 @@
-"""Conditional interactive soundness ledger for the shipped CSP workloads; see docs/soundness.md.
+"""Conditional soundness comparisons for covered workload profiles; see docs/soundness.md.
 
 Run with `uv run mojo run --Werror -I src bench/bench_soundness.mojo`.
 No GPU work, proofs, or cached shape counts. Exit zero means the calculation ran, not certification.
@@ -19,6 +19,13 @@ from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
 from workloads.ecdsa import Ecdsa, Point
 from workloads.bigint import Big
+from workloads.rsa import rsa_statement
+from workloads.sod import sod_statement
+from workloads.dsc import dsc_statement
+from workloads.passport import passport_statement
+from workloads.mrz import WINDOW_OFFSET
+import bench_sod as SodFixture
+import bench_dsc as DscFixture
 
 
 def challenge_degrees(table: List[UInt8]) raises -> List[Int]:
@@ -124,19 +131,38 @@ def ceil_sqrt(value: Int) raises -> Int:
     return low
 
 
+def agreement_threshold(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
+    """Exact ceil(sqrt(N*K) + N/eta_inv), shared by scalar and list bounds."""
+    if dimension <= 0 or dimension >= length or eta_inv < 2:
+        raise Error("agreement needs 0 < dimension < length and eta_inv >= 2")
+    var nk = add_numerator(0, length, dimension)
+    var scaled = add_numerator(0, add_numerator(0, nk, eta_inv), eta_inv)
+    var agreement = ceil_ratio(add_numerator(length, ceil_sqrt(scaled)), eta_inv)
+    if agreement > length:
+        raise Error("agreement exceeds the code length")
+    return agreement
+
+
+def joint_list_bound(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
+    """Checked Johnson block-list ratio in caracal7-fv/rsblock.bend; own proof, needs review.
+    A sufficient integer cap, not a claim that this many close codewords exist.
+    """
+    var agreement = agreement_threshold(length, dimension, eta_inv)
+    var degree = dimension - 1
+    var margin = add_numerator(0, agreement, agreement) - add_numerator(0, length, degree)
+    if agreement <= degree or margin <= 0:
+        raise Error("joint list bound needs a positive Johnson margin")
+    return ceil_ratio(add_numerator(0, length, agreement - degree), margin)
+
+
 def dkt26_numerator(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
     """DKT26 Theorem 5.12, p. 53; Lemma 5.3, pp. 40-43, ell=1, L=D+1.
     Exact integer ceilings. Reject intermediate Int overflow, including parameter sizing.
     """
-    if dimension <= 1 or dimension >= length or eta_inv < 2:
-        raise Error("DKT26 needs 1 < dimension < length and eta_inv >= 2")
+    if dimension <= 1:
+        raise Error("DKT26 needs dimension > 1")
     var degree = dimension - 1
-    var nk = add_numerator(0, length, dimension)
-    var scaled = add_numerator(0, add_numerator(0, nk, eta_inv), eta_inv)
-    # A=ceil(sqrt(n*K)+n/eta_inv); this preserves the configured integer Hamming ball.
-    var agreement = ceil_ratio(add_numerator(length, ceil_sqrt(scaled)), eta_inv)
-    if agreement > length:
-        raise Error("DKT26 agreement exceeds the code length")
+    var agreement = agreement_threshold(length, dimension, eta_inv)
     var dn = add_numerator(0, degree, length)
     var twice_t = 7  # 2*m+1, starting at m=3
     while True:
@@ -179,17 +205,19 @@ def dkt26_gap[p: Params](ref s: Shape) raises -> Int:
     return gap
 
 
-def list_bound(length: Int, dimension: Int, eta_inv: Int) raises -> Int:
+def list_bound(length: Int, dimension: Int, eta_inv: Int, joint: Bool = False) raises -> Int:
+    if joint:
+        return joint_list_bound(length, dimension, eta_inv)
     if dimension <= 0 or dimension >= length or eta_inv < 2:
         raise Error("list bound needs 0 < dimension < length and eta_inv >= 2")
     return Int(ceil(Float64(eta_inv) / (2.0 * sqrt(Float64(dimension) / Float64(length)))))
 
 
-def tail_list_bound(ref s: Shape, i: Int, regime: Int, eta_inv: Int) raises -> Int:
+def tail_list_bound(ref s: Shape, i: Int, regime: Int, eta_inv: Int, joint: Bool = False) raises -> Int:
     # The next root fixes this list before the current queries. The final clear message is one candidate.
     if regime != REGIME_JOHNSON or i == len(s.tail):
         return 1
-    return list_bound(s.tail[i].L, s.tail[i].rows, eta_inv)
+    return list_bound(s.tail[i].L, s.tail[i].rows, eta_inv, joint)
 
 
 def bind_numerator(columns: Int, h1: Int, h2: Int, size: Int) raises -> Int:
@@ -210,11 +238,13 @@ def bits(error: Float64) -> Float64:
     return Float64(Int(-log2(error) * 100.0)) / 100.0
 
 
-def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Float64]:
+def ledger[p: Params](c: Compiled, joint_lists: Bool = False) raises -> Tuple[List[Tuple[String, Int]], Float64]:
     """Each integer is a numerator over |E|; the Float64 is the sum of query errors.
     This is conditional on the proof obligations in the note, not a generic IR soundness theorem.
     """
     p.check()
+    if joint_lists and p.regime != REGIME_JOHNSON:
+        raise Error("joint-list comparison requires the Johnson regime")
     if p.n_cw() != 1 or p.tail_digits != 3:
         raise Error("ledger covers one codeword per column and three-digit tail folds")
     ref s = c.shape
@@ -226,7 +256,7 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     var horner_families = List[Int]()
     for i in range(s.accumulators()):
         if acc_kind(s.accs, i) != KIND_HORNER:
-            raise Error("Herder lookup/permutation budgets are not implemented; none of the four CSP workloads uses them")
+            raise Error("Herder lookup/permutation budgets are not implemented; this ledger requires Horner accumulators")
         var first = get_u16(s.accs, i * ACC + 2)
         var count = get_u16(s.accs, i * ACC + 4)
         var ingest = 0
@@ -268,19 +298,19 @@ def ledger[p: Params](c: Compiled) raises -> Tuple[List[Tuple[String, Int]], Flo
     var gap = gap_numerator(p.L(), p.K(), p.regime, p.eta_inv)      # level 1: uniform E^columns fold, block alphabet
     var size = 1
     if p.regime == REGIME_JOHNSON:
-        size = list_bound(p.L(), p.K(), p.eta_inv)
+        size = list_bound(p.L(), p.K(), p.eta_inv, joint_lists)
         gap = add_numerator(4, gap, 4)    # four conjugate codes, affine MCA <= (ceil(a)+1)/Q each
     var batch = 0
     var sumcheck = 0
-    var queries = Float64(tail_list_bound(s, 0, p.regime, p.eta_inv)) * query_error(p.L(), p.K(), p.queries(), p.regime, p.eta_inv)
+    var queries = Float64(tail_list_bound(s, 0, p.regime, p.eta_inv, joint_lists)) * query_error(p.L(), p.K(), p.queries(), p.regime, p.eta_inv)
     var previous_queries = p.queries()
     for i in range(len(s.tail)):
         var level = s.tail[i]
         gap = add_numerator(gap, gap_numerator(level.L, level.rows, p.regime, p.eta_inv), 3)   # later folds: tensor randomness in three E elements
-        var candidates = tail_list_bound(s, i, p.regime, p.eta_inv)
+        var candidates = tail_list_bound(s, i, p.regime, p.eta_inv, joint_lists)
         batch = add_numerator(batch, (4 if i == 0 else 1) * previous_queries + 1, candidates)
         sumcheck = add_numerator(sumcheck, 6, candidates)
-        queries += Float64(tail_list_bound(s, i + 1, p.regime, p.eta_inv)) * query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
+        queries += Float64(tail_list_bound(s, i + 1, p.regime, p.eta_inv, joint_lists)) * query_error(level.L, level.rows, level.queries, p.regime, p.eta_inv)
         previous_queries = level.queries
     var terms: List[Tuple[String, Int]] = [
         ("alpha_batch", grid_alpha + small_alpha),
@@ -323,11 +353,21 @@ def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_
         gap = add_numerator(gap, gap_numerator(s.tail[i].L, s.tail[i].rows, regime, p.eta_inv, section4, pairs), 3)
     var q_err = error / Float64(1 << p.grind_bits)
     print(name, "eta_inv", p.eta_inv, "queries_per_level", queries, "query_bits", bits(q_err), "pcs_gap", gap,
-          "conditional_iop_bits", bits(Float64(add_numerator(numerator_no_gap, gap)) / field_order(p.e) + q_err))
+          "conditional_work_bits", bits(Float64(add_numerator(numerator_no_gap, gap)) / field_order(p.e) + q_err))
 
 
 def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     var c = w.statement[p]().compile[p]()
+    report_compiled[p](target, size, c)
+
+
+def numeric_code(length: Int, dimension: Int, queries: Int, eta_inv: Int) raises:
+    print("numeric_code D/N/T/C/oldL/jointL/queries", dimension - 1, length,
+          agreement_threshold(length, dimension, eta_inv), dkt26_numerator(length, dimension, eta_inv),
+          list_bound(length, dimension, eta_inv), joint_list_bound(length, dimension, eta_inv), queries)
+
+
+def report_compiled[p: Params](target: String, size: Int, c: Compiled) raises:
     ref s = c.shape
     var result = ledger[p](c)
     var numerator = 0
@@ -348,20 +388,46 @@ def report[p: Params, W: Workload](target: String, size: Int, w: W) raises:
     projection[p](s, "capacity_conjecture", REGIME_CAPACITY, numerator_no_gap)
     projection[p](s, "johnson_bchks25_1.5_projection", REGIME_JOHNSON, numerator_no_gap, pairs=True)
     projection[p](s, "johnson_bchks25_4.2_4.6_projection", REGIME_JOHNSON, numerator_no_gap, section4=True)
-    var q_err = result[1] / Float64(1 << p.grind_bits)     # per 2^grind_bits hashes of prover work per level
+    # This division is a work-normalized diagnostic, not an interactive probability bound.
+    var q_err = result[1] / Float64(1 << p.grind_bits)
     if p.regime == REGIME_JOHNSON:
         var dkt_gap = dkt26_gap[p](s)
         print("johnson_dkt26_5.12_conditional", "eta_inv", p.eta_inv, "pcs_gap", dkt_gap,
               "field_numerator_total", add_numerator(numerator_no_gap, dkt_gap),
-              "query_bits", bits(q_err), "conditional_iop_bits",
-              bits(Float64(add_numerator(numerator_no_gap, dkt_gap)) / field_order(p.e) + q_err))
+              "query_bits", bits(q_err), "conditional_work_bits",
+              bits(Float64(add_numerator(numerator_no_gap, dkt_gap)) / field_order(p.e) + q_err),
+              "conditional_interactive_bits", bits(Float64(add_numerator(numerator_no_gap, dkt_gap)) / field_order(p.e) + result[1]))
+        var joint = ledger[p](c, joint_lists=True)
+        var joint_total = dkt_gap
+        for term in joint[0]:
+            if term[0] != "pcs_gap":
+                joint_total = add_numerator(joint_total, term[1])
+        var joint_field = Float64(joint_total) / field_order(p.e)
+        print("johnson_dkt26_joint_list_conditional", "pcs_gap", dkt_gap,
+              "field_numerator_total", joint_total, "query_error_per_attempt", joint[1],
+              "conditional_work_bits", bits(joint_field + joint[1] / Float64(1 << p.grind_bits)),
+              "conditional_interactive_bits", bits(joint_field + joint[1]))
+        numeric_code(p.L(), p.K(), p.queries(), p.eta_inv)
+        for level in s.tail:
+            numeric_code(level.L, level.rows, level.queries, p.eta_inv)
     print("query_error_per_attempt", result[1], "grind_bits", p.grind_bits, "query_error", q_err, "query_bits", bits(q_err), "field_numerator_total", numerator)
-    print("conditional_iop_bits", bits(Float64(numerator) / field_order(p.e) + q_err))
+    print("conditional_work_bits", bits(Float64(numerator) / field_order(p.e) + q_err),
+          "conditional_interactive_bits", bits(Float64(numerator) / field_order(p.e) + result[1]))
     print("projected_e16_same_geometry_and_queries", bits(Float64(numerator) / field_order(16) + q_err))
     print("projected_e20_same_geometry_and_queries", bits(Float64(numerator) / field_order(20) + q_err))
 
 
 def self_check() raises:
+    assert_equal(agreement_threshold(64, 16, 16), 36)
+    assert_equal(joint_list_bound(64, 16, 16), 4)
+    for pair in [(161280, 20736), (92160, 10368), (10752, 1296), (1344, 162)]:
+        assert_equal(joint_list_bound(pair[0], pair[1], 16), 7)
+    with assert_raises():
+        _ = joint_list_bound(16, 16, 16)
+    with assert_raises():
+        _ = joint_list_bound(16, 1, 1)
+    with assert_raises():
+        _ = joint_list_bound(1 << 40, 1 << 30, 16)
     # Independent rational calculation of all four ECDSA scalar bounds.
     assert_equal(dkt26_numerator(161280, 20736, 16), 66374040)
     assert_equal(dkt26_numerator(92160, 10368, 16), 44914431)
@@ -436,10 +502,25 @@ def self_check() raises:
             var first = sqrt(1.0 / 12.0) + 1.0 / 16.0
             var last = sqrt(1.0 / 35.0) + 1.0 / 16.0
             assert_true(abs(result[1] - (48.0 * first * first + last * last)) < 1e-12)
+            var joint = ledger[p](c, joint_lists=True)
+            assert_equal(joint_list_bound(48, 4, 16), 5)
+            assert_equal(joint_list_bound(70, 2, 16), 6)
+            for term in joint[0]:
+                if term[0] == "pcs_batch":
+                    assert_equal(term[1], 54)
+                elif term[0] == "sumcheck":
+                    assert_equal(term[1], 36)
+                elif term[0] == "list_relations":
+                    assert_equal(term[1], 68)
+                elif term[0] == "opening_batch":
+                    assert_equal(term[1], 10)
+            assert_true(abs(joint[1] - (6.0 * first * first + last * last)) < 1e-12)
             c.shape.tail[0].codewords = 2
             with assert_raises():
                 _ = ledger[p](c)
         else:
+            with assert_raises():
+                _ = ledger[p](c, joint_lists=True)
             # Flat: 1 alpha + 16 grid + 48 gap + 2 openings. Tail: +3*70 gap +17 batch +6 sumcheck.
             assert_equal(numerator, 67 if i == 0 else 300)
             var miss = 13.0 / 24.0
@@ -461,9 +542,10 @@ def johnson(tail_rate_inv: Int) -> Profile:
 
 def main() raises:
     self_check()
-    print("CONDITIONAL INTERACTIVE LEDGER -- NOT A SECURITY CERTIFICATION. docs/soundness.md lists open obligations.")
+    print("CONDITIONAL LEDGER -- NOT A SECURITY CERTIFICATION. docs/security-assurance.md lists coverage and open obligations.")
+    print("interactive bits use undiscounted queries; work bits divide query error by 2^grind_bits under an unproved work model.")
     print("the e16/e20 projections change only the field order; the compiled e is E_BYTES (field.mojo); no Fiat-Shamir/hash/quantum bound included.")
-    # ponytail: the case whitelist mirrors cli/ffi.mojo; update both when benchmark routing changes.
+    # ponytail: explicit cases cover CLI grids plus four primary fixtures; compare routes when profiles change.
     # Only the routing is repeated: Params, tail_schedule, statements, and all counts come from production code.
     comptime for i in range(5):
         comptime n = 128 << i
@@ -475,6 +557,14 @@ def main() raises:
         report[CLIENT.grid(64, 720)]("poseidon", n, Poseidon(List[Int](length=n, fill=0)))
     # statement() uses Ecdsa.circuit(), independent of signature values; no live walk or witness is needed.
     report[CLIENT.grid(144, 576)]("ecdsa", 32, Ecdsa(Big(), Big(), Big(), Point.identity()))
+    # Public benchmark metadata fixes these statements; no witnesses or GPU work are needed.
+    var lengths: List[Int] = [String(SodFixture.DG1_HEX).byte_length() // 2, String(SodFixture.ECONTENT_HEX).byte_length() // 2, String(SodFixture.ATTRS_HEX).byte_length() // 2]
+    var embeds: List[Int] = [SodFixture.EMBED_1, SodFixture.EMBED_2]
+    var cert_length = String(DscFixture.TBS_HEX).byte_length() // 2
+    report_compiled[CLIENT.grid(144, 2016)]("rsa2048", 1, rsa_statement(8, 17).compile[CLIENT.grid(144, 2016)]())
+    report_compiled[CLIENT.grid(144, 2688)]("sod", 1, sod_statement(CLIENT.grid(144, 2688).h2(), 8, 17, lengths, embeds, WINDOW_OFFSET).compile[CLIENT.grid(144, 2688)]())
+    report_compiled[CLIENT.grid(144, 2688)]("dsc", 1, dsc_statement(CLIENT.grid(144, 2688).h2(), 8, 17, cert_length, DscFixture.N_OFFSET).compile[CLIENT.grid(144, 2688)]())
+    report_compiled[CLIENT.grid(144, 4032)]("passport", 1, passport_statement(CLIENT.grid(144, 4032).h2(), 8, 17, lengths, embeds, WINDOW_OFFSET, cert_length, DscFixture.N_OFFSET).compile[CLIENT.grid(144, 4032)]())
     # tail rate sweep in the Johnson regime: the rho^-1.5 constant of BCHKS25 1.5 punishes low-rate tails
     comptime for r in [4, 8, 16, 32]:
         report[johnson(r).grid(144, 576)]("ecdsa_johnson_tail_rate_inv_" + String(r), 32, Ecdsa(Big(), Big(), Big(), Point.identity()))

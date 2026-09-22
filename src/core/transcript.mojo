@@ -145,9 +145,11 @@ def k_grind[H: Hash](base: Base, state: Buf[1], bits: Int32, found: Buf[4]):
     (Atomic.min), so the proof is deterministic. Every GRIND_POLL iterations one thread per block reads
     `found` atomically (a plain load is hoisted out of the loop; 32768 atomics per poll were a third of
     the search) and the block leaves together once its nonces pass the one found, so every thread of a
-    block meets every barrier. No try limit: the search ends with probability 1 after 2^bits tries on
-    average (Codex 2026-09-13: a limit below the thread count left blocks partial at the barriers, and
-    an exhausted search staged an invalid nonce)."""
+    block meets every barrier. There is no try limit. Probes use the low 32 nonce bits, so a
+    fixed state has only 2^32 distinct trials; wraparound repeats them. The usual 2^bits
+    fresh-trial expectation does not guarantee termination for this finite search space.
+    A limit below the thread count left blocks partial at barriers, and an exhausted
+    search staged an invalid nonce. See docs/security-assurance.md for the open work model."""
     var t = Int(global_idx.x)
     var src = state.ptr(base, 0)
     var flag = stack_allocation[DType.uint32, address_space=AddressSpace.SHARED](row_major[1]())
