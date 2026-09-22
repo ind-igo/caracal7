@@ -146,26 +146,26 @@ non-Rust path; its numbers are about 150 ms higher on the small cases and 260 ms
 Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-process GPU-only times are the
 `warm prove` line of `bench/bench_<target>.mojo`.
 
-**2026-09-18, Apple M1 Pro 16 GB (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average about 7 during the run)**
+**2026-09-18, Apple M1 Pro 16 GB (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average about 7 during the run); proof bytes from the 2026-09-22 run after the single-value openings of `E`-valued columns, which left the times unchanged**
 
 | target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| sha256 | 128 B | 34 | 20 | 174,424 | 77,552 | 52 | 308,224 |
-| sha256 | 256 B | 40 | 30 | 186,416 | 72,860 | 54 | 462,336 |
-| sha256 | 512 B | 51 | 35 | 197,864 | 146,076 | 54 | 924,672 |
-| sha256 | 1024 B | 67 | 30 | 216,380 | 336,308 | 55 | 1,585,152 |
-| sha256 | 2048 B | 94 | 48 | 216,380 | 624,212 | 61 | 3,698,688 |
-| keccak | 128 B | 49 | 27 | 254,940 | 46,972 | 52 | 218,112 |
-| keccak | 256 B | 48 | 28 | 265,152 | 52,052 | 53 | 436,224 |
-| keccak | 512 B | 51 | 33 | 283,552 | 70,292 | 54 | 872,448 |
-| keccak | 1024 B | 72 | 36 | 301,908 | 75,204 | 57 | 1,744,896 |
-| keccak | 2048 B | 77 | 44 | 321,296 | 129,252 | 62 | 3,489,792 |
-| poseidon | 2 | 106 | 41 | 371,285 | 129,252 | 57 | 1,916,928 |
-| poseidon | 4 | 104 | 40 | 373,109 | 129,252 | 57 | 1,916,928 |
-| poseidon | 8 | 105 | 40 | 373,845 | 129,252 | 57 | 1,916,928 |
-| poseidon | 12 | 169 | 50 | 397,621 | 321,544 | 64 | 4,472,832 |
-| poseidon | 16 | 164 | 49 | 395,861 | 321,544 | 63 | 4,472,832 |
-| ecdsa | 1 sig | 323 | 121 | 544,516 | 497,940 | 98 | 19,574,784 |
+| sha256 | 128 B | 34 | 20 | 151,672 | 77,552 | 52 | 308,224 |
+| sha256 | 256 B | 40 | 30 | 161,984 | 72,860 | 54 | 462,336 |
+| sha256 | 512 B | 51 | 35 | 177,304 | 146,076 | 54 | 924,672 |
+| sha256 | 1024 B | 67 | 30 | 191,916 | 336,308 | 55 | 1,585,152 |
+| sha256 | 2048 B | 94 | 48 | 192,556 | 624,212 | 61 | 3,698,688 |
+| keccak | 128 B | 49 | 27 | 225,892 | 46,972 | 52 | 218,112 |
+| keccak | 256 B | 48 | 28 | 238,944 | 52,052 | 53 | 436,224 |
+| keccak | 512 B | 51 | 33 | 250,896 | 70,292 | 54 | 872,448 |
+| keccak | 1024 B | 72 | 36 | 269,892 | 75,204 | 57 | 1,744,896 |
+| keccak | 2048 B | 77 | 44 | 288,824 | 129,252 | 62 | 3,489,792 |
+| poseidon | 2 | 106 | 41 | 300,197 | 129,252 | 57 | 1,916,928 |
+| poseidon | 4 | 104 | 40 | 294,997 | 129,252 | 57 | 1,916,928 |
+| poseidon | 8 | 105 | 40 | 294,589 | 129,252 | 57 | 1,916,928 |
+| poseidon | 12 | 169 | 50 | 323,525 | 321,544 | 64 | 4,472,832 |
+| poseidon | 16 | 164 | 49 | 320,389 | 321,544 | 63 | 4,472,832 |
+| ecdsa | 1 sig | 323 | 121 | 474,628 | 497,940 | 98 | 19,574,784 |
 
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
 session's arena being released); the small rows move a few ms between runs on a loaded machine.
