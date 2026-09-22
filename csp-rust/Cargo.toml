@@ -25,3 +25,7 @@ harness = false
 [[bench]]
 name = "ecdsa"
 harness = false
+
+[[bench]]
+name = "ecdsa_p256"
+harness = false

@@ -48,6 +48,9 @@ add `Caracal7` to `ProvingSystem` in `utils/src/harness.rs` with `as_str` `"cara
 
     cd caracal7-rs && CARACAL7_REPO=<this repo> BENCH_INPUT_PROFILE=full cargo bench --bench sha256
 
+The benches are `sha256`, `keccak`, `poseidon`, `ecdsa` (secp256k1, the k256 generator) and `ecdsa_p256`
+(secp256r1 on the harness's own `ecdsa` target with feature `secp256r1`, the p256 generator, FFI target 4).
+
 `build.rs` runs `uv run mojo build --emit shared-lib` in `CARACAL7_REPO` (default: the crate's parent)
 and links the library with rpaths into the repo's venv, so `cargo bench` needs no further setup.
 Results land in `caracal7-rs/*_metrics.json`; `collect_benchmarks` fills the durations from Criterion's

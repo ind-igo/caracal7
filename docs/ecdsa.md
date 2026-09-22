@@ -211,8 +211,12 @@ warm prove, `CLIENT`):
 | verify ms | 93 | 247 |
 | trace ms | 30 | 237 |
 | soundness ledger, work / interactive bits | 108.03 / 88.21 | 107.70 / 88.04 |
+| csp harness (Criterion mean): prove / verify ms | 311 / 91 | 775 / 224 |
+| csp harness: proof bytes / peak RSS MB | 474,628 / 88 | 621,724 / 125 |
 
-The P-256 proof is 2.2 x the time and 1.3 x the bytes of secp256k1: twice the chains (no GLV split), and
+The harness rows are `csp-rust/` on the generators' signatures (`docs/csp.md`); a proof's bytes move by
+a few KB with the inputs, since the transcript picks the queried rows and the Merkle multiproof shares
+more or fewer path nodes. The P-256 proof is 2.2 x the time and 1.3 x the bytes of secp256k1: twice the chains (no GLV split), and
 the word offsets add 11 opening points. The verify times are after `selector_values` stopped
 re-validating the whole public data once per public factor (479 scans of 5.8 MB on P-256; it had cost
 secp256k1 60 ms as well).

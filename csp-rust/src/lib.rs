@@ -12,6 +12,7 @@ pub enum Target {
     Keccak = 1,
     Poseidon = 2,
     Ecdsa = 3,
+    EcdsaP256 = 4,
 }
 
 unsafe extern "C" {
@@ -39,7 +40,7 @@ impl Drop for Session {
 }
 
 /// The input bytes as `cli/ffi.mojo` lays them out: message then digest; little-endian u32 elements;
-/// or e, x_Q, y_Q, r, s as 32-byte big-endian words.
+/// or e, x_Q, y_Q, r, s as 32-byte big-endian words (the k256 generator for `Ecdsa`, the p256 one for `EcdsaP256`).
 fn input_bytes(target: Target, size: usize) -> Vec<u8> {
     match target {
         Target::Sha256 => {
@@ -56,6 +57,10 @@ fn input_bytes(target: Target, size: usize) -> Vec<u8> {
             .collect(),
         Target::Ecdsa => {
             let (digest, (x, y), sig) = utils::generate_ecdsa_k256_input();
+            [digest, x, y, sig].concat()
+        }
+        Target::EcdsaP256 => {
+            let (digest, (x, y), sig) = utils::generate_ecdsa_input();
             [digest, x, y, sig].concat()
         }
     }
