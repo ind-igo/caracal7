@@ -3,12 +3,13 @@
 Status: **conditional analysis, not a security certification**. This checkpoint
 connects the numerical proof work to the current verifier. No protocol parameter,
 proof format, query count, or runtime algorithm changes here. Own derivations
-and Bend proofs below are **own proof, needs review**.
+and the machine-checked certificates below (written in Bend, a proof language, in the separate
+`caracal7-fv` repository) are **own proof, needs review**.
 
-The checked range is 20 main cases at E=F_(127^20), plus four historical
+The checked range is 20 main cases at E=F_(127^20), plus four
 ECDSA tail-rate comparisons. The 20 cases give 87.50-88.37 conditional
 interactive bits, or 107.12-108.18 under the separate grinding work calculation.
-ECDSA gives 88.21 and 108.03. A 120-bit guarantee is not established.
+ECDSA gives 88.21 and 108.03. A 100-bit guarantee for the implementation is not established.
 Unproved events and cryptographic losses are not assigned zero error.
 
 ## What the two numbers mean
@@ -61,7 +62,7 @@ certificates check the upper inequality and failure of the preceding integer
 for this sufficient ratio. They do not assert the true list has size L, or
 that L is an optimal combinatorial bound.
 
-`../caracal7-fv/cspcerts.bend` checks 53 distinct code tuples for the 20 cases.
+`cspcerts.bend` in the `caracal7-fv` repository checks 53 distinct code tuples for the 20 cases.
 It supplies the existing tail/packed numeric interfaces; actual domains still
 need exact lengths and distinctness. The main caps are 4-7. ECDSA changes
 from [23,24,24,24] to [7,7,7,7]. All next-list query factors, current-list

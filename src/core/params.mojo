@@ -2,7 +2,7 @@
 
 A `Profile` holds the deployment knobs (field, security, tail, leaf); `Profile.grid(rows_per_chain, chains)`
 derives the Params for a statement: each axis rounded up to the smallest legal size, the level-1 code domain
-by `domain_for` at the profile's `rate_inv` with the fewest cosets; the tail levels use `tail_rate_inv` (8 since 2026-09-14).
+by `domain_for` at the profile's `rate_inv` with the fewest cosets; the tail levels use `tail_rate_inv` (8).
 The grid belongs to the statement, the profile to the target.
 There is one profile, `CLIENT`; a second one appears with a second target (the VM), not with a second grid."""
 
@@ -77,10 +77,10 @@ struct Profile(TrivialRegisterPassable, Writable):
     var leaf_bytes: Int     # 1,024, one Blake3 chunk
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
-    var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
+    var lambda_bits: Int    # lambda' for the query count per level: 112
     var grind_bits: Int     # proof-of-work bits on every query seed; the per-level query target is lambda_bits - grind_bits
-    var regime: Int         # REGIME_UNIQUE (proven) or REGIME_CAPACITY (conjectured): the per-query miss probability
-    var eta_inv: Int        # the capacity regime's slack eta = 1 / eta_inv
+    var regime: Int         # REGIME_UNIQUE, REGIME_JOHNSON (CLIENT) or REGIME_CAPACITY: the per-query miss probability
+    var eta_inv: Int        # the Johnson and capacity regimes' slack eta = 1 / eta_inv
     var rate_inv: Int       # level-1 domain rule: the fewest cosets, then the smallest domain, at rate <= 1/rate_inv
     var tail_rate_inv: Int  # tail domain rule: the smallest domain at rate <= 1/tail_rate_inv (spec 9.5's RATE_INV = 32 for the unique regime)
 
@@ -105,7 +105,7 @@ struct Profile(TrivialRegisterPassable, Writable):
 
 
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
-# at e = 20, docs/soundness.md; 103 until 2026-09-13), three-digit tail folds, the level-1 domain at rate <= 1/4
+# at e = 20, docs/soundness.md), three-digit tail folds, the level-1 domain at rate <= 1/4
 # (the query formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode
 # and Merkle work for a 3.6% larger proof at the ECDSA grid), fold while digits remain
 # (the tensor verifier's clear check costs units x clear length), 20 bits of grinding on every query seed (the
@@ -126,10 +126,10 @@ struct Params(TrivialRegisterPassable, Writable):
     var leaf_bytes: Int # 1,024, one Blake3 chunk
     var tail_digits: Int    # binary digits folded per tail level
     var tail_clear_max: Int # E elements sent in the clear at the last level
-    var lambda_bits: Int    # lambda' for the query count per level: 112 (the spec's 103 until 2026-09-13)
+    var lambda_bits: Int    # lambda' for the query count per level: 112
     var grind_bits: Int     # proof-of-work bits on every query seed (transcript.grind); 0 disables the nonce
-    var regime: Int         # REGIME_UNIQUE or REGIME_CAPACITY (query_count)
-    var eta_inv: Int        # eta = 1 / eta_inv in the capacity regime
+    var regime: Int         # REGIME_UNIQUE, REGIME_JOHNSON or REGIME_CAPACITY (query_count)
+    var eta_inv: Int        # eta = 1 / eta_inv in the Johnson and capacity regimes
     var tail_rate_inv: Int  # tail domain rule (tail_schedule): the smallest domain at rate <= 1/tail_rate_inv
     var codewords: Int      # n_cw: codewords per column, a power of two (spec 9.1); the top log2 binary digits of the packed index
 

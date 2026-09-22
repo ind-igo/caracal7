@@ -177,7 +177,7 @@ probabilities; it does not take the largest term.
 The five open obligations of the ledger, in this picture:
 
 - **P1** is step 15d at `l = 1`: the packed `F4` alphabet admits the scalar Reed-Solomon
-  guarantee in the block metric (spec 12.1, own proof).
+  guarantee in the block metric (spec 12.1, unpublished; own proof).
 - **P2** is steps 9 to 13: the two-grid identities imply every intended relation, including the
   chain-end pairs, under the adaptive choice of `Z` after stage 1 and of `Q` after `alpha`.
 - **P3** is the workload lowering behind the entry table of the setup: carries, selectors,

@@ -1,6 +1,7 @@
 # Packed and recursive list argument
 
-Status: **own proof, needs review**. This note checks vault spec 12.3 and the
+Status: **own proof, needs review**. This note checks the list lemma of spec 12.3 (the
+specification is unpublished; the lemma is restated in [soundness.md](soundness.md), J3) and the
 verifier's challenge order. It does not prove the field implementation,
 basis maps, workload constraints, or Fiat-Shamir compilation. P1-P5 remain
 open in [soundness.md](soundness.md).
@@ -95,7 +96,7 @@ sizes. The executable still rejects splits; its scope is unchanged.
 
 Before z, every column list is fixed. Two distinct trace candidates differ
 by a nonzero polynomial of total degree at most `h1+h2-2`. Bind thus costs
-`columns*B*(B-1)*(h1+h2-2)/(2Q)`. Off Bind, the answer at z matches at most
+`opened*B*(B-1)*(h1+h2-2)/(2Q)`, `opened` the number of opened columns. Off Bind, the answer at z matches at most
 one candidate per column. This pins a possible choice; it does not prove
 existence or joint closeness.
 

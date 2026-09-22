@@ -338,7 +338,7 @@ def ledger[p: Params](c: Compiled, joint_lists: Bool = False) raises -> Tuple[Li
 
 
 def projection[p: Params](ref s: Shape, name: String, regime: Int, numerator_no_gap: Int, section4: Bool = False, pairs: Bool = False) raises:
-    """`pairs` retains the old 1.5 charge. `section4` retains the old 4.2/4.6 projection: the doubled m, and the factor M = words - 1
+    """`pairs` retains the old 1.5 charge. `section4` retains the old 4.2/4.6 projection: the doubled m, and the factor M = opened - 1
     per code (level 1 batches the columns, `_level1_symbol`; a tail challenge folds a pair, M = 1)."""
     var per_level = p.lambda_bits - p.grind_bits
     var q1 = query_count(per_level, p.rate(), regime, p.eta_inv)
