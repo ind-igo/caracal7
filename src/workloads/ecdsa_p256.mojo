@@ -1,16 +1,15 @@
 """ECDSA on secp256r1 (P-256; docs/ecdsa.md section 8): the curve constants (a = -3, no endomorphism), the
 walk of section 2 over the two bases Q and G with the full 256-bit scalars (43 windows of 6 bits, 252
-doublings, 44 additions) and the `EcdsaP256` circuit. The host side is complete: the field is
-`fp_p256.mojo`, the curve arithmetic and the op walk `ecurve.mojo`.
-
-Not a `Workload` yet: the MUL lane of `mulmod.mojo` reduces products by secp256k1's fold
-(2^256 = 2^32 + 977), which does not hold mod this prime, so `mulmod_statement` cannot compile this
-circuit. The reduction it needs is the open item of docs/ecdsa.md section 8."""
+doublings, 44 additions) and the `EcdsaP256` workload on the mulmod chains with the P-256 product
+reduction (`CURVE_P256`). The field is `fp_p256.mojo`, the curve arithmetic and the op walk `ecurve.mojo`."""
 
 from workloads.bigint import Big
 from workloads.fp_p256 import FpP256
-from workloads.ecurve import Curve, Point, Walk, window_points, check_inputs, public_bytes
-from workloads.mulmod import Op
+from core.params import Params
+from workloads.ecurve import Curve, Point, Walk, window_points, check_inputs, public_bytes, slice32, INPUT
+from workloads.mulmod import Op, VALUE, CURVE_P256, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
+from relations.statement import Statement, Layout
+from workload import Workload
 
 comptime P256 = Curve[FpP256]
 comptime WINDOWS = 43       # ceil(256 / QW): the scalars are below n < 2^256
@@ -50,10 +49,9 @@ def walk(var c: P256, r: Big, s: Big, e: Big, q: Point, live: Bool) raises -> Wa
     return w^
 
 
-struct EcdsaP256(Movable):
-    """One secp256r1 signature: public inputs (r, s, e, Q), the witness the slopes of the fixed addition
-    chain. `circuit` and `public_inputs` as for `EcdsaK1`; `statement`, `trace` and `public_data` wait on
-    the P-256 product reduction (the module docstring)."""
+struct EcdsaP256(Workload, Movable):
+    """One secp256r1 signature on the mulmod chains: public inputs (r, s, e, Q), the witness the slopes of
+    the fixed addition chain."""
     var r: Big
     var s: Big
     var e: Big
@@ -70,5 +68,23 @@ struct EcdsaP256(Movable):
         var w = walk(secp256r1(), Big(), Big(), Big(), Point.identity(), False)
         return w.ops.copy()
 
-    def public_inputs(self) raises -> List[UInt8]:
+    def statement[p: Params](self) raises -> Statement:
+        return mulmod_statement(True, EcdsaP256.circuit(), pin=False, curve=CURVE_P256)
+
+    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
+        var w = walk(secp256r1(), self.r, self.s, self.e, self.q, True)
+        return circuit_trace[p](layout, circuit_values(w.inputs, w.ops, w.hints, CURVE_P256), w.ops, curve=CURVE_P256)
+
+    def public_inputs[p: Params](self) raises -> List[UInt8]:
         return public_bytes(self.r, self.s, self.e, self.q)
+
+    @staticmethod
+    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
+        if len(public_inputs) != INPUT:
+            raise Error("public inputs are r, s, e, x_Q, y_Q")
+        var w = walk(secp256r1(), slice32(public_inputs, 0), slice32(public_inputs, 32), slice32(public_inputs, 64),
+                     Point(slice32(public_inputs, 96), slice32(public_inputs, 128), False), True)
+        var values = List[UInt8](capacity=len(w.inputs) * VALUE)
+        for v in w.inputs:
+            values.extend(v.copy())
+        return circuit_public_data[p](w.ops, values, 0, CURVE_P256)

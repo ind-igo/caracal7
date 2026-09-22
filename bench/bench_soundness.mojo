@@ -19,6 +19,7 @@ from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
 from workloads.ecurve import Point
 from workloads.ecdsa_k1 import EcdsaK1
+from workloads.ecdsa_p256 import EcdsaP256
 from workloads.bigint import Big
 from workloads.rsa import rsa_statement
 from workloads.sod import sod_statement
@@ -558,6 +559,7 @@ def main() raises:
         report[CLIENT.grid(64, 720)]("poseidon", n, Poseidon(List[Int](length=n, fill=0)))
     # statement() uses EcdsaK1.circuit(), independent of signature values; no live walk or witness is needed.
     report[CLIENT.grid(144, 576)]("ecdsa", 32, EcdsaK1(Big(), Big(), Big(), Point.identity()))
+    report[CLIENT.grid(144, 1152)]("ecdsa_p256", 32, EcdsaP256(Big(), Big(), Big(), Point.identity()))
     # Public benchmark metadata fixes these statements; no witnesses or GPU work are needed.
     var lengths: List[Int] = [String(SodFixture.DG1_HEX).byte_length() // 2, String(SodFixture.ECONTENT_HEX).byte_length() // 2, String(SodFixture.ATTRS_HEX).byte_length() // 2]
     var embeds: List[Int] = [SodFixture.EMBED_1, SodFixture.EMBED_2]

@@ -4,7 +4,7 @@ built (the prepare), `c7_prove` is the timed step. Build with `mojo build --emit
 Handles are heap addresses; every call names the target and size again because the session type is
 the grid, a compile-time parameter. Sessions share the one `c7_runtime` device context. Inputs are raw bytes: sha256 and keccak take the message then the
 32-byte digest; poseidon takes `size` little-endian u32 elements below 2^31 - 1; ecdsa takes e, x_Q,
-y_Q, r, s as 32-byte big-endian words. Targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa."""
+y_Q, r, s as 32-byte big-endian words. Targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa (secp256k1), 4 ecdsa_p256."""
 
 from max.gpu.host import DeviceContext
 from std.ffi import external_call
@@ -17,6 +17,7 @@ from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
 from workloads.ecurve import Point
 from workloads.ecdsa_k1 import EcdsaK1
+from workloads.ecdsa_p256 import EcdsaP256
 from workloads.bigint import Big
 
 comptime OPEN = 0
@@ -139,7 +140,12 @@ def _route(op: Int, target: Int, size: Int, handle: Int, data: Bytes, buf: MutBy
         if op == OPEN:
             w = Optional[EcdsaK1](EcdsaK1(_word(data, 96), _word(data, 128), _word(data, 0), Point(_word(data, 32), _word(data, 64), False)))
         return _op[CLIENT.grid(144, 576), EcdsaK1](op, handle, w^, List[UInt8](), buf, n)
-    raise Error("targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa")
+    if target == 4:
+        var w = Optional[EcdsaP256]()
+        if op == OPEN:
+            w = Optional[EcdsaP256](EcdsaP256(_word(data, 96), _word(data, 128), _word(data, 0), Point(_word(data, 32), _word(data, 64), False)))
+        return _op[CLIENT.grid(144, 1152), EcdsaP256](op, handle, w^, List[UInt8](), buf, n)
+    raise Error("targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa, 4 ecdsa_p256")
 
 
 def _call(op: Int, target: Int, size: Int, handle: Int, data: Bytes, buf: MutBytes, n: Int) -> Int:

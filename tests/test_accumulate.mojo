@@ -9,7 +9,7 @@ from core.field import E, f_add, f_sub, f_mul, ext_mul, ext_inv, ext_one, E_LEVE
 from core.params import Params, CLIENT
 from core.arena import Arena, Bump
 from relations.accumulate import ACC, AccLayout, accumulate, horner, derive_chals
-from relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end, selector_values
+from relations.ir import Families, acc_kind, ENTRY, CHAL, CHAL_MUL, KIND_LOOKUP, KIND_HORNER, entry, lookup_constant, derived_chals, standard_chals, chal_count, horner_chain_end, selector_values, column_offsets
 from relations.statement import Statement, Term, Compiled, BIT, BYTE
 from prover import Prover, load_trace, load_public
 from verifier import verify
@@ -318,7 +318,7 @@ def test_selected_ingest_device_matches_the_fingerprint() raises:
         var cols = List[UInt8]()
         for x1 in range(h1):
             cols.append(trace[k * N + x1])
-        var sel = selector_values[p](c.families, c.shape.accs, k, c.shape.publics, block, pub_at, 0)
+        var sel = selector_values[p](c.families, c.shape.accs, k, c.shape.publics, block, column_offsets(c.shape.publics, block, p.h1(), p.h2()), pub_at, 0)
         assert_true(horner_chain_end[p](c.families, c.shape.accs, k, cols, chals, sel) == list_e(got, h1 - 1), "fingerprint differs at chain 0 for accumulator " + String(k))
         assert_true(list_e(got, h1 - 1) != E(0), "vacuous")
     _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks

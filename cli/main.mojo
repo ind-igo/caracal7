@@ -4,8 +4,8 @@
     caracal7 verify <target> <size> <proof-path> <input...>
 
 Inputs: sha256 and keccak take the message and its digest as hex; poseidon takes Mersenne-31 elements as decimal
-strings; ecdsa takes the digest, x_Q, y_Q and the signature r||s as big-endian hex (the utils
-generator's lines). Prove writes the proof bytes and prints the timings; verify exits 1 on a bad proof."""
+strings; ecdsa (secp256k1) and ecdsa_p256 take the digest, x_Q, y_Q and the signature r||s as big-endian
+hex (the utils generator's lines). Prove writes the proof bytes and prints the timings; verify exits 1 on a bad proof."""
 from max.gpu.host import DeviceContext
 from std.sys import argv
 from std.sys import exit
@@ -20,6 +20,7 @@ from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
 from workloads.ecurve import Point
 from workloads.ecdsa_k1 import EcdsaK1
+from workloads.ecdsa_p256 import EcdsaP256
 from workloads.bigint import Big
 
 
@@ -126,14 +127,19 @@ def main() raises:
         if len(elems) != size:
             raise Error("element count is not the input size")
         _poseidon(cmd, size, path, elems^)
-    elif target == "ecdsa":
+    elif target == "ecdsa" or target == "ecdsa_p256":
         if len(a) != 9 or size != 32:
             raise Error("ecdsa inputs: digest x_Q y_Q signature; the one input size is 32 (one signature)")
         var sig = String(a[8])
         if sig.byte_length() != 128:
             raise Error("the signature is r||s, 128 hex digits")
-        var w = EcdsaK1(Big.from_hex(String(sig[byte=0:64])), Big.from_hex(String(sig[byte=64:128])), Big.from_hex(String(a[5])),
-                      Point(Big.from_hex(String(a[6])), Big.from_hex(String(a[7])), False))
-        _run[CLIENT.grid(144, 576)](cmd, w, path, List[UInt8]())
+        var r = Big.from_hex(String(sig[byte=0:64]))
+        var s = Big.from_hex(String(sig[byte=64:128]))
+        var e = Big.from_hex(String(a[5]))
+        var q = Point(Big.from_hex(String(a[6])), Big.from_hex(String(a[7])), False)
+        if target == "ecdsa":
+            _run[CLIENT.grid(144, 576)](cmd, EcdsaK1(r^, s^, e^, q^), path, List[UInt8]())
+        else:
+            _run[CLIENT.grid(144, 1152)](cmd, EcdsaP256(r^, s^, e^, q^), path, List[UInt8]())
     else:
-        raise Error("targets: sha256, keccak, poseidon, ecdsa")
+        raise Error("targets: sha256, keccak, poseidon, ecdsa, ecdsa_p256")

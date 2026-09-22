@@ -23,6 +23,16 @@ is lo r_w plus seven h reads at slots w - s (same-row or a row below, k1 in 0..8
 congruent to a b mod p. Neither fold needs zero rows: the piles above weight 295 are zero, so the carry into
 the idle row is zero and the idle row's pile is zero.
 
+The P-256 pass (CURVE_P256): P-256's prime has no small fold, so a product below 2^520 is reduced in one
+pass by FIPS 186's word identity: product word i = 8..16 is congruent to a signed pattern on the words 0..7
+(`_p256_words`), and output word k reads product word k + d under the public selector `w{d}` that holds
+the coefficient (16 offsets d, coefficients in [-4, 5], zero above weight 255 and on the idle row). The
+Solinas sum S is in (-8 p, 8 p), so f = S - q p with a chain-constant q in [-8, 7] (four bits encoded
+like the add carry, p's bits from the constant block `fp`: `pb` is n on a mod-n chain), rippled with the
+add lane's signed carry and zero rows on the idle row. The honest f is canonical; any satisfying f is
+congruent to a b mod p and every consumer bounds it. Against secp256k1's two folds: 16 fewer bit
+columns, 18 more public columns, 11 more opening points (the word offsets).
+
 The add lane: x + sy y + sz z = s + q m with sy, sz in {-1, 0, 1} per-chain public columns, the modulus m
 (p, or n on a chain whose public columns `pb{j}` hold n) and q = b0 + 2 b1 + 4 b2 - 2 b3 in [-2, 7]
 chain-constant bits, q m as the modulus bits read k slots down for 2^k m. The ripple has a signed carry
@@ -78,12 +88,115 @@ comptime OUT = -2
 comptime MOD_P = 0          # the modulus of an add op
 comptime MOD_N = 1
 comptime OP_BYTES = 13      # kind u8, x u16, y u16, z u16, s u16, sy u8, sz u8, qz u8, mod u8
+comptime CURVE_K1 = 0       # the curve of a statement: the moduli and the product reduction
+comptime CURVE_P256 = 1
+comptime WORD = 32          # the P-256 reduction works on 32-bit words of the product: WORD // Q rows each
+comptime WORDS = 8          # words of a reduced value
 
 
 def _shifts() -> List[Int]:
     """2^256 = sum_s 2^s mod p: 977 = 2^9 + 2^8 + 2^7 + 2^6 + 2^4 + 1."""
     var v: List[Int] = [0, 4, 6, 7, 8, 9, 32]
     return v^
+
+
+def _p256_words() -> List[List[Int]]:
+    """Product word i = 8..16 mod P-256 as signed coefficients on the words 0..7 (FIPS 186 D.2.3):
+    2^256 = 2^224 - 2^192 - 2^96 + 1, and each next word shifts the last and folds its overflow."""
+    var base: List[Int] = [1, 0, 0, -1, 0, 0, -1, 1]
+    var rows = List[List[Int]]()
+    var v = base.copy()
+    for _ in range(9):
+        rows.append(v.copy())
+        var top = v[WORDS - 1]
+        for k in range(WORDS - 1, 0, -1):
+            v[k] = v[k - 1] + top * base[k]
+        v[0] = top * base[0]
+    return rows^
+
+
+def _p256_coef(d: Int, k: Int) -> Int:
+    """The coefficient of product word k + d in output word k: 1 for d = 0, else the fold pattern."""
+    if d == 0:
+        return 1
+    var i = k + d
+    if i < WORDS or i > 2 * WORDS:
+        return 0
+    return _p256_words()[i - WORDS][k]
+
+
+def _p256_offsets() -> List[Int]:
+    """Every word offset d that some output word reads with a nonzero coefficient (16 of 0..16)."""
+    var v = List[Int]()
+    for d in range(2 * WORDS + 1):
+        for k in range(WORDS):
+            if _p256_coef(d, k) != 0:
+                v.append(d)
+                break
+    return v^
+
+
+def _word(x1: Int) -> Int:
+    """The output word of row x1 (weights below BITS), else -1."""
+    return (Q * (ROWS - 2 - x1)) // WORD if _lo_row(x1) else -1
+
+
+def _p256_pattern(i: Int) raises -> Big:
+    """Product word i's value mod P-256 as a signed integer on the words 0..7."""
+    var v = Big()
+    for k in range(WORDS):
+        var c = _p256_coef(i - k, k) if i >= k else 0
+        if c != 0:
+            v = v + Big(c).shl(WORD * k)
+    return v^
+
+
+def _p256_sum(r: Big) raises -> Big:
+    """The Solinas sum of a product below 2^520: congruent to r mod P-256, in (-8 p, 8 p)."""
+    var v = Big()
+    for i in range(2 * WORDS + 1):
+        var w = r.shr(WORD * i).low(WORD)
+        if not w.is_zero():
+            v = v + w * _p256_pattern(i)
+    return v^
+
+
+def _consts(curve: Int) raises -> Tuple[List[String], List[List[UInt8]]]:
+    """The public columns that are the same on every chain, name and row values: the selectors `lo`,
+    `cp` (secp256k1's fold) or `w{d}` (the P-256 word coefficients, -1 as 126) with `fp{j}` (P-256's p at
+    its slots: the fold's modulus, since `pb` holds n on a mod-n chain), then `bd`."""
+    var names = List[String]()
+    var rows = List[List[UInt8]]()
+    if curve == CURVE_K1:
+        for name in ["lo", "cp"]:
+            names.append(name)
+            var v = List[UInt8](capacity=ROWS)
+            for x1 in range(ROWS):
+                v.append(UInt8(1) if (_lo_row(x1) if name == "lo" else _cp_row(x1)) else UInt8(0))
+            rows.append(v^)
+    elif curve == CURVE_P256:
+        for d in _p256_offsets():
+            names.append("w" + String(d))
+            var v = List[UInt8](capacity=ROWS)
+            for x1 in range(ROWS):
+                var k = _word(x1)
+                v.append(UInt8(((_p256_coef(d, k) if k >= 0 else 0) % 127 + 127) % 127))
+            rows.append(v^)
+        var pc = _columns(modulus(MOD_P, CURVE_P256).bits(FOLDED), False)
+        for j in range(Q):
+            names.append("fp" + String(j))
+            var v = List[UInt8](capacity=ROWS)
+            for x1 in range(ROWS):
+                v.append(pc[j * ROWS + x1])
+            rows.append(v^)
+    else:
+        raise Error("unknown curve")
+    names.append("bd")
+    var v = List[UInt8](capacity=ROWS)
+    for x1 in range(ROWS):
+        v.append(UInt8(1) if _bd_row(x1) else UInt8(0))
+    rows.append(v^)
+    return (names^, rows^)
 
 
 def _below(j: Int, s: Int) -> Tuple[Int, Int]:
@@ -383,21 +496,31 @@ def product_certificate(mut st: Statement, zeros: Bool = True) raises -> List[In
     return rz^
 
 
-def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True) raises -> Statement:
+def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True, curve: Int = CURVE_K1) raises -> Statement:
     """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
     `circuit` (default one product of public operands): see `Op`. `pin` puts the circuit bytes at the head
-    of the public inputs (a workload whose circuit is fixed in code needs no header)."""
+    of the public inputs (a workload whose circuit is fixed in code needs no header). `curve` picks the
+    moduli and the product reduction: secp256k1's two folds, or the P-256 word pass of `_p256_families`."""
     var ops = circuit.copy() if len(circuit) > 0 else single_op()
     var at = _place(ops)
     var st = Statement()
     product_columns(st)
-    for name in ["h", "o", "g", "f"]:
-        for j in range(Q):
-            st.col(name + String(j), BIT)
-    for name in ["z", "v"]:
-        for k in range(FOLD):
+    if curve == CURVE_K1:
+        for name in ["h", "o", "g", "f"]:
             for j in range(Q):
-                st.col(name + String(k) + String(j), BIT)
+                st.col(name + String(j), BIT)
+        for name in ["z", "v"]:
+            for k in range(FOLD):
+                for j in range(Q):
+                    st.col(name + String(k) + String(j), BIT)
+    else:
+        for j in range(Q):
+            st.col("f" + String(j), BIT)
+        for k in range(ACARRY):
+            st.col("fq" + String(k), BIT)
+        for k in range(ACARRY):
+            for j in range(Q):
+                st.col("fc" + String(k) + String(j), BIT)
     for L in range(LANES):
         for name in ["x", "y", "z", "s"]:
             for j in range(Q):
@@ -408,7 +531,7 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bo
             for j in range(Q):
                 st.col(_lane(L, "c" + String(k) + String(j)), BIT)
     # ponytail: dense (h2, h1) blocks; the constant ones take m = h2 once the statement knows the grid
-    for name in ["lo", "cp", "bd"]:
+    for name in _consts(curve)[0]:
         st.pub(name, 1)
     for j in range(Q):
         st.pub("pb" + String(j), 1)
@@ -428,8 +551,14 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bo
         for L in range(LANES):
             for k in range(ACARRY):
                 st.zero(_lane(L, "c" + String(k) + String(Q - 1)), FIX_E)
-    _fold_families(st, "r", "h", "o", "z")
-    _fold_families(st, "o", "g", "f", "v")
+        if curve == CURVE_P256:
+            for k in range(ACARRY):
+                st.zero("fc" + String(k) + String(Q - 1), FIX_E)
+    if curve == CURVE_K1:
+        _fold_families(st, "r", "h", "o", "z")
+        _fold_families(st, "o", "g", "f", "v")
+    else:
+        _p256_families(st)
     for L in range(LANES):
         _add_families(st, L)
     for slot in range(3 + 4 * LANES):
@@ -476,6 +605,29 @@ def _fold_families(mut st: Statement, src: String, copy: String, dst: String, ca
         st.family(dst + "fold" + String(j), terms)
 
 
+def _p256_families(mut st: Statement) raises:
+    """The P-256 reduction in one pass (docs/mulmod.md): per position, the Solinas sum of the product's
+    words read at their offsets under the coefficient selectors `w{d}`, minus q p (q = c0 + 2 c1 + 4 c2 -
+    8 c3 chain-constant, p's bits from `fp` read k slots down for 2^k p), plus the carry in, equal f + 2 carry out, the carry signed
+    like the add lane's. With the zero rows on the idle row's carry the pass is an exact integer identity:
+    f = S - q p, congruent to a b mod p, and canonical when honest."""
+    for j in range(Q):
+        var terms = List[Term]()
+        for d in _p256_offsets():
+            terms.append(Term(1, st.read("w" + String(d)), st.read("r" + String(j), k1=(ROWS - WORD // Q * d) % ROWS)))
+        for k in range(ACARRY):
+            var at = _below(j, k)
+            terms.append(Term(-_fsign(k), st.read("fq" + String(k)), st.read("fp" + String(at[1]), k1=at[0])))
+        for k in range(ACARRY):
+            terms.append(Term(_cweight(k), st.read("fc" + String(k) + String(j - 1)) if j > 0 else st.read("fc" + String(k) + String(Q - 1), k1=1)))
+        terms.append(Term(-1, st.read("f" + String(j))))
+        for k in range(ACARRY):
+            terms.append(Term(-2 * _cweight(k), st.read("fc" + String(k) + String(j))))
+        st.family("ffold" + String(j), terms)
+    for k in range(ACARRY):
+        st.family("fq" + String(k) + "const", [Term(1, st.read("fq" + String(k))), Term(-1, st.read("fq" + String(k), k1=1))])
+
+
 def _qsign(k: Int) -> Int:
     """q = b0 + 2 b1 + 4 b2 - 2 b3: bit k weighs sign 2^shift."""
     return -1 if k == QBITS - 1 else 1
@@ -483,6 +635,12 @@ def _qsign(k: Int) -> Int:
 
 def _qshift(k: Int) -> Int:
     return 1 if k == QBITS - 1 else k
+
+
+def _fsign(k: Int) -> Int:
+    """The fold quotient q = c0 + 2 c1 + 4 c2 - 8 c3 (the carry's encoding): bit k weighs sign 2^k, the
+    2^k from reading p's bits k slots down."""
+    return -1 if k == ACARRY - 1 else 1
 
 
 def _cweight(k: Int) -> Int:
@@ -652,13 +810,35 @@ def _columns(bits: List[Int], grouped: Bool) -> List[UInt8]:
 
 # ---- trace ----
 
-def modulus(mod: Int) raises -> Big:
-    """MOD_P: secp256k1's p; MOD_N: its group order n."""
-    if mod == MOD_P:
-        return Big.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f")
-    if mod == MOD_N:
-        return Big.from_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+def modulus(mod: Int, curve: Int = CURVE_K1) raises -> Big:
+    """MOD_P: the curve's p; MOD_N: its group order n."""
+    if curve == CURVE_K1:
+        if mod == MOD_P:
+            return Big.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f")
+        if mod == MOD_N:
+            return Big.from_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+    elif curve == CURVE_P256:
+        if mod == MOD_P:
+            return Big.from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
+        if mod == MOD_N:
+            return Big.from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
     raise Error("unknown modulus")
+
+
+def reduced(a: Big, b: Big, curve: Int) raises -> Tuple[Big, Int]:
+    """A product chain's output and its quotient: secp256k1's fold twice (q unused), or a b mod P-256 with
+    q = (S - f) / p for the Solinas sum S of a b, in [-8, 7]."""
+    if curve == CURVE_K1:
+        return (folded(a, b), 0)
+    var p = modulus(MOD_P, CURVE_P256)
+    var f = a.mulmod(b, p)
+    var qr = (_p256_sum(a * b) - f).divmod(p)
+    if not qr[1].is_zero():
+        raise Error("the Solinas sum is not congruent to the product")
+    var q = qr[0].to_int()
+    if q < -8 or q > 7:
+        raise Error("P-256 quotient out of range")
+    return (f^, q)
 
 
 @fieldwise_init
@@ -672,27 +852,31 @@ struct OpValues(Copyable, Movable):
     var q: Int
 
 
-def _bounded(v: Big) raises -> Big:
-    if v.neg or v.bit_length() > WIDTH:
-        raise Error("chain values are below 2^" + String(WIDTH))
+def _bounded(v: Big, curve: Int) raises -> Big:
+    """A chain value: below 2^WIDTH; below 2^BITS on P-256 (hints included: the honest carry range of the
+    P-256 pass needs products below 2^512)."""
+    var width = WIDTH if curve == CURVE_K1 else BITS
+    if v.neg or v.bit_length() > width:
+        raise Error("chain values are below 2^" + String(width))
     return v.copy()
 
 
-def _input(inputs: List[List[UInt8]], next: Int) raises -> Big:
-    if next >= len(inputs) or len(inputs[next]) != VALUE or inputs[next][VALUE - 1] > 1:
-        raise Error("public values are " + String(VALUE) + " bytes below 2^" + String(FOLDED) + ", one per public reference")
+def _input(inputs: List[List[UInt8]], next: Int, curve: Int) raises -> Big:
+    """The next public value: VALUE bytes below 2^FOLDED; below 2^BITS on P-256, where the honest fold
+    carries are bounded for products below 2^512 (the reduction stays exact on any bounded operand)."""
+    var top = 1 if curve == CURVE_K1 else 0
+    if next >= len(inputs) or len(inputs[next]) != VALUE or Int(inputs[next][VALUE - 1]) > top:
+        raise Error("public values are " + String(VALUE) + " bytes below 2^" + String(BITS + top) + ", one per public reference")
     return Big.from_bytes(inputs[next])
 
 
-def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = List[Big](), mods: List[Big] = List[Big]()) raises -> List[OpValues]:
+def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = List[Big](), curve: Int = CURVE_K1) raises -> List[OpValues]:
     """Every op's values, public operands taken from `inputs` in circuit order (x, y, z, then a PUB s), hint
-    operands from `hints` by index. `mods` [p, n] evaluates the circuit over other moduli on the host (a
-    product is then a b mod p, not the fold): a satisfiability check only, not trace input."""
+    operands from `hints` by index; a product's q is the P-256 fold quotient (0 on secp256k1)."""
     _ = _place(ops)
     var vals = List[OpValues]()
     var next = 0
-    var host_mods = len(mods) == 2
-    var ms: List[Big] = [mods[0].copy(), mods[1].copy()] if host_mods else [modulus(MOD_P), modulus(MOD_N)]
+    var ms: List[Big] = [modulus(MOD_P, curve), modulus(MOD_N, curve)]
     for j in range(len(ops)):
         var op = ops[j]
         var refs: List[Int] = [op.x, op.y, op.z]
@@ -702,7 +886,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
         for role in range(2 if op.kind == MUL else 3):
             var r = refs[role]
             if r == PUB:
-                v.append(_input(inputs, next))
+                v.append(_input(inputs, next, curve))
                 next += 1
             elif r >= 0:
                 if not _has_out(ops[r]):
@@ -714,12 +898,12 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
             elif r == NIL and op.kind == ADD and role == 2:
                 v.append(Big())
             elif r <= HINT and HINT - r < len(hints):
-                v.append(_bounded(hints[HINT - r]))
+                v.append(_bounded(hints[HINT - r], curve))
             else:
                 raise Error("bad operand reference on op " + String(j))
         if op.kind == MUL:
-            var prod = v[0].mulmod(v[1], ms[0]) if host_mods else folded(v[0], v[1])
-            vals.append(OpValues(MUL, _bounded(v[0]), _bounded(v[1]), Big(), prod^, 0))
+            var prod = reduced(v[0], v[1], curve)
+            vals.append(OpValues(MUL, _bounded(v[0], curve), _bounded(v[1], curve), Big(), prod[0].copy(), prod[1]))
             continue
         var known = Big()
         for role in range(3):
@@ -733,7 +917,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
         var sval = Big()
         var q = 0
         if op.s == PUB:
-            sval = _input(inputs, next)
+            sval = _input(inputs, next, curve)
             next += 1
         if free >= 0:
             if op.qz != 1 or op.s == OUT or signs[free] == 0:
@@ -741,7 +925,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
             var d = sval - known
             if signs[free] < 0:
                 d = -d
-            v[free] = _bounded(d)
+            v[free] = _bounded(d, curve)
         elif op.s == OUT:
             var qr = known.divmod(m)
             q = qr[0].to_int()
@@ -753,7 +937,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
             q = qr[0].to_int()
         if (op.qz == 1 and q != 0) or q < -2 or q > 7:
             raise Error("q out of range on op " + String(j))
-        vals.append(OpValues(ADD, _bounded(v[0]), _bounded(v[1]), _bounded(v[2]), _bounded(sval), q))
+        vals.append(OpValues(ADD, _bounded(v[0], curve), _bounded(v[1], curve), _bounded(v[2], curve), _bounded(sval, curve), q))
     if next != len(inputs):
         raise Error("more public values than the circuit references")
     return vals^
@@ -782,7 +966,7 @@ def mulmod_trace[p: Params](layout: Layout, a: List[UInt8], b: List[UInt8], chea
     return circuit_trace[p](layout, circuit_values(inputs, single_op()), single_op(), cheat)
 
 
-def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op], cheat: Int = -1) raises -> List[UInt8]:
+def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op], cheat: Int = -1, curve: Int = CURVE_K1) raises -> List[UInt8]:
     """Every op from its values on its chain and lane; the other chains idle. On chain `cheat` (if any) the
     idle row's slot 3 holds a pile of two and the product ripple starts from carry 1, so r = a b + 1 there
     satisfies every family and only the zero row catches it. Each chain is written into a (columns, h1)
@@ -810,7 +994,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         lanes.append(v^)
     var mbits = List[List[Int]]()
     for mod in range(2):
-        mbits.append(modulus(mod).bits(SLOTS))
+        mbits.append(modulus(mod, curve).bits(SLOTS))
     for j in range(len(ops)):
         if ops[j].kind == ADD:
             adds[at[j][0]].append(j)
@@ -826,8 +1010,10 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
     var cy = List[Int]()                           # k * Q + j
     for k in range(CARRY):
         cy.extend(_cols(layout, "y" + String(k), False))
-    var fold1 = _fold_cols(layout, "r", "h", "o", "z")
-    var fold2 = _fold_cols(layout, "o", "g", "f", "v")
+    var k1_fold = curve == CURVE_K1
+    var fold1 = _fold_cols(layout, "r", "h", "o", "z") if k1_fold else _p256_cols(layout)
+    var fold2 = _fold_cols(layout, "o", "g", "f", "v") if k1_fold else List[Int]()
+    var table = List[List[Int]]() if k1_fold else _p256_table()
     var failed = List[Int](length=p.h2(), fill=0)
     var errors = List[String](length=p.h2(), fill=String(""))
 
@@ -843,8 +1029,11 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
                 _add_lane[p](chain, lanes[at[j][1]], vals[j], ops[j], mbits[ops[j].mod])
             if live or x2 == cheat:
                 _mul_chain[p](chain, x2 == cheat, vals[mul_at[x2] if live else 0], live, ca, cb, cr, cc, cy)
-                _fold_chain[p](chain, fold1)
-                _fold_chain[p](chain, fold2)
+                if k1_fold:
+                    _fold_chain[p](chain, fold1)
+                    _fold_chain[p](chain, fold2)
+                else:
+                    _p256_chain[p](chain, fold1, vals[mul_at[x2]].q if live else 0, mbits[MOD_P], table)
         except e:
             failed[x2] = 1
             errors[x2] = String(e)
@@ -939,6 +1128,64 @@ def _fold_chain[p: Params](mut chain: List[UInt8], cols: List[Int]):
         cy = s >> 1
         for k in range(FOLD):
             chain[cols[3 * Q + k * Q + w % Q] * h1 + x1] = UInt8((cy >> k) & 1)
+
+
+def _p256_cols(layout: Layout) raises -> List[Int]:
+    """r, f (Q each), fq (ACARRY), then fc (ACARRY x Q)."""
+    var v = _cols(layout, "r", False)
+    v.extend(_cols(layout, "f", False))
+    for k in range(ACARRY):
+        v.append(layout.col("fq" + String(k)))
+    for k in range(ACARRY):
+        v.extend(_cols(layout, "fc" + String(k), False))
+    return v^
+
+
+def _p256_table() -> List[List[Int]]:
+    """table[d][k]: the coefficient of product word k + d in output word k, d = 0..16."""
+    var t = List[List[Int]]()
+    for d in range(2 * WORDS + 1):
+        var v = List[Int]()
+        for k in range(WORDS):
+            v.append(_p256_coef(d, k))
+        t.append(v^)
+    return t^
+
+
+def _p256_chain[p: Params](mut chain: List[UInt8], cols: List[Int], q: Int, mb: List[Int], table: List[List[Int]]) raises:
+    """The P-256 pass of one chain buffer (column stride h1): q's bits, then per slot the Solinas pile
+    from r's bits minus q p, rippled into f with the signed carry of `_p256_families`."""
+    comptime h1 = p.h1()
+    var rb = List[Int](capacity=SLOTS)
+    for w in range(SLOTS):
+        rb.append(Int(chain[cols[w % Q] * h1 + _row(w)]))
+    var e = q + 16 if q < 0 else q
+    for k in range(ACARRY):
+        for x1 in range(h1):
+            chain[cols[2 * Q + k] * h1 + x1] = UInt8((e >> k) & 1)
+    var c = 0
+    for w in range(SLOTS):
+        var s = c
+        if w < BITS:
+            var word = w // WORD
+            for d in range(len(table)):
+                var coef = table[d][word]
+                if coef != 0 and w + WORD * d < SLOTS:
+                    s += coef * rb[w + WORD * d]
+        for k in range(ACARRY):
+            if w >= k:
+                s -= _fsign(k) * ((e >> k) & 1) * mb[w - k]
+        var out = s & 1
+        c = (s - out) // 2
+        if c < -8 or c > 7:
+            raise Error("P-256 fold carry out of range")
+        var x1 = _row(w)
+        chain[cols[Q + w % Q] * h1 + x1] = UInt8(out)
+        var ce = c + 16 if c < 0 else c
+        for k in range(ACARRY):
+            chain[cols[2 * Q + ACARRY + k * Q + w % Q] * h1 + x1] = UInt8((ce >> k) & 1)
+    if c != 0:
+        raise Error("P-256 fold does not close")
 
 
 def _qbits(q: Int) -> List[Int]:
@@ -1078,8 +1325,8 @@ struct Mulmod(Workload, Copyable, Movable):
         return circuit_public_data[p](parsed[0], public_inputs, parsed[1])
 
 
-def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int) raises -> List[UInt8]:
-    """The public blocks lo, cp, bd (the same on every chain), pb{j} (the chain's modulus bits), s{t} (the
+def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int, curve: Int = CURVE_K1) raises -> List[UInt8]:
+    """The public blocks of `_consts` (the same on every chain), pb{j} (the chain's modulus bits), s{t} (the
     rows of piece t), per lane sy, sz, sm, qz; then every factor's ingest columns in statement order: an a
     operand in its pieces (12 columns), any other value plain (4). The factor values are the VALUE-byte
     values at `off` of `values`, in factor order."""
@@ -1089,16 +1336,11 @@ def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int)
     var at = _place(ops)
     if chain_count(ops) > p.h2() or (len(values) - off) % VALUE != 0:
         raise Error("public inputs are the circuit then " + String(VALUE) + "-byte values")
-    var data = List[UInt8](capacity=(10 + 4 * LANES) * N + (len(values) - off) // VALUE * PIECES * Q * ROWS)
-    for _ in range(p.h2()):
-        for x1 in range(ROWS):
-            data.append(UInt8(1) if _lo_row(x1) else UInt8(0))
-    for _ in range(p.h2()):
-        for x1 in range(ROWS):
-            data.append(UInt8(1) if _cp_row(x1) else UInt8(0))
-    for _ in range(p.h2()):
-        for x1 in range(ROWS):
-            data.append(UInt8(1) if _bd_row(x1) else UInt8(0))
+    var consts = _consts(curve)[1].copy()
+    var data = List[UInt8](capacity=(len(consts) + 7 + 4 * LANES) * N + (len(values) - off) // VALUE * PIECES * Q * ROWS)
+    for rows in consts:
+        for _ in range(p.h2()):
+            data.extend(rows.copy())
     var mods = List[Int](length=p.h2(), fill=MOD_P)
     var lanes = List[Int](length=p.h2() * LANES, fill=-1)
     for j in range(len(ops)):
@@ -1107,7 +1349,7 @@ def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int)
             lanes[at[j][0] * LANES + at[j][1]] = j
     var mcols = List[List[UInt8]]()
     for mod in range(2):
-        mcols.append(_columns(modulus(mod).bits(FOLDED), False))
+        mcols.append(_columns(modulus(mod, curve).bits(FOLDED), False))
     for j in range(Q):
         for x2 in range(p.h2()):
             for x1 in range(ROWS):

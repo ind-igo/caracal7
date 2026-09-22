@@ -10,7 +10,7 @@ from workloads.bigint import Big
 from workloads.fp_p256 import FpP256, ONE
 from workloads.ecurve import Point, recode, skew, QW
 from workloads.ecdsa_p256 import secp256r1, EcdsaP256, walk, WINDOWS
-from workloads.mulmod import MUL, chain_count, circuit_values
+from workloads.mulmod import MUL, CURVE_P256, chain_count, circuit_values
 
 comptime p = CLIENT.grid(144, 1152)
 
@@ -120,12 +120,10 @@ def test_circuit_shape_and_host_walk() raises:
         var b = w.ops[j]
         assert_true(a.kind == b.kind and a.x == b.x and a.y == b.y and a.z == b.z and a.s == b.s and a.sy == b.sy and a.sz == b.sz and a.qz == b.qz and a.mod == b.mod)
     print("public factors:", len(w.inputs), "hints:", len(w.hints))
-    var c = secp256r1()
-    var mods: List[Big] = [c.p.copy(), c.n.copy()]
-    _ = circuit_values(w.inputs, w.ops, w.hints, mods)
+    _ = circuit_values(w.inputs, w.ops, w.hints, CURVE_P256)
     var bad = walk(secp256r1(), sig[0], sig[1], sig[2] + Big(1), sig[3], True)
     with assert_raises(contains="does not hold"):
-        _ = circuit_values(bad.inputs, bad.ops, bad.hints, mods)
+        _ = circuit_values(bad.inputs, bad.ops, bad.hints, CURVE_P256)
     with assert_raises(contains="(0, n)"):
         _ = walk(secp256r1(), sig[0], Big(), sig[2], sig[3], True)
 

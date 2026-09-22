@@ -1,9 +1,9 @@
 # Arithmetic mod p: the product as a polynomial identity, additions, the canonical check
 
 The polynomial-mulmod spec on the builder (`workloads/mulmod.mojo`): `a b = r`, then `r` folded to
-`f < 2^257`, congruent mod secp256k1's `p`, with no product ever committed (items 1 to 8); signed three-operand
-additions mod `p` or mod `n` on two add lanes per chain, with the canonical check, the guard and equality
-as masked additions. A circuit is a list of ops, each a product or an addition. Read the spec for the argument; this doc records what the code does where the spec left
+`f < 2^257`, congruent mod secp256k1's `p`, with no product ever committed (items 1 to 8), or reduced mod
+P-256's `p` in one word pass (the P-256 section); signed three-operand additions mod `p` or mod `n` on
+two add lanes per chain, with the canonical check, the guard and equality as masked additions. A circuit is a list of ops, each a product or an addition. Read the spec for the argument; this doc records what the code does where the spec left
 a choice, one hole the spec's zero row closes, the selector columns the fold needs, and the wiring.
 
 ## Layout (`q = 4`, 144 rows)
@@ -124,9 +124,63 @@ the top carry is zero); the selector families force `h` and `g` to be the high h
 integer identity per slot, and folding preserves the residue mod `p`. `f` is below `2^256 + 2^71 < 2 p`,
 the spec's non-canonical operand range.
 
+## The P-256 pass
+
+`mulmod_statement(curve=CURVE_P256)` keeps the product lane and the add lanes and replaces the two folds.
+P-256's `p = 2^256 - 2^224 + 2^192 + 2^96 - 1` has no small fold (`2^256 = 2^224 - 2^192 - 2^96 + 1`
+takes only 32 bits off a value), so the pass is FIPS 186-4 D.2.3 on 32-bit words: product word `i`,
+`i = 8..16`, is congruent to a signed pattern on the words 0 to 7 (`_p256_words`: the pattern of `2^256`,
+then each next word shifts the last and folds its overflow through the same pattern; word 16 covers
+products of two operands below `2^260`). Output word `k` reads product word `k + d` with coefficient
+`_p256_coef(d, k)`, in `[-4, 5]`, for 16 offsets `d` (0 to 14 and 16).
+
+| columns | count | contents |
+|---|---:|---|
+| `f{j}` | 4 | the output bit at slot `w` |
+| `fq{k}` | 4 | `q = q0 + 2 q1 + 4 q2 - 8 q3` in `[-8, 7]`, chain-constant |
+| `fc{k}{j}` | 16 | the signed carry `c0 + 2 c1 + 4 c2 - 8 c3`, stored at its slot |
+| `w{d}` | public, 16 | on the 8 rows of output word `k` (weights below 256) the coefficient of product word `k + d`, `-1` as 126; 0 above and on the idle row |
+| `fp{j}` | public, 4 | the bits of P-256's `p` at their slots on every chain: the fold's modulus (`pb` holds `n` on a mod-n chain, and the first trace of the full circuit failed exactly there) |
+
+`h`, `o`, `g`, `z`, `v`, `lo` and `cp` do not exist on this statement; `bd`, `pb`, `s{t}` and the lanes
+are as above.
+
+- `ffold{j}` (4, 29 terms): `sum_d w_d r@(8 d rows up) - sum_k sign_k fq_k fp@(k slots down) + carry in
+  = f + 2 carry out`. The read of product word `k + d` is `8 d` rows up, cyclic; the `2^k` of `q`'s bit
+  `k` comes from reading `p` `k` slots down, so the term's coefficient is the sign alone (the first
+  version multiplied the weight in twice). Zero rows on `fc{k}3` of the idle row, like the add lane.
+- `fq{k}const` (4): `q` equals itself one row down.
+
+Soundness. `r = a b` exactly and below `2^520` by the product ripple. A read of product word `i` from the
+rows of output word `k` lands on rows `142 - 8 i - (0..7) >= 7`: no selector-gated read wraps around the
+chain, and the rows of word 16 above weight 519 read zero bits. Per slot the residual's magnitude is at
+most 14 (the largest sum of `|coefficient|` over a word, word 7 with word 16's 5) + 8 (carry in) + 4 (`q
+p`'s four bit terms) + 1 + 16 (carry out) = 43 < 127, so a family vanishing in `F_127` is the integer
+identity at that slot. Summing `2^w` times the slot identities over the 576 slots: the zero row makes the
+carry into weight 0 and the carry out of slot 575 the same zero bits, so `sum_w 2^w f_w = S - q p`
+exactly, whatever bits the prover wrote, and `f` is congruent to `a b mod p`. `f` is nonnegative there,
+and every consumer bounds it (`bd`, the pieces, or a public factor's 257-bit claim), so the next product
+is again below `2^520`. The zero rows are not load-bearing here: without them a carry `c` in `[-8, -1]`
+around the ring gives `f = S - q p + c (1 - 2^576)`, a value of 576 bits that every consumer's bound
+rejects (the product ripple's zero rows are the ones that matter); they are kept so that the argument
+does not lean on the consumer, and they cost nothing. The add lanes see canonical or bounded operands as before.
+
+Completeness. For operands below `2^256` (public values are required below `2^256` in this mode,
+`_input`; outputs and free operands are canonical; a hint is bounded below `2^260` by the host and
+canonical when honest) the product is below `2^512`, word 16 is zero, `S` lies in `(-4 2^256, 7 2^256)`,
+`q = floor(S / p)` in `[-5, 7]`, `f = a b mod p < p`, the per-slot piles lie in `[-7, 8]` and the carries
+in `[-7, 7]`. The trace writer (`_p256_chain`) refuses a carry outside `[-8, 7]`.
+
+Cost against secp256k1's folds: 16 fewer bit columns (220 W against 236 on ECDSA), 18 more public
+columns (36 against 18, dense until the constant columns take `m = h2`), and 11 more opening points (23
+against 12: the word offsets are distinct cyclic reads, and every point opens every column, `points x
+opened columns x 20 B` of proof). The nine-pass alternative (the four-term identity applied until the
+value is short) would have shared its four offsets across passes but cost nine `f + carry` column sets;
+rejected.
+
 ## Wiring: a circuit of ops
 
-`mulmod_statement(circuit=...)` takes a list of `Op`: `mul(x, y)` or `add(x, y, sy, z, sz, s, qz, mod)`
+`mulmod_statement(circuit=..., curve=...)` takes a list of `Op`: `mul(x, y)` or `add(x, y, sy, z, sz, s, qz, mod)`
 (with `sub`, `eq`, `canon`, `guard` as shorthands), each operand `PUB` (a public value), `FREE`, `NIL`
 (no `z`), `hint(h)` (witness `h` of the workload's hint list: the prover supplies it, every occurrence
 after the first is wired to the first, and nothing else binds it; a curve slope, say, which `l dx = dy`

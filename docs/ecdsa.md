@@ -184,40 +184,44 @@ The csp-benchmarks generator signs on P-256 by default, and barretenberg, provek
 provekit-groth16 verify P-256, so a P-256 row is the same-curve comparison against those four; secp256k1
 is the same-curve comparison against risc0 and jolt.
 
-**Built** (`workloads/ecdsa_p256.mojo`, `workloads/fp_p256.mojo`, `tests/test_ecdsa_p256_host.mojo`): the
-field on four 64-bit limbs in Montgomery form (`-p^-1 = 1 mod 2^64`, so the Montgomery factor of each
-iteration is the low limb itself; the prime has no small fold), the curve with `a = p - 3`, and the walk: Straus-Shamir
-over the two bases `Q` and `G` with the full scalars `u2`, `u1` (no endomorphism), 43 windows of 6 bits,
-the same recoding, tables and blinding as secp256k1. A doubling costs one more add-lane op: the tangent
-numerator `3 x^2 + a` is two three-operand ops (`2 x^2`, then `+ x^2 + a` with `a` a public factor). The
-schedule is 252 doublings and 44 additions: 1,139 MUL and 2,116 add-lane ops, 1,139 chains, so the grid is
-`144 x 1152` (the next legal size above 1,139; the add lanes need 1,058), 479 public factors, 296 hints.
-The RFC 6979 A.2.5 signature verifies on the host, the live walk emits the fixed circuit, and its values
-satisfy every op over P-256's `p` and `n` (`circuit_values` with the moduli passed in). One precondition
-inherited from section 1: `e` must be below `n`. A FIPS 186 digest of 256 bits exceeds P-256's `n` with
-probability about `2^-32` (against `2^-128` on secp256k1); such an input is rejected, not reduced.
+`workloads/ecdsa_p256.mojo`, `workloads/fp_p256.mojo`, `tests/test_ecdsa_p256_host.mojo`,
+`tests/test_ecdsa_p256.mojo`, `bench/bench_ecdsa_p256.mojo`: the field on four 64-bit limbs in Montgomery
+form (`-p^-1 = 1 mod 2^64`, so the Montgomery factor of each iteration is the low limb itself; the prime
+has no small fold), the curve with `a = p - 3`, and the walk: Straus-Shamir over the two bases `Q` and
+`G` with the full scalars `u2`, `u1` (no endomorphism), 43 windows of 6 bits, the same recoding, tables
+and blinding as secp256k1. A doubling costs one more add-lane op: the tangent numerator `3 x^2 + a` is
+two three-operand ops (`2 x^2`, then `+ x^2 + a` with `a` a public factor). The schedule is 252 doublings
+and 44 additions: 1,139 MUL and 2,116 add-lane ops, 1,139 chains, so the grid is `144 x 1152` (the next
+legal size above 1,139; the add lanes need 1,058), 479 public factors, 296 hints. `EcdsaP256` is the
+workload on `mulmod_statement(curve=CURVE_P256)`: the MUL lane reduces each product by the one-pass word
+identity of `docs/mulmod.md` (the P-256 pass), the add lanes take P-256's `p` and `n` in their modulus
+blocks unchanged. The RFC 6979 A.2.5 signature verifies on the host, the live walk emits the fixed
+circuit, its values satisfy every op over P-256's moduli, and the proof round-trips with a changed
+message rejected.
 
-**Not built: the product reduction.** The MUL lane of `mulmod.mojo` (polynomial-mulmod 7) folds a product
-by `2^256 = 2^32 + 977 mod p`: seven shifted copies of the high half added to the low half, twice, with
-3-bit carries, so the output is below `2^257`. Mod P-256, `2^256 = 2^224 - 2^192 - 2^96 + 1`: a pass takes only
-about 32 bits off (the `2^224` term keeps most of the length), the terms are signed, and a product of
-operands below `2^260` needs nine passes of four signed reads to get below `2^260`, against two of seven. `EcdsaP256` therefore has `circuit` and `public_inputs` but no `statement`,
-`trace` or `public_data`. Two designs for the reduction, both a builder change with its own soundness
-argument (the fold bounds of `docs/mulmod.md` are specific to the secp256k1 shifts):
+Measured on the M1 Pro at load average about 10, back to back with secp256k1 (`bench/bench_ecdsa_*.mojo`,
+warm prove, `CLIENT`):
 
-- Word folds. Split the high half into 64-bit words; `2^(256 + 64 j) mod p` is a sparse signed pattern
-  (four terms for `j = 0`, five for `j = 1`, more for the higher words). One pass adds every word's pattern
-  at once: a public selector column per (word, shift, sign) says which rows read which copy, the carries
-  are signed like the add lane's, and a public multiple of `p` (a `pb`-like block) is added so that the
-  pile is nonnegative. The patterns have 4, 5, 5, 7 and 8 terms (29 in all) and the signed sum is below
-  `2^290` in magnitude; a second pass on its top 34 bits (the four-term identity) and the offset bring
-  the output below about `2^260`, so `FOLDED` grows by two or three bits (products of such operands still
-  fit the chain's live slots; re-derive the pile and carry ranges). About 30 read terms per slot against
-  8 today, on the same two column sets.
-- Uniform passes. Nine passes of the four-term identity, each the shape of today's fold families with
-  signed carries: no selector per pattern, but nine `dst + copy + carry` column sets against two. Too wide.
+| | secp256k1 | P-256 |
+|---|---:|---:|
+| grid | 144 x 576 | 144 x 1152 |
+| W columns / public columns / opening points | 236 / 18 / 12 | 220 / 36 / 23 |
+| proof bytes | 469,860 | 624,060 |
+| warm prove ms | 270 | 586 |
+| verify ms | 93 | 247 |
+| trace ms | 30 | 237 |
+| soundness ledger, work / interactive bits | 108.03 / 88.21 | 107.70 / 88.04 |
 
-The first is the one to build. Both leave the add lanes as they are: the modulus blocks `pb{j}` already
-hold any 256-bit modulus, so `p` and `n` of P-256 go where secp256k1's do; on the host, `modulus` in
-`mulmod.mojo` (the moduli of the trace and the public data) is still secp256k1's and becomes a parameter
-of the statement.
+The P-256 proof is 2.2 x the time and 1.3 x the bytes of secp256k1: twice the chains (no GLV split), and
+the word offsets add 11 opening points. The verify times are after `selector_values` stopped
+re-validating the whole public data once per public factor (479 scans of 5.8 MB on P-256; it had cost
+secp256k1 60 ms as well).
+
+The CLI target `ecdsa_p256` and FFI target 4 take the utils generator's P-256 lines as they are (digest,
+`x_Q`, `y_Q`, `r||s`). The csp-benchmarks harness's `ecdsa` target stays secp256k1 (`csp/ecdsa_prepare.sh`
+and `bench_flags.json` name the curve); a P-256 submission is a change to those two files.
+
+One precondition inherited from section 1: `e` must be below `n`. A FIPS 186 digest of 256 bits exceeds
+P-256's `n` with probability about `2^-32` (against `2^-128` on secp256k1); such an input is rejected,
+not reduced. Open: the constant public columns as `m = h2` columns (one row of values instead of a dense
+block; 20 of them on this statement), and whether the `G` tables should be constants.

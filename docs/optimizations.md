@@ -139,9 +139,9 @@ change. Together they may take the passport to about 120 ms.
   products by `scale`. RSA-2048 has about 1100 public factors. Move the entry decode out of the row loop and
   use the linear form `R = scale^(h1-1) start - sum_i chal_i sum_x1 scale^(h1-2-x1) v_i(x1)`, with one power table
   per accumulator. A factor then costs 4 to 12 E x E products plus F x E work. `parallelize` the factor loop.
-  `verifier.mojo:259` also calls `selector_values` once per factor, and `ir.mojo:545` runs `column_offsets`
-  again each time; pass the `offs` that `_check_statement` already holds, and skip the selector when a factor
-  has no `col_b`. `tests/test_accumulate.mojo:322,376` compares this function with the device.
+  `verifier.mojo` also calls `selector_values` once per factor; skip the selector when a factor has no
+  `col_b` (it no longer re-runs `column_offsets`: the `offs` of `_check_statement` are passed in).
+  `tests/test_accumulate.mojo` compares this function with the device.
 - **Clear vector (passport 284 ms).** `clear_value` (`tensor.mojo:370-405`) costs units x (m1 m2 + m2) E x E
   products per index. `parallelize` over the units (8 performance cores); replace `_scal` (an `f_pow` per
   entry) by a 126-entry table per rho; group the units by their folded s2, so a unit costs m1 = 9 products in

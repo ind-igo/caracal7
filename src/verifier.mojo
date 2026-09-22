@@ -84,7 +84,7 @@ def verify[p: Params, H: Hash](var proof_bytes: List[UInt8], shape: Shape, publi
 
     # steps 3 to 6 on the opened values
     _boundaries[p](shape, openings, z2v, stage1)
-    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, d)
+    _wiring[p](shape, families, openings, z2v, wchal, stage1, public, offs, d)
     _vmark(profile, "boundaries", tv)
     _small_grid[p](shape, openings, z2v, q3, alpha, stage1, wchal, z2, d)
     _vmark(profile, "small grid", tv)
@@ -220,7 +220,7 @@ def _boundaries[p: Params](shape: Shape, openings: List[UInt8], z2v: List[UInt8]
 
 
 def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8], z2v: List[UInt8], wchal: List[UInt8],
-                       stage1: List[UInt8], public: List[UInt8], d: Domains) raises:
+                       stage1: List[UInt8], public: List[UInt8], offs: List[Int], d: Domains) raises:
     """The wiring products (accumulate.mojo): each starts at 1; jointly, prod_g Z_g(e2) N_g(e2) times the public
     factors' (v + beta_w id + gamma_w) equals prod_g D_g(e2) times their (v + beta_w sigma + gamma_w)."""
     if shape.wiring_products() == 0:
@@ -256,7 +256,7 @@ def _wiring[p: Params](shape: Shape, families: List[UInt8], openings: List[UInt8
             cols.append(public[off + t])
         off += n
         var k = get_u16(shape.pubf, i * PUBF)
-        var sel = selector_values[p](families, shape.accs, k, shape.publics, public, shape.columns_w + shape.columns_z, get_u16(shape.pubf, i * PUBF + 2 + 2 * ID))
+        var sel = selector_values[p](families, shape.accs, k, shape.publics, public, offs, shape.columns_w + shape.columns_z, get_u16(shape.pubf, i * PUBF + 2 + 2 * ID))
         var selected = False
         for t in range(len(sel)):
             if sel[t] != 0:

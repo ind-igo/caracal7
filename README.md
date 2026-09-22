@@ -32,7 +32,7 @@ Herder is the lookup, permutation and read-write memory argument. The lookup for
 
 ## Statements
 
-Every statement implements the `Workload` trait in `workload.mojo` (public inputs, trace, public data) and is proved by `prove_workload`. Each has a test under `tests/` and a bench under `bench/`. The csp-benchmarks harness names its targets `sha256`, `keccak`, `poseidon` and `ecdsa` (the secp256k1 workload).
+Every statement implements the `Workload` trait in `workload.mojo` (public inputs, trace, public data) and is proved by `prove_workload`. Each has a test under `tests/` and a bench under `bench/`. The csp-benchmarks harness names its targets `sha256`, `keccak`, `poseidon` and `ecdsa` (the secp256k1 workload); the binary also takes `ecdsa_p256`.
 
 | workload | what it proves | doc |
 |---|---|---|
@@ -40,6 +40,7 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `keccak` | Keccak-256 of 128 to 2048 bytes, 142 bit columns | `docs/keccak.md` |
 | `poseidon` | Poseidon over Mersenne-31, width 16, hashing 2 to 16 field elements | `docs/poseidon.md` |
 | `ecdsa_k1` | one secp256k1 signature verification on the mulmod chains | `docs/ecdsa.md` |
+| `ecdsa_p256` | one secp256r1 (P-256) signature verification on the mulmod chains, products reduced by the one-pass word identity | `docs/ecdsa.md` |
 | `rsa` | one RSA-2048 signature verification (e = 65537, 17 modmuls), squaring symmetry | `docs/rsa.md` |
 | `sha256g` | SHA-256 as a row group on the 144-row chain, digests wired between groups | `docs/sha256.md` |
 | `sod` | a passport SOD: SHA(DG1), SHA(security object), SHA(signed attributes), RSA verify with the DSC key committed, a disclosed MRZ window and a nullifier, one proof | `docs/passport.md` |
@@ -47,8 +48,6 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 | `dsc` | the DSC certificate check: SHA(certificate body), RSA verify by the CSCA key, the committed DSC key inside the body | `docs/passport.md` |
 | `csca` | the verifier's side of a passport: the CSCA registry (a list of key ids and exponents), the PKCS#1 padding limbs, one commitment in both proofs | `docs/passport.md` |
 | `passport` | the whole passport in one proof: the SOD groups, the certificate body and two RSA verifies on one grid, the DSC key a wire, no commitment | `docs/passport.md` |
-
-`ecdsa_p256` (secp256r1) has its host side and circuit in `src/workloads/ecdsa_p256.mojo` but is not a `Workload` yet: the mulmod chains reduce products by secp256k1's prime, and the P-256 reduction is not built (`docs/ecdsa.md` section 8).
 
 ## Run
 
@@ -110,8 +109,7 @@ The statements are described in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA
 
-RTX 3090 (Vast.ai, 2026-09-16, `bench_sha256_chain`, warm prove median, proof verified),
-against Jolt's 0.33 ms per hash on an M5 Max:
+RTX 3090 (Vast.ai, 2026-09-16, `bench_sha256_chain`, warm prove median, proof verified):
 
 | grid | hashes | prove ms | ms per hash |
 | --- | ---: | ---: | ---: |

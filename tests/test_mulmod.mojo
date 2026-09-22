@@ -11,7 +11,7 @@ from core.hash import Blake3
 from core.field import E, ext_mul, E_LEVEL, E_BYTES
 from core.bytes import list_e
 from relations import entry, ENTRY, NONE, NO_BASIS, ACC, derived_chals, horner_chain_end
-from workloads.mulmod import Mulmod, Op, OpValues, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
+from workloads.mulmod import Mulmod, Op, OpValues, CURVE_K1, CURVE_P256, reduced, circuit_public_data, _factors, _p256_coef, _p256_offsets, mulmod_statement, mulmod_trace, circuit_trace, circuit_values, circuit_bytes, parse_circuit, single_op, value_bytes_of, const_bytes, modulus, chain_count, mul, add, sub, eq, canon, guard, hint, bits_of, bytes_of, product_bits, fold_bits, folded_bits, p_bits, add_bits, sub_bits, ge_bits, BITS, FOLDED, VALUE, WIDTH, MUL, ADD, PUB, FREE, NIL, OUT, MOD_P, MOD_N
 from workloads.bigint import Big
 from prover import Prover, load_trace, load_public
 from verifier import verify
@@ -401,6 +401,106 @@ def test_hint_operands() raises:
     vals[2] = OpValues(MUL, lp.copy(), lp.copy(), Big(), Big.from_bits(folded_bits(lp.bits(WIDTH), lp.bits(WIDTH))), 0)
     var c = mulmod_statement(True, circuit).compile[p]()
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
+
+
+# ---- P-256 ----
+
+def _p256_claim(ops: List[Op], inputs: List[List[UInt8]]) raises -> List[UInt8]:
+    """Circuit bytes then the values in factor order, as `Mulmod.public_inputs` builds them."""
+    var vals = circuit_values(inputs, ops, List[Big](), CURVE_P256)
+    var v = circuit_bytes(ops)
+    var next = 0
+    for f in _factors(ops):
+        if f[1] < 4:
+            v.extend(inputs[next].copy())
+            next += 1
+        else:
+            v.extend(vals[f[0]].s.bytes(VALUE))
+    return v^
+
+
+def _p256_round_trip(ctx: DeviceContext, ops: List[Op], inputs: List[List[UInt8]], tamper: Int = -1) raises -> String:
+    """Prove the circuit over P-256 and verify; `tamper` flips a bit of the claim's values first."""
+    var claim = _p256_claim(ops, inputs)
+    var c = mulmod_statement(True, ops, True, CURVE_P256).compile[p]()
+    var shape = mulmod_statement(True, ops, True, CURVE_P256).compile[p]().take_shape()
+    var cc = mulmod_statement(True, ops, True, CURVE_P256).compile[p]()
+    var trace = circuit_trace[p](c.layout, circuit_values(inputs, ops, List[Big](), CURVE_P256), ops, curve=CURVE_P256)
+    var data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256)
+    var prover = Prover[p, Blake3](ctx, c^.take_shape(), cc.families.copy())
+    load_trace[p, Blake3](ctx, prover, trace)
+    load_public[p, Blake3](ctx, prover, data)
+    var proof = prover.prove(ctx, claim)
+    if tamper >= 0:
+        claim[parse_circuit(claim)[1] + tamper] ^= 1
+        data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256)
+    try:
+        _ = verify[p, Blake3](proof^, shape, claim, cc.families, data)
+    except e:
+        return String(e)
+    return String("accepted")
+
+
+def test_p256_word_table() raises:
+    """Every product word's pattern is congruent to it mod P-256 and 16 offsets are read; the reduction's
+    output is a b mod p with the quotient in range, on random, canonical-maximal and bound-maximal operands."""
+    var P = modulus(MOD_P, CURVE_P256)
+    for i in range(17):
+        var pat = Big()
+        for k in range(8):
+            if i >= k:
+                pat = pat + Big(_p256_coef(i - k, k)).shl(32 * k)
+        assert_true(((pat - Big(1).shl(32 * i)).divmod(P)[1]).is_zero())
+    assert_equal(len(_p256_offsets()), 16)
+    var m = P - Big(1)
+    var big = Big(1).shl(WIDTH) - Big(1)
+    for pair in [(m.copy(), m.copy()), (big.copy(), big.copy()), (Big.from_bytes(operand(7)), Big.from_bytes(operand(8)))]:
+        var r = reduced(pair[0], pair[1], CURVE_P256)
+        assert_true(r[0] == pair[0].mulmod(pair[1], P))
+        assert_true(r[1] >= -8 and r[1] <= 7)
+
+
+def test_p256_trace_satisfies_every_bit_family() raises:
+    """Every bit-level family of the P-256 statement holds on the trace of random and of maximal
+    operands, and on a circuit with additions, the canonical check and a mod-n op; the fold output is
+    a b mod p."""
+    var P = modulus(MOD_P, CURVE_P256)
+    var m = (P - Big(1)).bytes(32)
+    for pair in [(operand(1), operand(2)), (m.copy(), m.copy())]:
+        var inputs: List[List[UInt8]] = [value_bytes_of(pair[0]), value_bytes_of(pair[1])]
+        var c = mulmod_statement(curve=CURVE_P256).compile[p]()
+        var vals = circuit_values(inputs, single_op(), List[Big](), CURVE_P256)
+        assert_true(vals[0].s == Big.from_bytes(pair[0]).mulmod(Big.from_bytes(pair[1]), P))
+        var trace = circuit_trace[p](c.layout, vals, single_op(), curve=CURVE_P256)
+        var claim = _p256_claim(single_op(), inputs)
+        var data = circuit_public_data[p](single_op(), claim, parse_circuit(claim)[1], CURVE_P256)
+        assert_true(_families_hold(c.families, c.shape.columns_z, c.layout.columns_w(), trace, data) > 220 + 4 * 32 + 12 + 4 * 29 + 4 * 2 + 2 * (4 * 24 + 16 + 12))
+    var ops: List[Op] = [mul(PUB, PUB), add(0, PUB, -1, PUB, -1), canon(0), guard(0), add(PUB, PUB, 1, NIL, 0, OUT, 0, MOD_N)]
+    var inputs: List[List[UInt8]] = [value_bytes_of(operand(3)), value_bytes_of(operand(4)), const_bytes(P - Big(1)), const_bytes(P - Big(1)),
+                                     const_bytes(P - Big(1)), const_bytes(Big(1)), value_bytes_of(operand(5)), value_bytes_of(operand(6))]
+    var ca = mulmod_statement(True, ops, True, CURVE_P256).compile[p]()
+    var ta = circuit_trace[p](ca.layout, circuit_values(inputs, ops, List[Big](), CURVE_P256), ops, curve=CURVE_P256)
+    var claim = _p256_claim(ops, inputs)
+    _ = _families_hold(ca.families, ca.shape.columns_z, ca.layout.columns_w(), ta, circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256))
+    with assert_raises(contains="below 2^256"):
+        var high: List[List[UInt8]] = [const_bytes(Big(1).shl(256)), value_bytes_of(operand(2))]
+        _ = circuit_values(high, single_op(), List[Big](), CURVE_P256)
+
+
+def test_p256_prover_round_trip() raises:
+    """One product and the add circuit prove and verify over P-256; a claim with a changed output or a
+    changed operand is rejected."""
+    var ctx = DeviceContext()
+    var inputs: List[List[UInt8]] = [value_bytes_of(operand(1)), value_bytes_of(operand(2))]
+    assert_equal(_p256_round_trip(ctx, single_op(), inputs), "accepted")
+    assert_true(_p256_round_trip(ctx, single_op(), inputs, 2 * VALUE) != "accepted")
+    assert_true(_p256_round_trip(ctx, single_op(), inputs, 5) != "accepted")
+    var P = modulus(MOD_P, CURVE_P256)
+    var ops: List[Op] = [mul(PUB, PUB), add(0, PUB, -1, PUB, -1), canon(0), guard(0), add(PUB, PUB, 1, NIL, 0, OUT, 0, MOD_N)]
+    var more: List[List[UInt8]] = [value_bytes_of(operand(3)), value_bytes_of(operand(4)), const_bytes(P - Big(1)), const_bytes(P - Big(1)),
+                                   const_bytes(P - Big(1)), const_bytes(Big(1)), value_bytes_of(operand(5)), value_bytes_of(operand(6))]
+    assert_equal(_p256_round_trip(ctx, ops, more), "accepted")
     _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 

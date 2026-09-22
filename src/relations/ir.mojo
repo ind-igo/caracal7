@@ -536,11 +536,11 @@ def column_chain(publics: Span[UInt8, _], data: Span[UInt8, _], offs: List[Int],
 
 
 def selector_values[p: Params](families: Span[UInt8, _], accs: Span[UInt8, _], k: Int, publics: Span[UInt8, _], values: Span[UInt8, _],
-                               pub_at: Int, chain: Int) raises -> List[UInt8]:
+                               offs: List[Int], pub_at: Int, chain: Int) raises -> List[UInt8]:
     """The `sel` argument of horner_chain_end for accumulator k on `chain`: per ingest entry, h1 values of its
-    selector (a public column read as col_b, at the entry's shift) or ones."""
+    selector (a public column read as col_b, at the entry's shift) or ones. `offs` from `column_offsets`
+    (computed once: it validates the whole public data)."""
     comptime h1 = p.h1()
-    var offs = column_offsets(publics, values, h1, p.h2())
     var first = get_u16(accs, k * ACC + 2)
     var count = get_u16(accs, k * ACC + 4)
     var out = List[UInt8](length=count * h1, fill=1)

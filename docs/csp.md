@@ -78,4 +78,6 @@ site; the Rust track is the one to submit.
 
 The utils CLI prints secp256r1 signatures and 254-bit Poseidon elements; both a k256 and a Mersenne-31
 generator exist in the utils library but are not exposed. Until they are, `ecdsa_prepare.sh` uses a
-fixed secp256k1 vector and `poseidon_prepare.sh` reduces the elements mod 2^31 - 1.
+fixed secp256k1 vector and `poseidon_prepare.sh` reduces the elements mod 2^31 - 1. The binary's
+`ecdsa_p256` target (grid 144 x 1152; FFI target 4) takes the generator's P-256 lines as they are, so a
+P-256 submission is `ecdsa_prepare.sh` passing them through and `bench_flags.json` naming the curve.
