@@ -17,7 +17,8 @@ from proof import Shape
 from workloads.sha256 import Sha256
 from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
-from workloads.ecdsa import Ecdsa, Point
+from workloads.ecurve import Point
+from workloads.ecdsa_k1 import EcdsaK1
 from workloads.bigint import Big
 from workloads.rsa import rsa_statement
 from workloads.sod import sod_statement
@@ -555,8 +556,8 @@ def main() raises:
         report[CLIENT.grid(64, 368)]("poseidon", n, Poseidon(List[Int](length=n, fill=0)))
     for n in [12, 16]:
         report[CLIENT.grid(64, 720)]("poseidon", n, Poseidon(List[Int](length=n, fill=0)))
-    # statement() uses Ecdsa.circuit(), independent of signature values; no live walk or witness is needed.
-    report[CLIENT.grid(144, 576)]("ecdsa", 32, Ecdsa(Big(), Big(), Big(), Point.identity()))
+    # statement() uses EcdsaK1.circuit(), independent of signature values; no live walk or witness is needed.
+    report[CLIENT.grid(144, 576)]("ecdsa", 32, EcdsaK1(Big(), Big(), Big(), Point.identity()))
     # Public benchmark metadata fixes these statements; no witnesses or GPU work are needed.
     var lengths: List[Int] = [String(SodFixture.DG1_HEX).byte_length() // 2, String(SodFixture.ECONTENT_HEX).byte_length() // 2, String(SodFixture.ATTRS_HEX).byte_length() // 2]
     var embeds: List[Int] = [SodFixture.EMBED_1, SodFixture.EMBED_2]
@@ -567,5 +568,5 @@ def main() raises:
     report_compiled[CLIENT.grid(144, 4032)]("passport", 1, passport_statement(CLIENT.grid(144, 4032).h2(), 8, 17, lengths, embeds, WINDOW_OFFSET, cert_length, DscFixture.N_OFFSET).compile[CLIENT.grid(144, 4032)]())
     # tail rate sweep in the Johnson regime: the rho^-1.5 constant of BCHKS25 1.5 punishes low-rate tails
     comptime for r in [4, 8, 16, 32]:
-        report[johnson(r).grid(144, 576)]("ecdsa_johnson_tail_rate_inv_" + String(r), 32, Ecdsa(Big(), Big(), Big(), Point.identity()))
+        report[johnson(r).grid(144, 576)]("ecdsa_johnson_tail_rate_inv_" + String(r), 32, EcdsaK1(Big(), Big(), Big(), Point.identity()))
     print("\nSTATUS: unresolved proof/implementation obligations; no certified security_bits emitted.")

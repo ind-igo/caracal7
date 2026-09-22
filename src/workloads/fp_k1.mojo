@@ -1,15 +1,16 @@
 """secp256k1's field on four 64-bit limbs for the host: schoolbook products through UInt128, the reduction
 by 2^256 = 2^32 + 977 (two folds, one subtraction), Fermat inversion on an addition chain. `Big` stays the type the workloads
-speak; `Curve` converts at its field operations."""
+speak; `Curve` (ecurve.mojo) converts at its field operations."""
 
 from workloads.bigint import Big
+from workloads.ecurve import Field
 
 comptime C: UInt64 = (1 << 32) + 977     # 2^256 mod p
 comptime L4 = SIMD[DType.uint64, 4]
 
 
 @fieldwise_init
-struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
+struct FpK1(Field):
     """A field element below p as little-endian limbs."""
     var l: L4
 
@@ -18,12 +19,12 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
         return L4(0xFFFFFFFEFFFFFC2F, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
 
     @staticmethod
-    def from_big(b: Big) -> Fp:
+    def from_big(b: Big) -> FpK1:
         """The magnitude's low 256 bits (callers pass canonical values)."""
         var l = L4(0)
         for i in range(min(len(b.mag), 8)):
             l[i // 2] |= UInt64(b.mag[i]) << UInt64(32 * (i % 2))
-        return Fp(l)
+        return FpK1(l)
 
     def to_big(self) -> Big:
         var mag = List[UInt32](capacity=8)
@@ -31,10 +32,10 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
             mag.append(UInt32((self.l[i // 2] >> UInt64(32 * (i % 2))) & 0xFFFFFFFF))
         return Big(False, mag^)
 
-    def __eq__(self, other: Fp) -> Bool:
+    def __eq__(self, other: FpK1) -> Bool:
         return self.l == other.l
 
-    def __ne__(self, other: Fp) -> Bool:
+    def __ne__(self, other: FpK1) -> Bool:
         return not (self == other)
 
     @staticmethod
@@ -65,19 +66,19 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
             carry = w >> 64
         return (r, carry.cast[DType.uint64]())
 
-    def __add__(self, o: Fp) -> Fp:
-        var s = Fp._add(self.l, o.l)
-        if s[1] != 0 or Fp._ge(s[0], Fp.p()):
-            return Fp(Fp._sub(s[0], Fp.p())[0])
-        return Fp(s[0])
+    def __add__(self, o: FpK1) -> FpK1:
+        var s = FpK1._add(self.l, o.l)
+        if s[1] != 0 or FpK1._ge(s[0], FpK1.p()):
+            return FpK1(FpK1._sub(s[0], FpK1.p())[0])
+        return FpK1(s[0])
 
-    def __sub__(self, o: Fp) -> Fp:
-        var d = Fp._sub(self.l, o.l)
+    def __sub__(self, o: FpK1) -> FpK1:
+        var d = FpK1._sub(self.l, o.l)
         if d[1] != 0:
-            return Fp(Fp._add(d[0], Fp.p())[0])
-        return Fp(d[0])
+            return FpK1(FpK1._add(d[0], FpK1.p())[0])
+        return FpK1(d[0])
 
-    def __mul__(self, o: Fp) -> Fp:
+    def __mul__(self, o: FpK1) -> FpK1:
         var r = SIMD[DType.uint64, 8](0)
         comptime for i in range(4):
             var carry: UInt128 = 0
@@ -102,19 +103,19 @@ struct Fp(Copyable, Movable, ImplicitlyCopyable, Equatable):
             s[i] = w2.cast[DType.uint64]()
             carry = w2 >> 64
         if carry != 0:
-            s = Fp._add(s, L4(C, 0, 0, 0))[0]
-        if Fp._ge(s, Fp.p()):
-            s = Fp._sub(s, Fp.p())[0]
-        return Fp(s)
+            s = FpK1._add(s, L4(C, 0, 0, 0))[0]
+        if FpK1._ge(s, FpK1.p()):
+            s = FpK1._sub(s, FpK1.p())[0]
+        return FpK1(s)
 
-    def sqn(self, n: Int) -> Fp:
+    def sqn(self, n: Int) -> FpK1:
         """self^(2^n)."""
         var r = self
         for _ in range(n):
             r = r * r
         return r
 
-    def inv(self) -> Fp:
+    def inv(self) -> FpK1:
         """a^(p - 2) by the addition chain of libsecp256k1 (255 squarings, 15 products): p - 2 is
         [223 x 1][0][22 x 1][0000 1][011][01], the runs of ones from 2^n - 1 at n = 2, 3, 22, 223.
         Zero maps to zero."""

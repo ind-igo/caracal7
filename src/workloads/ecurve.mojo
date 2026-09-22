@@ -1,17 +1,38 @@
-"""secp256k1 on the host: field and curve arithmetic on `Big`, the GLV split, the digit recoding of
-`docs/ecdsa.md` section 2, the blinding point of section 3, and the plain ECDSA check the verifier runs
-before the circuit. Affine points, Fermat inversions, the field reduction by `2^256 = 2^32 + 977`.
-ponytail: a few milliseconds per curve operation; Jacobian coordinates or a limb field if the verifier's
+"""Short Weierstrass curves on the host and the ECDSA circuit walk shared by the curve variants
+(`ecdsa_k1.mojo`, `ecdsa_p256.mojo`): affine points on `Big`, a `Curve` over a limb field `F`, the digit
+recoding of `docs/ecdsa.md` section 2, the blinding point of section 3, the plain ECDSA check the verifier
+runs before the circuit, and the `Walk` that emits the group operations of section 4 as mulmod ops.
+ponytail: `Curve` converts to the limb field at every field operation; Jacobian coordinates if the verifier's
 curve work ever shows in a profile."""
 
 from core.bytes import host_base
 from core.hash import Blake3
-from core.params import Params
 from workloads.bigint import Big
-from workloads.fp import Fp, L4
-from workloads.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint, mulmod_statement, circuit_values, circuit_trace, circuit_public_data
-from relations.statement import Statement, Layout
-from workload import Workload
+from workloads.mulmod import Op, PUB, NIL, MOD_P, MOD_N, VALUE, mul, add, sub, eq, canon, guard, hint
+
+
+trait Field(Copyable, Movable, ImplicitlyCopyable, Equatable, Deinitable):
+    """A prime field on limbs: canonical values in and out through `Big`."""
+
+    @staticmethod
+    def from_big(b: Big) -> Self:
+        ...
+
+    def to_big(self) -> Big:
+        ...
+
+    def __add__(self, o: Self) -> Self:
+        ...
+
+    def __sub__(self, o: Self) -> Self:
+        ...
+
+    def __mul__(self, o: Self) -> Self:
+        ...
+
+    def inv(self) -> Self:
+        """Zero maps to zero."""
+        ...
 
 
 @fieldwise_init
@@ -40,29 +61,14 @@ struct Point(Copyable, Movable, Equatable, Writable):
             writer.write("(", self.x, ", ", self.y, ")")
 
 
-struct Curve(Movable):
-    """The constants (libsecp256k1's endomorphism and lattice basis) and the operations."""
+@fieldwise_init
+struct Curve[F: Field](Movable):
+    """y^2 = x^3 + a x + b over F_p, prime order n, cofactor 1, generator g; `a` canonical (p - 3 for a = -3)."""
     var p: Big
     var n: Big
+    var a: Big
+    var b: Big
     var g: Point
-    var beta: Big
-    var lam: Big
-    var a1: Big
-    var b1: Big
-    var a2: Big
-    var b2: Big
-
-    def __init__(out self) raises:
-        self.p = Big.from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f")
-        self.n = Big.from_hex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
-        self.g = Point(Big.from_hex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
-                       Big.from_hex("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"), False)
-        self.beta = Big.from_hex("7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee")
-        self.lam = Big.from_hex("5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72")
-        self.a1 = Big.from_hex("3086d221a7d46bcde86c90e49284eb15")
-        self.b1 = -Big.from_hex("e4437ed6010e88286f547fa90abfe4c3")
-        self.a2 = Big.from_hex("114ca50f7a8e2f3f657c1108d9d44cfd8")
-        self.b2 = Big.from_hex("3086d221a7d46bcde86c90e49284eb15")
 
     # ---- the field ----
 
@@ -75,11 +81,11 @@ struct Curve(Movable):
         return t + self.p if t.neg else t^
 
     def fmul(self, a: Big, b: Big) -> Big:
-        return (Fp.from_big(a) * Fp.from_big(b)).to_big()
+        return (Self.F.from_big(a) * Self.F.from_big(b)).to_big()
 
     def fpow(self, a: Big, e: Big) -> Big:
-        var x = Fp.from_big(a)
-        var r = Fp(L4(1, 0, 0, 0))
+        var x = Self.F.from_big(a)
+        var r = Self.F.from_big(Big(1))
         for i in range(e.bit_length() - 1, -1, -1):
             r = r * r
             if e.bit(i) == 1:
@@ -87,7 +93,11 @@ struct Curve(Movable):
         return r.to_big()
 
     def finv(self, a: Big) -> Big:
-        return Fp.from_big(a).inv().to_big()
+        return Self.F.from_big(a).inv().to_big()
+
+    def rhs(self, x: Big) -> Big:
+        """x^3 + a x + b."""
+        return self.fadd(self.fadd(self.fmul(self.fmul(x, x), x), self.fmul(self.a, x)), self.b)
 
     # ---- the group ----
 
@@ -96,9 +106,7 @@ struct Curve(Movable):
             return True
         if a.x.neg or a.y.neg or a.x >= self.p or a.y >= self.p:
             return False
-        var lhs = self.fmul(a.y, a.y)
-        var rhs = self.fadd(self.fmul(self.fmul(a.x, a.x), a.x), Big(7))
-        return lhs == rhs
+        return self.fmul(a.y, a.y) == self.rhs(a.x)
 
     def neg(self, a: Point) -> Point:
         if a.inf or a.y.is_zero():
@@ -109,7 +117,8 @@ struct Curve(Movable):
         if a.inf or a.y.is_zero():
             return Point.identity()
         var x2 = self.fmul(a.x, a.x)
-        var l = self.fmul(self.fadd(self.fadd(x2, x2), x2), self.finv(self.fadd(a.y, a.y)))
+        var num = self.fadd(self.fadd(self.fadd(x2, x2), x2), self.a)
+        var l = self.fmul(num, self.finv(self.fadd(a.y, a.y)))
         var x3 = self.fsub(self.fsub(self.fmul(l, l), a.x), a.x)
         var y3 = self.fsub(self.fmul(l, self.fsub(a.x, x3)), a.y)
         return Point(x3^, y3^, False)
@@ -135,28 +144,8 @@ struct Curve(Movable):
                 r = self.add(r, a)
         return self.neg(r) if k.neg else r^
 
-    def phi(self, a: Point) -> Point:
-        """lambda a = (beta x, y)."""
-        if a.inf:
-            return a.copy()
-        return Point(self.fmul(self.beta, a.x), a.y.copy(), False)
-
-    # ---- scalars ----
-
-    def _round_div(self, a: Big, b: Big) raises -> Big:
-        """round(a / b) for b > 0."""
-        return (a.shl(1) + b).divmod(b.shl(1))[0].copy()
-
-    def split(self, k: Big) raises -> Tuple[Big, Big]:
-        """k = k1 + k2 lambda mod n with |k1|, |k2| below 2^128 (the lattice basis (a1, b1), (a2, b2))."""
-        var c1 = self._round_div(self.b2 * k, self.n)
-        var c2 = self._round_div(-self.b1 * k, self.n)
-        var k1 = k - c1 * self.a1 - c2 * self.a2
-        var k2 = -c1 * self.b1 - c2 * self.b2
-        return (k1^, k2^)
-
     def blinding(self, msg: List[UInt8]) raises -> Point:
-        """hash_to_curve by try-and-increment: x = blake3(msg || counter) mod p, y the even root."""
+        """hash_to_curve by try-and-increment: x = blake3(msg || counter) mod p, y the even root (p = 3 mod 4)."""
         var m = msg.copy()
         m.append(0)
         var digest = List[UInt8](length=32, fill=0)
@@ -164,7 +153,7 @@ struct Curve(Movable):
             m[len(m) - 1] = UInt8(ctr)
             Blake3.leaf(host_base(m), len(m), host_base(digest))
             var x = Big.from_bytes(digest).mod(self.p)
-            var rhs = self.fadd(self.fmul(self.fmul(x, x), x), Big(7))
+            var rhs = self.rhs(x)
             var y = self.fpow(rhs, (self.p + Big(1)).shr(2))
             if self.fmul(y, y) == rhs:
                 if y.bit(0) == 1:
@@ -172,11 +161,16 @@ struct Curve(Movable):
                 return Point(x^, y^, False)
         raise Error("no curve point in 256 tries")
 
-    def verify(self, r: Big, s: Big, e: Big, q: Point) raises -> Bool:
-        """Plain ECDSA: the public-input conditions of docs/ecdsa.md section 1, then x(u1 G + u2 Q) = r mod n."""
+    def valid_inputs(self, r: Big, s: Big, e: Big, q: Point) -> Bool:
+        """The public-input conditions of docs/ecdsa.md section 1: r, s in (0, n), e below n, Q a finite
+        point of the curve with canonical coordinates."""
         if r.neg or s.neg or r.is_zero() or s.is_zero() or r >= self.n or s >= self.n or e.neg or e >= self.n:
             return False
-        if q.inf or not self.on_curve(q):
+        return not q.inf and self.on_curve(q)
+
+    def verify(self, r: Big, s: Big, e: Big, q: Point) raises -> Bool:
+        """Plain ECDSA: the input conditions, then x(u1 G + u2 Q) = r mod n."""
+        if not self.valid_inputs(r, s, e, q):
             return False
         var w = s.inv_mod(self.n)
         var pt = self.add(self.mul(self.g, e.mulmod(w, self.n)), self.mul(q, r.mulmod(w, self.n)))
@@ -200,7 +194,7 @@ def recode(k: Big, b: Int, digits: Int = 32) raises -> List[Int]:
 
 
 def skew(k: Big) -> Tuple[Big, Int]:
-    """The odd value recoded for a half k and its window-0 correction c: k = (k - c) + c, c = 1 for even
+    """The odd value recoded for a scalar k and its window-0 correction c: k = (k - c) + c, c = 1 for even
     k, 2 for odd, so 0 and 1 both recode -1."""
     var c = 2 if k.bit(0) == 1 else 1
     return (k - Big(c), c)
@@ -208,8 +202,7 @@ def skew(k: Big) -> Tuple[Big, Int]:
 
 # ---- the circuit ----
 
-comptime QW = 6             # window bits; the four GLV halves are below 2^128
-comptime WINDOWS = 22       # ceil(128 / QW)
+comptime QW = 6             # window bits
 comptime INPUT = 5 * 32     # r, s, e, x_Q, y_Q, 32 little-endian bytes each
 
 
@@ -220,11 +213,11 @@ struct Ref(Copyable, Movable):
     var v: Big
 
 
-struct Walk:
+struct Walk[F: Field]:
     """One pass over the schedule of docs/ecdsa.md section 2, emitting the ops and, when `live`, the public
     factor values in factor order (each op's public operands x, y, z, then a public s) and the slope hints.
     The circuit is fixed: which public point a step adds changes per signature, the ops do not."""
-    var c: Curve
+    var c: Curve[Self.F]
     var live: Bool
     var ops: List[Op]
     var inputs: List[List[UInt8]]
@@ -233,7 +226,7 @@ struct Walk:
     var ax: Ref
     var ay: Ref
 
-    def __init__(out self, var c: Curve, live: Bool):
+    def __init__(out self, var c: Curve[Self.F], live: Bool):
         self.c = c^
         self.live = live
         self.ops = List[Op]()
@@ -310,18 +303,24 @@ struct Walk:
         self.ay = y3.copy()
 
     def doubling(mut self) raises:
-        """2 acc: l (2 y) = 3 x^2 (y != 0 on this curve of odd order), x3, y3."""
+        """2 acc: l (2 y) = 3 x^2 + a (y != 0 on a curve of odd order), x3, y3. With a = 0 the numerator is
+        one three-operand op, otherwise two (the second adds the public constant a)."""
         var ax = self.ax.copy()
         var ay = self.ay.copy()
         var xx = self.mul(ax, ax)
-        var three = self.add3(xx, xx, 1, xx, 1)
+        var num: Ref
+        if self.c.a.is_zero():
+            num = self.add3(xx, xx, 1, xx, 1)
+        else:
+            var two = self.add3(xx, xx, 1, Ref(NIL, Big()), 0)
+            num = self.add3(two, xx, 1, self.pub(self.c.a), 1)
         var yy = self.add3(ay, ay, 1, Ref(NIL, Big()), 0)
         var x2 = Big()
         if self.live:
             x2 = self.c.fmul(self.acc.x, self.acc.x)
-        var l = self.slope(self.c.fadd(self.c.fadd(x2, x2), x2), self.c.fadd(self.acc.y, self.acc.y))
+        var l = self.slope(self.c.fadd(self.c.fadd(self.c.fadd(x2, x2), x2), self.c.a), self.c.fadd(self.acc.y, self.acc.y))
         var lyy = self.mul(l, yy)
-        self.eq(lyy, three)
+        self.eq(lyy, num)
         var ll = self.mul(l, l)
         var x3 = self.add3(ll, ax, -1, ax, -1)
         var d = self.sub(ax, x3)
@@ -338,8 +337,36 @@ struct Walk:
         self.check(ax, canon(ax.r), self.c.p - Big(1))
         self.eq(ax, self.pub(r), MOD_N)
 
+    def addend(mut self, pt: Point, mut t: Big, i: Int, b: Point) raises:
+        """Window i adds its public point, or B when that point is the identity (t records 2^(QW i))."""
+        if self.live and pt.inf:
+            t = t + Big(1).shl(QW * i)
+            self.addition(b)
+        else:
+            self.addition(pt)
 
-def _digit_points(c: Curve, t: Point, digits: List[Int], corr: Int) raises -> List[Point]:
+    def schedule(mut self, pts: List[Point], b: Point, b16: Point, r: Big) raises:
+        """acc = 16 B; the top window; then per window QW doublings and one addition; the closing constant
+        -(2^(4 + QW (windows - 1)) + t) B with x only; x_R = r mod n. Live values only when `live`."""
+        var windows = len(pts)
+        var t = Big()
+        self.start(b16)
+        self.addend(pts[windows - 1], t, windows - 1, b)
+        for i in range(windows - 2, -1, -1):
+            for _ in range(QW):
+                self.doubling()
+            self.addend(pts[i], t, i, b)
+        var close = Point.identity()
+        if self.live:
+            var btop = b16.copy()
+            for _ in range((windows - 1) * QW):
+                btop = self.c.double(btop)
+            close = self.c.neg(self.c.add(btop, self.c.mul(b, t)))
+        self.addition(close, x_only=True)
+        self.closing(r)
+
+
+def digit_points[F: Field](c: Curve[F], t: Point, digits: List[Int], corr: Int) raises -> List[Point]:
     """d t per window, window 0 with the parity correction; a small table of multiples of t."""
     var tab: List[Point] = [Point.identity()]
     var top = 1 << QW
@@ -352,64 +379,26 @@ def _digit_points(c: Curve, t: Point, digits: List[Int], corr: Int) raises -> Li
     return v^
 
 
-def _signed(c: Curve, t: Point, k: Big) -> Point:
-    return c.neg(t) if k.neg else t.copy()
-
-
-def walk(var c: Curve, r: Big, s: Big, e: Big, q: Point, live: Bool) raises -> Walk:
-    """The fixed circuit; with `live`, the verifier's checks on (r, s, e, Q), then the public factor values
-    and hints of that signature. Window w adds one public point P_w = sum over the four GLV halves
-    (u2 on Q, phi(Q); u1 on G, phi(G)) of d_w T (Straus-Shamir), built from four small tables."""
-    var w = Walk(c^, live)
+def window_points[F: Field](c: Curve[F], bases: List[Point], ks: List[Big], windows: Int) raises -> List[Point]:
+    """Straus-Shamir: window w's public point P_w = sum over the bases of d_{i,w} T_i, a base's sign
+    absorbed into the base, each odd magnitude recoded after the parity skew."""
     var pts = List[Point]()
-    for _ in range(WINDOWS):
+    for _ in range(windows):
         pts.append(Point.identity())
-    var b16 = Point.identity()
-    var b = Point.identity()
-    if live:
-        if r.neg or s.neg or r.is_zero() or s.is_zero() or r >= w.c.n or s >= w.c.n or e.neg or e >= w.c.n:
-            raise Error("r, s in (0, n), e below n")
-        if q.inf or not w.c.on_curve(q):
-            raise Error("Q is a finite point of the curve with canonical coordinates")
-        var inv = s.inv_mod(w.c.n)
-        var h1 = w.c.split(e.mulmod(inv, w.c.n))
-        var h2 = w.c.split(r.mulmod(inv, w.c.n))
-        var ks: List[Big] = [h2[0].copy(), h2[1].copy(), h1[0].copy(), h1[1].copy()]
-        var bases: List[Point] = [q.copy(), w.c.phi(q), w.c.g.copy(), w.c.phi(w.c.g)]
-        for i in range(4):
-            var t = _signed(w.c, bases[i], ks[i])
-            var sk = skew(ks[i].abs())
-            var half = _digit_points(w.c, t, recode(sk[0], QW, WINDOWS), sk[1])
-            for j in range(WINDOWS):
-                pts[j] = w.c.add(pts[j], half[j])
-        b = w.c.blinding(public_bytes(r, s, e, q))
-        b16 = b.copy()
-        for _ in range(4):
-            b16 = w.c.double(b16)
-    var t = Big()                                  # sum of 2^(QW i) over the windows that added B
+    for i in range(len(bases)):
+        var t = c.neg(bases[i]) if ks[i].neg else bases[i].copy()
+        var sk = skew(ks[i].abs())
+        var part = digit_points(c, t, recode(sk[0], QW, windows), sk[1])
+        for j in range(windows):
+            pts[j] = c.add(pts[j], part[j])
+    return pts^
 
-    def addend(mut w: Walk, pt: Point, mut t: Big, i: Int, b: Point) raises:
-        if w.live and pt.inf:
-            t = t + Big(1).shl(QW * i)
-            w.addition(b)
-        else:
-            w.addition(pt)
 
-    w.start(b16)
-    addend(w, pts[WINDOWS - 1], t, WINDOWS - 1, b)
-    for i in range(WINDOWS - 2, -1, -1):
-        for _ in range(QW):
-            w.doubling()
-        addend(w, pts[i], t, i, b)
-    var close = Point.identity()
-    if live:
-        var btop = b16.copy()
-        for _ in range((WINDOWS - 1) * QW):
-            btop = w.c.double(btop)
-        close = w.c.neg(w.c.add(btop, w.c.mul(b, t)))
-    w.addition(close, x_only=True)
-    w.closing(r)
-    return w^
+def check_inputs[F: Field](c: Curve[F], r: Big, s: Big, e: Big, q: Point) raises:
+    if r.neg or s.neg or r.is_zero() or s.is_zero() or r >= c.n or s >= c.n or e.neg or e >= c.n:
+        raise Error("r, s in (0, n), e below n")
+    if q.inf or not c.on_curve(q):
+        raise Error("Q is a finite point of the curve with canonical coordinates")
 
 
 def public_bytes(r: Big, s: Big, e: Big, q: Point) raises -> List[UInt8]:
@@ -421,49 +410,8 @@ def public_bytes(r: Big, s: Big, e: Big, q: Point) raises -> List[UInt8]:
     return v^
 
 
-def _slice(bytes: List[UInt8], at: Int) -> Big:
+def slice32(bytes: List[UInt8], at: Int) -> Big:
     var v = List[UInt8](capacity=32)
     for i in range(32):
         v.append(bytes[at + i])
     return Big.from_bytes(v)
-
-
-struct Ecdsa(Workload, Movable):
-    """One secp256k1 signature on the mulmod chains (docs/ecdsa.md): public inputs (r, s, e, Q), the witness
-    the slopes of the fixed addition chain."""
-    var r: Big
-    var s: Big
-    var e: Big
-    var q: Point
-
-    def __init__(out self, var r: Big, var s: Big, var e: Big, var q: Point):
-        self.r = r^
-        self.s = s^
-        self.e = e^
-        self.q = q^
-
-    @staticmethod
-    def circuit() raises -> List[Op]:
-        var w = walk(Curve(), Big(), Big(), Big(), Point.identity(), False)
-        return w.ops.copy()
-
-    def statement[p: Params](self) raises -> Statement:
-        return mulmod_statement(True, Ecdsa.circuit(), pin=False)
-
-    def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
-        var w = walk(Curve(), self.r, self.s, self.e, self.q, True)
-        return circuit_trace[p](layout, circuit_values(w.inputs, w.ops, w.hints), w.ops)
-
-    def public_inputs[p: Params](self) raises -> List[UInt8]:
-        return public_bytes(self.r, self.s, self.e, self.q)
-
-    @staticmethod
-    def public_data[p: Params](layout: Layout, public_inputs: List[UInt8]) raises -> List[UInt8]:
-        if len(public_inputs) != INPUT:
-            raise Error("public inputs are r, s, e, x_Q, y_Q")
-        var w = walk(Curve(), _slice(public_inputs, 0), _slice(public_inputs, 32), _slice(public_inputs, 64),
-                     Point(_slice(public_inputs, 96), _slice(public_inputs, 128), False), True)
-        var values = List[UInt8](capacity=len(w.inputs) * VALUE)
-        for v in w.inputs:
-            values.extend(v.copy())
-        return circuit_public_data[p](w.ops, values, 0)

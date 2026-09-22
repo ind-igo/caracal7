@@ -1,18 +1,20 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_raises, TestSuite
 
 from workloads.bigint import Big
-from workloads.fp import Fp
-from workloads.ecdsa import Curve, Point, recode, skew, QW, WINDOWS
+from workloads.fp_k1 import FpK1
+from workloads.ecurve import Point, recode, skew, QW
+from workloads.ecdsa_k1 import secp256k1, Glv, WINDOWS
 
 
 def test_group_and_endomorphism() raises:
     """G on the curve, n G = O, phi(G) = lambda G, the lattice basis kills lambda."""
-    var c = Curve()
+    var c = secp256k1()
     assert_true(c.on_curve(c.g))
     assert_true(c.mul(c.g, c.n).inf)
-    assert_equal(c.phi(c.g), c.mul(c.g, c.lam))
-    assert_true((c.a1 + c.b1 * c.lam).mod(c.n).is_zero())
-    assert_true((c.a2 + c.b2 * c.lam).mod(c.n).is_zero())
+    var glv = Glv()
+    assert_equal(glv.phi(c, c.g), c.mul(c.g, glv.lam))
+    assert_true((glv.a1 + glv.b1 * glv.lam).mod(c.n).is_zero())
+    assert_true((glv.a2 + glv.b2 * glv.lam).mod(c.n).is_zero())
     var two = c.double(c.g)
     assert_equal(c.add(c.g, c.g), two)
     assert_true(c.add(two, c.neg(two)).inf)
@@ -21,12 +23,13 @@ def test_group_and_endomorphism() raises:
 
 def test_split_and_recode() raises:
     """Split: k1 + k2 lambda = k mod n with halves below 2^128; recoded digits sum back for both window sizes."""
-    var c = Curve()
+    var c = secp256k1()
+    var glv = Glv()
     var bound = Big(1).shl(128)
     var ks: List[Big] = [Big(0), Big(1), Big(2), c.n - Big(1), Big.from_hex("deadbeefcafebabe0123456789abcdef0011223344556677f00dfacefeedc0de")]
     for k in ks:
-        var kk = c.split(k)
-        assert_equal((kk[0] + kk[1] * c.lam).mod(c.n), k.mod(c.n))
+        var kk = glv.split(c, k)
+        assert_equal((kk[0] + kk[1] * glv.lam).mod(c.n), k.mod(c.n))
         assert_true(kk[0].abs() < bound and kk[1].abs() < bound)
         for half in [kk[0].copy(), kk[1].copy()]:
             var s = skew(half.abs())
@@ -39,7 +42,7 @@ def test_split_and_recode() raises:
                     acc = acc.shl(b) + Big(d[i])
                     if i < n - 1:
                         assert_true(d[i] % 2 != 0 and d[i] >= -(1 << b) and d[i] < (1 << b))
-                assert_true(abs(d[n - 1]) <= (1 << b) and abs(d[0] + s[1]) <= (1 << b) + 2)     # inside _digit_points' table
+                assert_true(abs(d[n - 1]) <= (1 << b) and abs(d[0] + s[1]) <= (1 << b) + 2)     # inside digit_points' table
                 assert_equal(acc + Big(s[1]), half.abs())
     var d = recode(Big(-1), 4)
     assert_equal(d[0], 15)
@@ -51,7 +54,7 @@ def test_split_and_recode() raises:
 def test_blinding_and_verify() raises:
     """A signature from a known key verifies, a changed message does not, the blinding point is on the curve
     and depends on the message."""
-    var c = Curve()
+    var c = secp256k1()
     var d = Big.from_hex("1e99423a4ed27608a15a2616a2b0e9e52ced330ac530edcc32c8ffc6a526aedd")
     var k = Big.from_hex("a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90")
     var e = Big.from_hex("4b688df40bcedbe641ddb16ff0a1842d9c67ea1c3bf63f3e0471baa664531d1a")
@@ -73,7 +76,7 @@ def test_blinding_and_verify() raises:
 def test_fp_matches_big() raises:
     """The limb field against Big's modular arithmetic: products, sums, differences, inverses, on values
     across the range (p - 1, small, a Blake-like spread from an LCG)."""
-    var c = Curve()
+    var c = secp256k1()
     var vals: List[Big] = [Big(0), Big(1), Big(2), c.p - Big(1), c.p - Big(2), Big(1).shl(255), Big(1).shl(256) - Big(1) - c.p]
     var seed = Big(0x9E3779B97F4A7C15)
     for _ in range(12):
@@ -81,12 +84,12 @@ def test_fp_matches_big() raises:
         vals.append(seed.copy())
     for a in vals:
         for b in vals:
-            assert_equal((Fp.from_big(a) * Fp.from_big(b)).to_big(), a.mulmod(b, c.p))
-            assert_equal((Fp.from_big(a) + Fp.from_big(b)).to_big(), (a + b).mod(c.p))
-            assert_equal((Fp.from_big(a) - Fp.from_big(b)).to_big(), (a - b + c.p).mod(c.p))
+            assert_equal((FpK1.from_big(a) * FpK1.from_big(b)).to_big(), a.mulmod(b, c.p))
+            assert_equal((FpK1.from_big(a) + FpK1.from_big(b)).to_big(), (a + b).mod(c.p))
+            assert_equal((FpK1.from_big(a) - FpK1.from_big(b)).to_big(), (a - b + c.p).mod(c.p))
         if not a.is_zero():
-            assert_equal(Fp.from_big(a).inv().to_big(), a.inv_mod(c.p))
-    assert_true(Fp.from_big(Big(0)).inv().to_big().is_zero())
+            assert_equal(FpK1.from_big(a).inv().to_big(), a.inv_mod(c.p))
+    assert_true(FpK1.from_big(Big(0)).inv().to_big().is_zero())
 
 
 def main() raises:

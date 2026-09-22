@@ -141,18 +141,20 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
   set: a shared set would put coefficients above 95, outside the certificate's range in F_127) and 3
   accumulators (48 Z columns), so the RS stages, the openings and the proof grow by about 30%. It flips
   if the rate rule ever accepts 1/20.
-- secp256r1: `a = -3` (one more op per doubling), no endomorphism (256 doublings), a different fold.
+- secp256r1: section 8.
 - The hash-to-curve for `B`: which hash, and whether the encoding of `(Q, r, s, e)` it takes is the
   public-input byte string as is.
 
 ## 7. Implemented
 
-`workloads/ecdsa.mojo`: the host arithmetic (`Curve`, affine points on `Big`, Fermat inversions, the fold
-reduction), the GLV split by the exact lattice basis, `recode`/`skew`, the blinding point by
-try-and-increment on Blake3 of the 160 public-input bytes (`r, s, e, x_Q, y_Q`, the encoding open in
-section 6, settled as the public inputs as they are), and the `Ecdsa` workload: `walk` emits the fixed
-circuit once and, per signature, the public factor values in factor order and the slope hints. The
-verifier's `public_data` runs the same walk from the public inputs. Test: `tests/test_ecdsa.mojo`.
+`workloads/ecurve.mojo`: the host arithmetic shared by the curves (`Curve[F]` over a limb field `F`,
+affine points on `Big`, Fermat inversions), `recode`/`skew`, the blinding point by try-and-increment on
+Blake3 of the 160 public-input bytes (`r, s, e, x_Q, y_Q`, the encoding open in section 6, settled as the
+public inputs as they are), and the `Walk` that emits the group operations as ops. `workloads/ecdsa_k1.mojo`:
+the secp256k1 constants, the GLV split by the exact lattice basis, the four-base schedule and the `EcdsaK1`
+workload: `walk` emits the fixed circuit once and, per signature, the public factor values in factor order
+and the slope hints. The verifier's `public_data` runs the same walk from the public inputs. Tests:
+`tests/test_ecdsa_k1.mojo` (the circuit and the prover round trip), `tests/test_ecdsa_k1_host.mojo`.
 
 Deviations from sections 4 and 5:
 
@@ -163,7 +165,7 @@ Deviations from sections 4 and 5:
   operand that reads it, `x2` twice per addition). `q` is `b0 + 2 b1 + 4 b2 - 2 b3` in `[-2, 7]`.
 - No circuit header: `mulmod_statement(pin=False)`. The public inputs are the 160 bytes.
 - The four digit tables (66 multiples each of `Q`, `phi(Q)`, `G`, `phi(G)`) are built per signature. The
-  field is `workloads/fp.mojo` (four 64-bit limbs, UInt128 products, the fold twice, Fermat inversion);
+  field is `workloads/fp_k1.mojo` (four 64-bit limbs, UInt128 products, the fold twice, Fermat inversion);
   `Curve` converts from `Big` at each field operation, so a curve operation is about 50 us and a live
   walk (the tables, the 130 doublings for the blinding constants, the chain) about 45 ms. `Big` keeps
   the scalars, with a shift-subtract division and a binary extended Euclid for `s^-1`. The `G` tables
@@ -175,3 +177,47 @@ Measured on the 16 GB Mac (Metal), `CLIENT.grid(144, 576)`, `e = 16`: proof 631,
 648 ms, trace 150 ms, public data 45 ms, verify 118 ms (the tail levels about 30 of it). Before
 Straus-Shamir on the `144 x 896` grid: 683,392 bytes, 4,503 ms, 1,358 ms;
 the prover round trip test (two live walks, prove, verify) 10.2 s.
+
+## 8. secp256r1 (P-256)
+
+The csp-benchmarks generator signs on P-256 by default, and barretenberg, provekit, ligetron and
+provekit-groth16 verify P-256, so a P-256 row is the same-curve comparison against those four; secp256k1
+is the same-curve comparison against risc0 and jolt.
+
+**Built** (`workloads/ecdsa_p256.mojo`, `workloads/fp_p256.mojo`, `tests/test_ecdsa_p256_host.mojo`): the
+field on four 64-bit limbs in Montgomery form (`-p^-1 = 1 mod 2^64`, so the Montgomery factor of each
+iteration is the low limb itself; the prime has no small fold), the curve with `a = p - 3`, and the walk: Straus-Shamir
+over the two bases `Q` and `G` with the full scalars `u2`, `u1` (no endomorphism), 43 windows of 6 bits,
+the same recoding, tables and blinding as secp256k1. A doubling costs one more add-lane op: the tangent
+numerator `3 x^2 + a` is two three-operand ops (`2 x^2`, then `+ x^2 + a` with `a` a public factor). The
+schedule is 252 doublings and 44 additions: 1,139 MUL and 2,116 add-lane ops, 1,139 chains, so the grid is
+`144 x 1152` (the next legal size above 1,139; the add lanes need 1,058), 479 public factors, 296 hints.
+The RFC 6979 A.2.5 signature verifies on the host, the live walk emits the fixed circuit, and its values
+satisfy every op over P-256's `p` and `n` (`circuit_values` with the moduli passed in). One precondition
+inherited from section 1: `e` must be below `n`. A FIPS 186 digest of 256 bits exceeds P-256's `n` with
+probability about `2^-32` (against `2^-128` on secp256k1); such an input is rejected, not reduced.
+
+**Not built: the product reduction.** The MUL lane of `mulmod.mojo` (polynomial-mulmod 7) folds a product
+by `2^256 = 2^32 + 977 mod p`: seven shifted copies of the high half added to the low half, twice, with
+3-bit carries, so the output is below `2^257`. Mod P-256, `2^256 = 2^224 - 2^192 - 2^96 + 1`: a pass takes only
+about 32 bits off (the `2^224` term keeps most of the length), the terms are signed, and a product of
+operands below `2^260` needs nine passes of four signed reads to get below `2^260`, against two of seven. `EcdsaP256` therefore has `circuit` and `public_inputs` but no `statement`,
+`trace` or `public_data`. Two designs for the reduction, both a builder change with its own soundness
+argument (the fold bounds of `docs/mulmod.md` are specific to the secp256k1 shifts):
+
+- Word folds. Split the high half into 64-bit words; `2^(256 + 64 j) mod p` is a sparse signed pattern
+  (four terms for `j = 0`, five for `j = 1`, more for the higher words). One pass adds every word's pattern
+  at once: a public selector column per (word, shift, sign) says which rows read which copy, the carries
+  are signed like the add lane's, and a public multiple of `p` (a `pb`-like block) is added so that the
+  pile is nonnegative. The patterns have 4, 5, 5, 7 and 8 terms (29 in all) and the signed sum is below
+  `2^290` in magnitude; a second pass on its top 34 bits (the four-term identity) and the offset bring
+  the output below about `2^260`, so `FOLDED` grows by two or three bits (products of such operands still
+  fit the chain's live slots; re-derive the pile and carry ranges). About 30 read terms per slot against
+  8 today, on the same two column sets.
+- Uniform passes. Nine passes of the four-term identity, each the shape of today's fold families with
+  signed carries: no selector per pattern, but nine `dst + copy + carry` column sets against two. Too wide.
+
+The first is the one to build. Both leave the add lanes as they are: the modulus blocks `pb{j}` already
+hold any 256-bit modulus, so `p` and `n` of P-256 go where secp256k1's do; on the host, `modulus` in
+`mulmod.mojo` (the moduli of the trace and the public data) is still secp256k1's and becomes a parameter
+of the statement.

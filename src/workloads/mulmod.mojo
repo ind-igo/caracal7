@@ -684,13 +684,15 @@ def _input(inputs: List[List[UInt8]], next: Int) raises -> Big:
     return Big.from_bytes(inputs[next])
 
 
-def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = List[Big]()) raises -> List[OpValues]:
+def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = List[Big](), mods: List[Big] = List[Big]()) raises -> List[OpValues]:
     """Every op's values, public operands taken from `inputs` in circuit order (x, y, z, then a PUB s), hint
-    operands from `hints` by index."""
+    operands from `hints` by index. `mods` [p, n] evaluates the circuit over other moduli on the host (a
+    product is then a b mod p, not the fold): a satisfiability check only, not trace input."""
     _ = _place(ops)
     var vals = List[OpValues]()
     var next = 0
-    var mods: List[Big] = [modulus(MOD_P), modulus(MOD_N)]
+    var host_mods = len(mods) == 2
+    var ms: List[Big] = [mods[0].copy(), mods[1].copy()] if host_mods else [modulus(MOD_P), modulus(MOD_N)]
     for j in range(len(ops)):
         var op = ops[j]
         var refs: List[Int] = [op.x, op.y, op.z]
@@ -716,7 +718,8 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
             else:
                 raise Error("bad operand reference on op " + String(j))
         if op.kind == MUL:
-            vals.append(OpValues(MUL, _bounded(v[0]), _bounded(v[1]), Big(), folded(v[0], v[1]), 0))
+            var prod = v[0].mulmod(v[1], ms[0]) if host_mods else folded(v[0], v[1])
+            vals.append(OpValues(MUL, _bounded(v[0]), _bounded(v[1]), Big(), prod^, 0))
             continue
         var known = Big()
         for role in range(3):
@@ -726,7 +729,7 @@ def circuit_values(inputs: List[List[UInt8]], ops: List[Op], hints: List[Big] = 
                 known = known + v[role]
             else:
                 known = known - v[role]
-        var m = mods[op.mod].copy()
+        var m = ms[op.mod].copy()
         var sval = Big()
         var q = 0
         if op.s == PUB:

@@ -15,7 +15,8 @@ from workload import Workload, Session
 from workloads.sha256 import Sha256
 from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
-from workloads.ecdsa import Ecdsa, Point
+from workloads.ecurve import Point
+from workloads.ecdsa_k1 import EcdsaK1
 from workloads.bigint import Big
 
 comptime OPEN = 0
@@ -134,10 +135,10 @@ def _route(op: Int, target: Int, size: Int, handle: Int, data: Bytes, buf: MutBy
             return _op[CLIENT.grid(64, 720), Poseidon](op, handle, w^, List[UInt8](), buf, n)
         raise Error("poseidon sizes: 1 to 16 elements")
     if target == 3:
-        var w = Optional[Ecdsa]()
+        var w = Optional[EcdsaK1]()
         if op == OPEN:
-            w = Optional[Ecdsa](Ecdsa(_word(data, 96), _word(data, 128), _word(data, 0), Point(_word(data, 32), _word(data, 64), False)))
-        return _op[CLIENT.grid(144, 576), Ecdsa](op, handle, w^, List[UInt8](), buf, n)
+            w = Optional[EcdsaK1](EcdsaK1(_word(data, 96), _word(data, 128), _word(data, 0), Point(_word(data, 32), _word(data, 64), False)))
+        return _op[CLIENT.grid(144, 576), EcdsaK1](op, handle, w^, List[UInt8](), buf, n)
     raise Error("targets: 0 sha256, 1 keccak, 2 poseidon, 3 ecdsa")
 
 

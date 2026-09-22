@@ -15,7 +15,7 @@ from workloads.bigint import Big
 from workloads.sha256 import Sha256
 from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
-from workloads.ecdsa import Curve, Ecdsa
+from workloads.ecdsa_k1 import secp256k1, EcdsaK1
 from workloads.rsa import RSA
 from workloads.sod import SOD
 from workloads.dsc import DSC
@@ -123,14 +123,14 @@ def main() raises:
     breakdown[CLIENT.grid(32, 2113)]("sha256 2048 B", ctx, Sha256(List[UInt8](length=2048, fill=7)))
     breakdown[CLIENT.grid(64, 384)]("keccak 2048 B", ctx, Keccak(List[UInt8](length=2048, fill=7)))
     breakdown[CLIENT.grid(64, 720)]("poseidon 16", ctx, Poseidon(List[Int](length=16, fill=3)))
-    var c0 = Curve()
+    var c0 = secp256k1()
     var d = Big.from_hex("1e99423a4ed27608a15a2616a2b0e9e52ced330ac530edcc32c8ffc6a526aedd")
     var k = Big.from_hex("a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90")
     var e = Big.from_hex("4b688df40bcedbe641ddb16ff0a1842d9c67ea1c3bf63f3e0471baa664531d1a")
     var q = c0.mul(c0.g, d)
     var rr = c0.mul(c0.g, k).x.mod(c0.n)
     var sg = k.inv_mod(c0.n).mulmod(e + rr.mulmod(d, c0.n), c0.n)
-    breakdown[CLIENT.grid(144, 576)]("ecdsa", ctx, Ecdsa(rr^, sg^, e^, q^))
+    breakdown[CLIENT.grid(144, 576)]("ecdsa_k1", ctx, EcdsaK1(rr^, sg^, e^, q^))
     breakdown[CLIENT.grid(144, 2016)]("rsa-2048", ctx, RSA(8, 17, Big.from_hex(bench_rsa.S_HEX), Big.from_hex(bench_rsa.N_HEX), Big.from_hex(bench_rsa.M_HEX)))
     var msgs: List[List[UInt8]] = [_message(bench_sod.DG1_HEX), _message(bench_sod.ECONTENT_HEX), _message(bench_sod.ATTRS_HEX)]
     var lengths: List[Int] = [len(msgs[0]), len(msgs[1]), len(msgs[2])]

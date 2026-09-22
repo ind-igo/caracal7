@@ -149,7 +149,7 @@ redundant: a header that differs from the compiled circuit but yields the same f
 canonical check into an addition (its `qz` mask off, its constant replaced by a value from the inputs). So
 the statement pins its circuit bytes (`Statement.pin`, `Shape.pinned`, hashed in the prefix), and the
 verifier refuses public inputs that do not start with them. A workload whose circuit is fixed in code
-(`Ecdsa`) passes `pin=False` and derives its public data from the circuit it rebuilds, with no header.
+(`EcdsaK1`) passes `pin=False` and derives its public data from the circuit it rebuilds, with no header.
 
 Host values are `Big` integers (`workloads/bigint.mojo`, sign and 32-bit limbs): `circuit_values` walks
 the ops, takes public operands from the inputs, computes each output or free operand and the quotient,

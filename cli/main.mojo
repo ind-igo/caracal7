@@ -18,7 +18,8 @@ from workload import Workload, prove_workload, verify_workload
 from workloads.sha256 import Sha256
 from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
-from workloads.ecdsa import Ecdsa, Point
+from workloads.ecurve import Point
+from workloads.ecdsa_k1 import EcdsaK1
 from workloads.bigint import Big
 
 
@@ -131,7 +132,7 @@ def main() raises:
         var sig = String(a[8])
         if sig.byte_length() != 128:
             raise Error("the signature is r||s, 128 hex digits")
-        var w = Ecdsa(Big.from_hex(String(sig[byte=0:64])), Big.from_hex(String(sig[byte=64:128])), Big.from_hex(String(a[5])),
+        var w = EcdsaK1(Big.from_hex(String(sig[byte=0:64])), Big.from_hex(String(sig[byte=64:128])), Big.from_hex(String(a[5])),
                       Point(Big.from_hex(String(a[6])), Big.from_hex(String(a[7])), False))
         _run[CLIENT.grid(144, 576)](cmd, w, path, List[UInt8]())
     else:
