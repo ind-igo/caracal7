@@ -2739,3 +2739,32 @@ fingerprints) and the clear vector, not the commitment. `docs/passport.md` item 
 documents. The regime question was measured and left as is: the unique regime at tail rate 1/8 would give
 110 conditional bits with no J1 to J3 for 28 percent more proof bytes on ECDSA and 9 percent on the
 passport; the MCA comparisons already put the Johnson configuration above 100 bits, so the profile stays.
+
+## Zero knowledge: the design written and reviewed, not built (2026-09-22)
+
+`docs/zk.md` records how zero knowledge would be added, after the user asked how zo0k (Chiesa,
+Fenzi, Weissenberg 2026) compares with the Ligerito-style masking sketched earlier. The commitment
+layer is zo0k's: `t` random symbols at the top of every column's packed message hide the level-1
+rows and make the roots hiding; fresh random rows at every tail level are the code switch, with the
+old randomness riding in the fold; the sumcheck rounds are masked by the random rows already in the
+vector through the consistency functionals; the clear vector is `y + epsilon g` for a committed
+random `g`. The openings at the points are outside zo0k's model and are the hard part. The design
+settled on: polynomial masks `Z_H1 rho(X2) + Z_H2 (sigma(X1) + X2 tau(X1))` with `E` coefficients in
+extension slots whose functional carries the vanishing factor; quotient masks that cancel in the
+identity by the decomposition's own freedom, `(A + Z_H2 phi, Q2 - Z_H1 phi)` and the `A`/`B`
+transfer by real monomials; the small-grid lines as committed columns, the wiring products merged
+into one line, `Q3` stacked along `X1` and read at `(z2^h2, z2)`; single-value openings of `E`
+columns as virtual columns (a proof-size win on its own, 200 KB on the passport); idle first and
+last chains.
+
+Seven versions were reviewed, six by Codex and one by Opus 5; every version had real errors, listed
+in the document's preamble. The three constraints that shaped the result: a committed column is
+opened at every point with the same functional as every other column, so a mask is a fixed random
+vector and nothing committed after `z` binds anything; the quotient masks must therefore cancel in
+the identity by themselves; and every extension slot's polynomial must vanish on the grid or be
+`F`-valued there, or a prover could commit `F2`-valued cells. Obligations Z1 to Z5 are numerical
+rank checks plus the simulator; Z5 (the idle chains, the lookup's sorted copy on them, what the
+residual reveals on the restriction lines and at the corner) is the one with per-workload content.
+Nothing is built; the build order starts with the single-value openings, which need no zero
+knowledge. Prover cost is estimated at +10 to +15 percent, proof size smaller than today on every
+statement, Keccak's small grid the one to measure first (its extension is 40 percent of `N`).
