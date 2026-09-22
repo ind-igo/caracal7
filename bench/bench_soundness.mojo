@@ -542,7 +542,7 @@ def johnson(tail_rate_inv: Int) -> Profile:
 
 def main() raises:
     self_check()
-    print("CONDITIONAL LEDGER -- NOT A SECURITY CERTIFICATION. docs/security-assurance.md lists coverage and open obligations.")
+    print("CONDITIONAL LEDGER -- NOT A SECURITY CERTIFICATION. docs/soundness.md lists coverage and open obligations.")
     print("interactive bits use undiscounted queries; work bits divide query error by 2^grind_bits under an unproved work model.")
     print("the e16/e20 projections change only the field order; the compiled e is E_BYTES (field.mojo); no Fiat-Shamir/hash/quantum bound included.")
     # ponytail: explicit cases cover CLI grids plus four primary fixtures; compare routes when profiles change.

@@ -28,11 +28,7 @@ Herder is the lookup, permutation and read-write memory argument. The lookup for
 
 **The protocol and the profile.** `docs/protocol.md` writes the implemented protocol as one numbered box, every message, challenge and check in transcript order, with what each check certifies and where the ledger charges it; `docs/profile.md` measures where the prover's time and the proof's bytes go, stage by stage and region by region, for every benchmark workload. `docs/zk.md` is the reviewed design for adding zero knowledge (zo0k for the commitment layer, polynomial masks and cancelling quotient masks for the openings), not built beyond its first step, the single-value openings of `E`-valued columns, a proof-size win on its own.
 
-**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` is the ledger: the commitment-layer bound, the relation numerators, the proof-to-code map, and the open obligations of the Johnson regime. `bench/bench_soundness.mojo` prints the budget per case: 87.28 to 99.52 conditional work bits on every csp-benchmarks case under the main ledger (85.36 to 86.31 without the grinding discount); the RSA and passport statements are lower, 81.01 to 83.88 work bits. The reported `security_bits: 112` is the query target, not a verified total.
-
-The [E20 linear MCA research comparison](docs/soundness.md#e20-linear-mca-research-comparison)
-gives 102.36 conditional bits for the same ECDSA protocol and parameters, subject
-to the stated proof conditions. The executable ledger still charges Hab25.
+**Soundness status.** Conditional analysis, not certification. `docs/soundness.md` says what is charged, what is assumed and where the numbers come from. `bench/bench_soundness.mojo` computes them from the compiled statements: on all 20 benchmark statements, 87.50 to 88.37 bits against a prover with ideal challenges, and 107.12 to 108.18 bits when the 20 grinding bits on every query seed are credited (ECDSA 88.21 and 108.03). These are the least conservative of the rows the ledger prints (its older Haböck row gives 81 to 99.5 work bits), and the grinding credit rests on the Fiat-Shamir model, which is not proved. The reported `security_bits: 112` is the query target, not a verified total.
 
 ## Statements
 
@@ -127,14 +123,10 @@ The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
 
 ### csp-benchmarks results
 
-The [soundness ledger](docs/soundness.md) and `bench/bench_soundness.mojo` track the conditional
-security budget. The extension is `E = F_(127^20)` and the query target 112 per
-level; the queries are sized at the Johnson radius (Ben-Sasson, Carmon, Haböck,
-Kopparty, Saraf, Theorem 1.5, p. 9), with the public Haböck MCA allowance
-(Theorem 2, p. 4) and 20 bits of grinding on the query seeds: 87.28 to 99.52
-conditional work bits on every case. The reported `security_bits: 112` is
-that query target, not a verified total; the note records the bounds and the outstanding proof and
-verifier obligations.
+`docs/soundness.md` and `bench/bench_soundness.mojo` track the conditional security budget:
+`E = F_(127^20)`, queries sized at the Johnson radius for a 112-bit target per level with 20 bits
+of grinding on the query seeds; 87.50 to 88.37 interactive bits and 107.12 to 108.18 work bits
+on every case. The reported `security_bits: 112` is that query target, not a verified total.
 
 Recorded for reference; the harness and its caveats are in `docs/csp.md`. Method: the csp-benchmarks
 Rust harness (`csp-rust/`, a thin crate over the Mojo prover's C ABI): Criterion times `prove` and `verify`

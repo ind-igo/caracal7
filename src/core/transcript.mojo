@@ -149,7 +149,7 @@ def k_grind[H: Hash](base: Base, state: Buf[1], bits: Int32, found: Buf[4]):
     fixed state has only 2^32 distinct trials; wraparound repeats them. The usual 2^bits
     fresh-trial expectation does not guarantee termination for this finite search space.
     A limit below the thread count left blocks partial at barriers, and an exhausted
-    search staged an invalid nonce. See docs/security-assurance.md for the open work model."""
+    search staged an invalid nonce. See docs/soundness.md for the open work model."""
     var t = Int(global_idx.x)
     var src = state.ptr(base, 0)
     var flag = stack_allocation[DType.uint32, address_space=AddressSpace.SHARED](row_major[1]())

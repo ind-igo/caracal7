@@ -151,7 +151,7 @@ and unsound (spec 9.1, "Alphabet").
 Read the box backwards. Steps 15 to 17 are Ligerito (Ligero with a recursive tail): they certify
 that the committed rows are close to codewords and that the claimed `alpha_{c,p}` are the
 evaluations of the committed columns at the points, with error the query terms and the field terms
-of `docs/soundness.md`, "Commitment-layer bound". Given that, steps 9 to 13 are identities between
+of `docs/soundness.md`. Given that, steps 9 to 13 are identities between
 the committed columns. Most are checked at a random coordinate of `z` with Schwartz-Zippel error;
 the closing products of steps 9 and 10 are equalities at the fixed corner `(e1, e2)`, and their
 error comes from the stage-1 and wiring challenges the fingerprints were built with. The ledger's
