@@ -25,7 +25,7 @@ column bytes are the coordinates). The factors per kind:
                         the line d_end must be the same degree < h2 polynomial the verifier evaluates
                         from the openings at (e1, z2) and (1, omega2 z2).
     TODO(memory): KIND_MEMORY (6.4) adds the (addr, ts, value) columns and its own factor pair here;
-                  it waits for a profile with memory (configuration.md 3).
+                  it waits for a profile with memory.
 The stage-1 challenges arrive as the element list of ir.mojo: beta, delta, gamma, then the derivation table's rows;
 the factor kernels read 1 + beta and (1 + beta) delta at 3 and 4 (Shape checks the table starts with standard_chals).
 

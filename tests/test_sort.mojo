@@ -91,7 +91,7 @@ def test_counting_sort() raises:
     assert_equal(count[EMPTY], 0)
     for i in range(N):      # f untouched
         assert_equal(Int(out[i]), idx[i])
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

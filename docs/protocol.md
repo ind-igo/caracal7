@@ -235,9 +235,9 @@ workload is measured in `docs/profile.md`: the openings at every point times eve
 `Z2` and `Q3` lines and the level-1 rows are the three large regions.
 
 **What the protocol is not.** It is not zero-knowledge: the opened rows and the openings leak
-witness bytes (`docs/passport.md`, step 7). It has no recursion or aggregation, so the proof is for
+witness bytes (`docs/passport.md`). It has no recursion or aggregation, so the proof is for
 an off-chain verifier. And every identity is one in characteristic 127, so integers are proved in
-bits and small limbs; a dense integer dot product has no cheap relation here (`docs/zkml.md`).
+bits and small limbs; a dense integer dot product has no cheap relation here.
 
 ## 6. Where the steps live
 

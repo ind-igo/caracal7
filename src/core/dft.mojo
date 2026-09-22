@@ -1,4 +1,4 @@
-"""The grid DFTs as three radix stages per axis, one elementwise kernel each (docs/decisions.md).
+"""The grid DFTs as three radix stages per axis, one elementwise kernel each.
 A dense DFT of length n costs n multiply-adds per output; on the chain axis (2 h2 = 1792 for ECDSA)
 that made the LDE quadratic in the chain count. With n = n1 n2 n3 (n1 the odd part, n2 <= n3 the
 two halves of the power of two) the cost is n1 + n2 + n3 per output, three passes over memory.

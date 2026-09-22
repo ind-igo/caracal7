@@ -46,7 +46,7 @@ def _run() raises -> Tuple[List[UInt8], List[UInt8], List[UInt8], List[UInt8], L
     ctx.synchronize()
 
     var out = (_to_list(th), _to_list(ch), _to_list(sh), _to_list(ph), _to_list(oh), d)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
     return out^
 
 
@@ -175,7 +175,7 @@ def _rs_domain_check(L0: Int, m: Int, K: Int, cols: Int) raises:
                     acc = f_add(acc, ext_mul[2](_f4(msg, (i * cols + c) * 4), pw))
                     pw = ext_mul[2](pw, pt)
                 assert_true(_f4(out, (s * cols + c) * 4) == acc, "coset code mismatch at s=" + String(s))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_rs_encode_on_cosets_and_small_odd_parts() raises:

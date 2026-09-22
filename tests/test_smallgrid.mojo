@@ -146,7 +146,7 @@ def test_q3_matches_host_division_and_interpolation() raises:
     assert_true(interp_cyclic(q3, 0, 2 * h2, d.g2, zr) == _horner(q, zr), "cyclic interpolation of Q3 differs from Horner")
     assert_true(interp_cyclic(z2, 0, h2, d.omega2, zr) == _horner(a, zr), "cyclic interpolation of Z2 differs from Horner")
     assert_true(_horner(q, zr) != E(0), "vacuous")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

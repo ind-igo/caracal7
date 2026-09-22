@@ -2,7 +2,7 @@
 
 A design, not a build. It says what the proof leaks, step by step of the box in `docs/protocol.md`,
 what hides each leak, what it costs, and what has to be proved. The commitment layer follows
-zo0k (Chiesa, Fenzi, Weissenberg 2026, `~/notes/raw/papers/zo0k.md`): zero-knowledge encodings
+zo0k (Chiesa, Fenzi, Weissenberg 2026): zero-knowledge encodings
 that pad a message with random symbols, a fold that commutes with the padding, masked sumcheck
 rounds and a masked clear vector. The openings at the points are outside zo0k's model, because
 our verifier must learn true evaluations for a quadratic identity; they get polynomial masks that
@@ -11,7 +11,7 @@ claim. Honest-verifier zero knowledge is the target; Fiat-Shamir gives the rest.
 lowers soundness: every change adds message coefficients to codes the ledger already bounds, or
 committed columns and claims of the kinds the ledger already charges.
 
-Six earlier drafts were reviewed (Codex; the sixth also by Opus), and this one once more (section 8); each review found real errors, and the design is the
+Six earlier drafts were reviewed, and this one once more (section 8); each review found real errors, and the design is the
 residue. The first draft put random rows on the grid (3.1 says why not). The second had masks
 with `F` coefficients, a per-column point list and clear-line reads that broke the small-grid
 identity. The third carried the mask products in an unbound column and cancelled the quotient
@@ -331,7 +331,7 @@ The idle chains are a frontend obligation, not a profile flag: `pad_trace` fills
 of a group, so a statement declares chains 1 and `e2` outside every group, and the lookup's
 sorted copy, which is the prover's, must place table rows there (its first and last cells are
 the table's smallest and largest rows whatever the witness, but a whole chain of them holds
-only if the table filler is large enough; the dummy rule of `docs/milestone-3-lookup.md`). What
+only if the table filler is large enough; the dummy rule of `docs/lookup.md`). What
 the verifier learns on those chains is then a function of filler, masks and public data; the
 per-workload check is Z5.
 

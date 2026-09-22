@@ -169,7 +169,7 @@ def test_tail_kernels() raises:
         assert_true(row == tail_encode_at(ynext, ROWS, pt), "expected symbol from the committed row mismatch")
         claim2 = f_add(claim2, ext_mul[E_LEVEL](list_e(batch2, 1 + q), tail_encode_at(ynext, ROWS, pt)))
     assert_true(_inner(ynext, w2, ROWS) == claim2, "tail query does not carry the batched claim")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

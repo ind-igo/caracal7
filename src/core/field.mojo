@@ -15,7 +15,7 @@ into 16 + 4). v^5 = G5 = i + j is irreducible over F4 because 5 divides |F4*| an
 ZETA v with ZETA = G5^((q - 1) / 5) a fifth root of unity, so a conjugate is a limb-wise scaling and the
 norm to F4 is the product of the five conjugates (ext_inv0).
 
-Tower constants (docs/decisions.md):
+Tower constants:
     k=1  F2 = F[i],   i^2 = -1
     k=2  F4 = F2[j],  j^2 = 2 + i
     k=3  F8 = F4[u],  u^2 = j        (E16 only)

@@ -128,7 +128,7 @@ def test_openings_and_fold() raises:
             assert_true(enc[tau] == want, "alphabet rule mismatch")
             nonzero = nonzero or want != E(0)
         assert_true(nonzero, "consistency check is vacuous")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

@@ -1,6 +1,6 @@
 """Domains and twiddle tables (docs/design.md section 5). Host side, run once at setup.
 
-Generators (recorded in docs/decisions.md):
+Generators:
     gamma2  primitive element of F2*, order 16128 = 2^8 * 63; omega_l = gamma2^(16128 / h_l)
     rho_l   = omega_l^(2^a_l), the order-m_l generator of mu_l (lies in F)
     g       generator of the order-L0 subgroup of F4*: gamma4^((127^4 - 1) / L0)
@@ -73,7 +73,7 @@ def f4_primitive() raises -> F4:
 def node_id(kappa: F4, s: Int, x: F2) -> F4:
     """The wiring id of slot s at the chain point x of H2: kappa^s x in F4 (accumulate.mojo "Wiring"). kappa
     generates F4*, so the cosets kappa^s H2 are distinct for s below F4_ORDER / h2: the slot count is not a
-    constraint of the grid (it was, with ids in F2*: six cosets at h2 = 2688, decisions.md)."""
+    constraint of the grid (it was, with ids in F2*: six cosets at h2 = 2688)."""
     return ext_mul[2](ext_pow[2](kappa, s), ext_embed[2](x))
 
 
@@ -435,7 +435,7 @@ def _residual_tables[p: Params](h: HostBuffer[DType.uint8], t: TableLayout, d: D
     # Q1(g1^(2t+1)) = (R - S1) / (-2), S1 the axis-1 interpolant of R on H1: one row over all of G1.
     # The interpolant weight sum_k g1^((2 (t - s) + 1) k) depends only on (t - s) mod h1: one row of h1 sums.
     # The stored table is the composition with the coset inverse DFT qinv1 (row k, col t), so the stage
-    # goes from R on G1 to the axis-1 coefficients of Q1 in one GEMM (decisions.md, 2026-09-17).
+    # goes from R on G1 to the axis-1 coefficients of Q1 in one GEMM.
     var q1row = List[F2](capacity=h1)
     for diff in range(h1):
         var acc = F2(0)

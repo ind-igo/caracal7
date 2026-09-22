@@ -141,4 +141,3 @@ The next useful proof is this grouped tensor and descent connection. Reuse
 the existing scalar, interleaved, affine, and tensor results. Then connect
 individual openings and the earlier relation barriers. Continue the concrete
 field/domain construction and sampler work where those consumers require it.
-The exact verification and review record is in [decisions.md](decisions.md).

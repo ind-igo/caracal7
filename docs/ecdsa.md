@@ -1,8 +1,7 @@
 # ECDSA on the mulmod circuits: design
 
-One secp256k1 signature verification as a fixed circuit of the chains in `workloads/mulmod.mojo`. Written
-2026-09-09 after three Codex reviews; the first draft had a signature-dependent circuit, a witness point
-`R`, slope-only additions and a fixed blinding point, and all four are gone. Numbers are counts, not measurements.
+One secp256k1 signature verification as a fixed circuit of the chains in `workloads/mulmod.mojo`.
+Numbers are counts, not measurements.
 
 ## 1. The statement
 
@@ -27,7 +26,7 @@ operations plus one fixed multiple of the blinding point (section 3). The finger
 verifier anyway: about 200 of them at 256 `E` products each, against a few thousand field products for the
 curve work.
 
-- Straus-Shamir over four GLV halves (2026-09-09, replacing a `Q` side of two addends per 4-bit window and
+- Straus-Shamir over four GLV halves (replacing a `Q` side of two addends per 4-bit window and
   a fixed-base `G` side of 32 8-bit additions): `u2 = k1 + k2 lambda`, `u1 = k3 + k4 lambda mod n`, signed
   magnitudes below `2^128` (libsecp256k1's split), bases `Q`, `phi(Q) = (beta x_Q, y_Q)`, `G`, `phi(G)`, the
   sign of a half absorbed into its base (`-T = (x, p - y)`). 22 windows of 6 bits; window `w` adds the one
@@ -135,7 +134,7 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 
 - A MUL op certifying `a b + c d = s mod p` (the second product with `d = p - 1` turns an EQ into a
   product with an output: a doubling is 3 MUL and 3 add-lane ops, an addition 3 MUL and 6) would make
-  446 MUL, `h2 = 448`, 516 add-lane ops. Rejected on 2026-09-09: the RS domain does not shrink with it.
+  446 MUL, `h2 = 448`, 516 add-lane ops. Rejected: the RS domain does not shrink with it.
   `domain_for` needs `L >= 32 rows`, and `N / 4 = 16,128` rows still take the 4 cosets of 161,280 (2
   cosets would be rate 1/20; the domain halves only below 10,080 rows, `h2 <= 280`). Against a 22%
   smaller grid the second operand set costs about 100 W columns (pieces, `b'`, a second coefficient
@@ -146,7 +145,7 @@ Proof size and time will not follow the old per-mulmod estimate: two widened add
 - The hash-to-curve for `B`: which hash, and whether the encoding of `(Q, r, s, e)` it takes is the
   public-input byte string as is.
 
-## 7. Implemented (2026-09-09)
+## 7. Implemented
 
 `workloads/ecdsa.mojo`: the host arithmetic (`Curve`, affine points on `Big`, Fermat inversions, the fold
 reduction), the GLV split by the exact lattice basis, `recode`/`skew`, the blinding point by

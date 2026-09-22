@@ -61,7 +61,7 @@ copies, `uc`, `ha hac0..4 hb hbc0..4` the two matrix piles, `y yc mo moc mf mfc 
 the modulus bit, then per product `p2 p4 p5`: `c0..c4` coefficient bits, `y0..y4` carries, `r o oc f fc`;
 `v` the S-box selection, `w` the chunk word.
 
-## Measured (M1 Pro, 2026-09-11)
+## Measured (M1 Pro)
 
 | inputs | grid | proof | warm prove | verify |
 |---|---|---|---|---|

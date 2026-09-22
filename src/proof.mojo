@@ -97,7 +97,7 @@ struct Shape(Writable):
     var chals: List[UInt8]      # challenge derivation table (CHAL bytes per row), part of the artifact
     var entries: Int            # family table entries (residual.mojo)
     var accs: List[UInt8]       # accumulator descriptors (accumulate.mojo), part of the artifact
-    var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (milestone-3-lookup.md)
+    var tables: List[List[UInt8]]   # lookup tables, (K, w) bytes each, part of the artifact (docs/lookup.md)
     var columns_p: Int          # public columns: on the LDE buffer after W and Z, never committed (docs/public-columns.md)
     var publics: List[UInt8]    # m per public column (PUB bytes each), part of the artifact
     var restrictions: List[UInt8]   # (column, coordinate, coefficient count) per restriction (RES bytes each), part of the artifact

@@ -1,4 +1,4 @@
-"""SHA-256 as a row group on the 144-row chain (docs/decisions.md "SHA-256 group"): four rounds per chain,
+"""SHA-256 as a row group on the 144-row chain (docs/sha256.md, "The row-group form"): four rounds per chain,
 round t = 4 c + q of the group's chain c in slot q, whose 32 rows BASE + 32 q + z hold bit 31 - z of every
 word (rows 0..14 and 143 idle). The families of `sha256.mojo` (one round per 32-row chain) carry over with
 the same columns; what changes is the geometry:

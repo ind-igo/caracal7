@@ -39,7 +39,7 @@ def domain_for(rows: Int, rate_inv: Int = RATE_INV, fewest_cosets: Bool = False)
     with an odd part (the encoder scatters from an odd-radix stage) at rate <= 1/rate_inv; else the largest
     domain if it is at rate <= 1/RATE_MIN_INV; else (0, 0), the codeword split. With `fewest_cosets` the
     smallest m that has a domain wins before the size does (level 1: one coset of 161,280 beat four of
-    23,040 on prove time, proof size and verify time at the ECDSA grid, decisions.md 2026-09-10)."""
+    23,040 on prove time, proof size and verify time at the ECDSA grid)."""
     var best = 0
     var cosets = 0
     for m in [1, 2, 4]:
@@ -107,7 +107,7 @@ struct Profile(TrivialRegisterPassable, Writable):
 # The client-side target: 112-bit queries per level (four levels sum to about 2^-110, next to the field terms
 # at e = 20, docs/soundness.md; 103 until 2026-09-13), three-digit tail folds, the level-1 domain at rate <= 1/4
 # (the query formula is sound at any rate below the 1/4 distance bound; one coset does a quarter of the encode
-# and Merkle work for a 3.6% larger proof at the ECDSA grid, decisions.md 2026-09-10), fold while digits remain
+# and Merkle work for a 3.6% larger proof at the ECDSA grid), fold while digits remain
 # (the tensor verifier's clear check costs units x clear length), 20 bits of grinding on every query seed (the
 # prover spends 2^20 hashes per level, milliseconds on the GPU, and samples 92-bit queries; docs/soundness.md).
 comptime CLIENT = Profile(e=E_BYTES, leaf_bytes=1024, tail_digits=3, tail_clear_max=0, lambda_bits=112, grind_bits=20,

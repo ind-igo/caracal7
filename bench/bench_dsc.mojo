@@ -1,6 +1,6 @@
 """One DSC certificate check (workloads/dsc.mojo): SHA-256 of the certificate body (650 bytes, the DSC key at
 byte 223), the commitment to that key (288 bytes) and the RSA-2048 verify (e = 65537) of the CSCA's signature,
-s witness, 2146 chains on the 144 x 2688 grid. Fixture from OpenSSL (a CSCA and a DSC certificate with the
+s witness, 2003 chains on the 144 x 2688 grid. Fixture from OpenSSL (a CSCA and a DSC certificate with the
 ICAO extensions). Warm prove, proof size, verify. With bench_sod this is one passport."""
 
 from std.time import perf_counter_ns

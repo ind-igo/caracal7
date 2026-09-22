@@ -1,17 +1,17 @@
-# Milestone 3: Herder lookup (spec 6.3)
+# The Herder lookup (spec 6.3)
 
-Plan for the lookup argument. Memory (spec 6.4) is deferred; see the last section.
+The lookup argument as built: a lookup instance is an accumulator descriptor of kind `KIND_LOOKUP`, the prover sorts the records into table order before the witness is committed, and one grand product over adjacent pairs of the sorted copy proves membership. Memory (spec 6.4) is deferred; see the last section. None of the application workloads uses a lookup (the synthetic instance of `bench_prover` does): measured on SHA-256, a lookup channel costs more than the bit columns it replaces, so the hash workloads use bit certificates.
 
 ## Decisions
 
-- **Lookup only.** The client profile has no memory (configuration.md §3). Every place memory will slot in carries a `TODO(memory)` comment that says what goes there and why it waits.
+- **Lookup only.** The client profile has no memory. Every place memory will slot in carries a `TODO(memory)` comment that says what goes there and why it waits.
 - **Advice index.** The frontend supplies one u32 per record row per lookup instance: the position in the table of the tuple that row holds. The frontend knows it for free at trace generation (a range check of `v` has index `v`; a Keccak chi lookup has the index built from the input bits). Recovering it later means matching tuples against the table on device, a hash map for a fact that was already in hand. The list is prover-only: never committed, never hashed, never sent. Soundness does not depend on it. A wrong index gives a sorted copy in the wrong order or with a record not in the table, and the product identity against `C_T` fails. It can only make an honest proof fail, never make a false proof pass. Cost: four bytes per row per instance on the upload, nothing in the proof.
 - **Table on `Shape`.** The table bytes are part of the artifact and go into the transcript prefix hash, so prover and verifier compute the same `C_T`.
 
 ## Data shapes
 
-- **Descriptor.** The 40-byte ACC descriptor has two free bytes. Byte 38 becomes `kind` (0 accumulator, 1 lookup; `TODO(memory)`: 2 memory). Byte 39 is the table id. For a lookup the `num` columns are the record columns `f` and the `den` columns are the sorted copy `s`, both of width `w`. Nothing else in the descriptor changes.
-- **Shape.** Gets `tables: List[List[UInt8]]`, each a flat `(K, w, e)` byte block. `prefix_bytes` hashes each table after the families.
+- **Descriptor.** Byte 38 of the 42-byte ACC descriptor is `kind` (0 permutation, 1 lookup, 2 Horner; `TODO(memory)`: 3 memory). Byte 39 is the table id. For a lookup the `num` columns are the record columns `f` and the `den` columns are the sorted copy `s`, both of width `w`. Nothing else in the descriptor changes.
+- **Shape.** Gets `tables: List[List[UInt8]]`, each a flat `(K, w)` block of F bytes. `prefix_bytes` hashes each table after the families.
 - **Challenge codes.** The stage-1 element list grows from 3 to `CHALS = 5`: beta, delta, gamma sampled, then `(1+beta)` and `(1+beta)·delta` derived on both sides (a one-thread kernel in the prover, `derived_chals` in the verifier). Entry codes 4 and 5 index them; `kappa_of` and `k_fold_alpha` do not change.
 
 ## Kernels
@@ -36,14 +36,9 @@ Plan for the lookup argument. Memory (spec 6.4) is deferred; see the last sectio
 
 The sort adds `4N` bytes per lookup for the index, `4(K+1)` for bins, `4K` for cursors, three lines in the planner. The per-stage `bytes_for(p, shape)` stays deferred; nothing forced it.
 
-## Commits
+## In the prover
 
-1. This doc, decisions entry, sort kernels and test (1ee3b13). Codex review: the last-row D must wrap, not be 1 (found in parallel while writing the factor kernel); a table without two distinct entries admits a false lookup; an out-of-range advice index wrote outside the bins region. All three fixed in the next commit.
-2. Descriptor kind, derived challenges, lookup builder, factor branch, Shape tables, prefix hash, verifier constant and factor branch, synthetic instance, tests.
-
-## Status
-
-Shipped. The prover (`prove` step 2) sorts every lookup descriptor's records into its s columns before W is committed; `load_advice` uploads the index lists. Tests: `test_sort`, the lookup case in `test_accumulate` (device factors against the host, boundary equals `C_T`), and `test_prove_and_verify_with_lookup` (accept; a record outside the table rejected; swapped advice rejected; a table of the wrong width rejected at `Shape`).
+The prover (`prove` step 2) sorts every lookup descriptor's records into its s columns before W is committed; `load_advice` uploads the index lists. Tests: `test_sort`, the lookup case in `test_accumulate` (device factors against the host, boundary equals `C_T`), and `test_prove_and_verify_with_lookup` (accept; a record outside the table rejected; swapped advice rejected; a table of the wrong width rejected at `Shape`).
 
 ## Not checked by the prover
 
@@ -51,7 +46,7 @@ The dummy rule (every table tuple appears at least once among filler rows) is tr
 
 ## Memory, deferred
 
-Spec 6.4 needs: a stable multi-pass radix sort on `(addr, ts)` keys in place of the counting sort; descriptor kind 2 with the address, timestamp, and value columns; the adjacency families (same address: value carried, timestamp increasing; new address: initial value) as residual entries; the timestamp counter; boundary rule 6 in the verifier; an arena region for the radix passes. Each slot in the code is marked `TODO(memory)`.
+Spec 6.4 needs: a stable multi-pass radix sort on `(addr, ts)` keys in place of the counting sort; descriptor kind 3 with the address, timestamp, and value columns; the adjacency families (same address: value carried, timestamp increasing; new address: initial value) as residual entries; the timestamp counter; boundary rule 6 in the verifier; an arena region for the radix passes. Each slot in the code is marked `TODO(memory)`.
 
 ## Merged chains, deferred
 
@@ -71,7 +66,7 @@ under the coordinate basis, 2w - 1 under a gamma-power basis. Three lookups need
 symmetric functions (about k^2 / 2 helpers), so two or three per chain is the useful range. The
 lookups need not share a table; the boundary constant is the product of the table constants.
 
-Per chain removed: 16 committed E coordinate columns, their encode, LDE and openings, one scan
+Per chain removed: 20 committed E coordinate columns, their encode, LDE and openings, one scan
 and one Z2 term. Added: a few F helper columns computed pointwise (one thread per row, the
 best-shaped work in the prover) and a few more challenge-weighted terms in the residual. The
 residual MAC count does not fall; the commit, LDE and opening costs do. Soundness is the same

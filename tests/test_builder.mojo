@@ -254,7 +254,7 @@ def test_padded_trace_proves_and_verifies() raises:
     except e:
         stopped = String(e)
     assert_equal(stopped, "lookup table row 1 occurs in no record (pad with the table)")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

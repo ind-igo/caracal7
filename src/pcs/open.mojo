@@ -236,7 +236,7 @@ def ftab_at[p: Params](w_tab: Int, points: Int) -> Int:
     return w_tab + points * table_len[p]() * p.e
 
 
-# ---- the factored openings (docs/decisions.md 2026-09-22) ----
+# ---- the factored openings ----
 #
 # w_z[slot] for a pair (x1, x2, r) is Za(x1, r1) Zb(x2, r2) on c_x(r) plus Pa(x1, r1) Pb(x2, r2) on its conjugate,
 # and Zb, Pb depend on the point only through z2. The points fall into Q classes by their dj2 (`point_classes`),

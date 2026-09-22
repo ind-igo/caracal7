@@ -177,7 +177,7 @@ def test_prover_round_trip() raises:
     var proof = prove_workload[p, Blake3, Mulmod](ctx, w)
     print("mulmod proof bytes:", len(proof))
     assert_true(verify_workload[p, Blake3, Mulmod](proof^, w, w.public_inputs[p]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def _rejected(ctx: DeviceContext, trace: List[UInt8], claim: List[UInt8], zeros: Bool = True, circuit: List[Op] = List[Op]()) raises -> String:
@@ -233,7 +233,7 @@ def test_wrong_product_and_idle_carry_are_rejected() raises:
     var tampered = mulmod_trace[p](c.layout, a, b)
     tampered[c.layout.col("h1") * p.N() + 100] ^= 1
     assert_true(_rejected(ctx, tampered, claim) != "accepted")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_three_wired_chains() raises:
@@ -258,7 +258,7 @@ def test_three_wired_chains() raises:
     var vals = circuit_values(inputs, circuit)
     vals[1].x = vals[1].x + Big(32)
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def _modp_mul(a: List[Int], b: List[Int]) -> List[Int]:
@@ -330,7 +330,7 @@ def test_add_sub_canon_circuit() raises:
     var swapped_proof = prover.prove(ctx, swapped)
     with assert_raises(contains="pinned"):
         _ = verify[p, Blake3](swapped_proof^, shape, swapped, ca.families, swapped_data)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_signed_ops_eq_guard_and_mod_n() raises:
@@ -374,7 +374,7 @@ def test_signed_ops_eq_guard_and_mod_n() raises:
     vals[3].y = vals[3].y + Big(1)
     vals[3].x = vals[3].x + Big(1)
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_hint_operands() raises:
@@ -401,7 +401,7 @@ def test_hint_operands() raises:
     vals[2] = OpValues(MUL, lp.copy(), lp.copy(), Big(), Big.from_bits(folded_bits(lp.bits(WIDTH), lp.bits(WIDTH))), 0)
     var c = mulmod_statement(True, circuit).compile[p]()
     assert_true(_rejected(ctx, circuit_trace[p](c.layout, vals, circuit), claim, True, circuit) != "accepted")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

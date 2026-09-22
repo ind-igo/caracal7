@@ -3,8 +3,8 @@
 Status: **own proof, needs review**. This note checks vault spec 12.3 and the
 verifier's challenge order. It does not prove the field implementation,
 basis maps, workload constraints, or Fiat-Shamir compilation. P1-P5 remain
-open in [soundness.md](soundness.md). Review history is in
-[decisions.md](decisions.md#j3-packed-and-recursive-list-review-2026-09-20).
+open in [soundness.md](soundness.md).
+
 
 The ledger is unchanged. With its existing grinding model, the DKT26
 comparison still gives 106.41 conditional bits for ECDSA and 105.67-106.41

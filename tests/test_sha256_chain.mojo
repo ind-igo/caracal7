@@ -59,7 +59,7 @@ def test_prover_round_trip() raises:
     var w = Sha256Chain(message())
     var proof = prove_workload[p, Blake3, Sha256Chain](ctx, w)
     assert_true(verify_workload[p, Blake3, Sha256Chain](proof^, w, w.public_inputs[p]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_prover_round_trip_on_three_lanes() raises:
@@ -69,7 +69,7 @@ def test_prover_round_trip_on_three_lanes() raises:
     var w = Sha256Chain(message())
     var proof = prove_workload[q, Blake3, Sha256Chain](ctx, w)
     assert_true(verify_workload[q, Blake3, Sha256Chain](proof^, w, w.public_inputs[q]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_prover_round_trip_with_split_tail_levels() raises:
@@ -80,7 +80,7 @@ def test_prover_round_trip_with_split_tail_levels() raises:
     var w = Sha256Chain(message())
     var proof = prove_workload[q, Blake3, Sha256Chain](ctx, w)
     assert_true(verify_workload[q, Blake3, Sha256Chain](proof^, w, w.public_inputs[q]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_wrong_digest_is_rejected() raises:
@@ -104,7 +104,7 @@ def test_wrong_digest_is_rejected() raises:
         assert_equal(String(e), "restriction fails")
         ok = False
     assert_false(ok)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def main() raises:

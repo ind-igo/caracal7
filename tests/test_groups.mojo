@@ -188,7 +188,7 @@ def test_two_groups_pool_columns_and_prove() raises:
         pad_trace[p](L, free, "B", (CHAINS_B + 1) * h1)
     except e:
         assert_equal(String(e), "live_rows exceed the group's chains")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_group_checks() raises:

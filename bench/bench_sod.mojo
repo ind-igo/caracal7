@@ -1,6 +1,6 @@
 """One passport SOD (workloads/sod.mojo): SHA-256 of DG1 (93 bytes), of the LDS security object (100 bytes)
 and of the signed attributes (73 bytes), the commitment to the DSC key (288 bytes) and the RSA-2048 verify
-(e = 65537) with s and n witness, the nullifier group and the disclosed MRZ window, 2101 chains on the
+(e = 65537) with s and n witness, the nullifier group and the disclosed MRZ window, 1958 chains on the
 144 x 2688 grid. Fixture from OpenSSL (the DSC key of
 bench_dsc; dgst -sha256 -sign on the signed attributes). Warm prove, proof size, verify."""
 

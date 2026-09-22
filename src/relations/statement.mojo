@@ -1,4 +1,4 @@
-"""The statement builder (docs/statement-builder.md): columns, reads, families, accumulators, public
+"""The statement builder: columns, reads, families, accumulators, public
 columns, and restrictions by name. `compile` resolves the names, runs the statement-layer checks, emits
 the family bytes through `Families`, derives the opening list, and returns the Shape with a `Layout`
 (name to column, group to columns, the descriptors and tables the trace helpers read). Names, groups, and

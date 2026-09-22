@@ -235,7 +235,7 @@ struct Families:
     # TODO(memory): `memory(family, z_col, addr, ts, value)` for spec 6.4: the sort key is (addr, ts), the
     # adjacency families (same address: value carried and timestamp increasing; new address: initial value)
     # are residual entries over the sorted columns, and the descriptor is KIND_MEMORY. Waits for a
-    # profile with memory (configuration.md 3).
+    # profile with memory.
 
     def _descriptor(mut self, family: Int, z_col: Int, num: List[Int], den: List[Int], kind: Int, table: Int):
         var a = List[UInt8](length=ACC, fill=0)

@@ -1,119 +1,80 @@
-# Passport demo: state and next steps
+# Passport statements
 
-Plan and background: notes vault `wiki/projects/caracal7/passport-demo.md`. This file is the pick-up point.
+A passport check is the SOD (the document security object signed by the document signer certificate,
+the DSC) and the DSC itself signed by the country's CSCA. Both are SHA-256 hashes and RSA-2048
+verifies, so the statements are row groups of `sha256g` (`docs/sha256.md`) and the RSA verify
+(`docs/rsa.md`) on the 144-row chain. The prover is not zero-knowledge: witness means "not given to the
+verifier", and the proof's opened rows still leak witness bytes until the masking layer of `docs/zk.md`
+exists.
 
-## State (2026-09-19)
+## The workloads
 
-- `workloads/rsa.mojo`: RSA-2048 verify (e = 65537, 17 modmuls) in one proof, squaring symmetry done
-  (decisions.md "RSA squaring symmetry") and the rectangles without tails (decisions.md "RSA rectangles
-  without tails"): 1745 chains. The signature s and the modulus n can be witness
-  (`s_wired`: the occurrences of each limb of s are wired to each other; `n_wired`: the limbs of n come from
-  wires the caller adds, `n_chains`).
-- `workloads/sod.mojo`: SHA(DG1) -> SHA(LDS security object) -> SHA(signed attributes) -> RSA verify with s and
-  n witness, plus the commitment SHA(n || r) to the DSC key (r 32 random bytes), the nullifier
-  SHA(SHA(LDS security object) || scope) and a disclosed 32-byte window of DG1, one proof, 1958 chains
-  (decisions.md "DSC certificate check", "Predicates and nullifier"; 2101 before the RSA rectangles lost
-  their tails, which moved the SOD from the 2688 grid to 2016). The verifier gets the lengths,
-  the offsets, the PKCS#1 padding limbs, the commitment digest, the window, the scope and the nullifier.
-- `workloads/mrz.mojo`: the verifier's predicates on the window: nationality, birth date, sex and expiry of a
-  TD3 MRZ, age and validity on a date. The default window starts at the nationality (DG1 byte 59): the
-  document number stays hidden, the optional data after the expiry is disclosed. The predicates run on the
-  verifier's side on disclosed bytes: a hidden-date comparison inside the proof waits for the masking layer,
-  since the opened rows leak the witness anyway.
-- `workloads/dsc.mojo`: the DSC certificate check: SHA(certificate body) -> RSA verify against the public CSCA
-  key with s witness; the body's 32-byte windows at the key's offset are wired to the commitment's windows, so
-  the DSC key inside the body is the committed one; the commitment digest is public. 2003 chains with the
-  bench fixture's 650-byte body on 144 x 2688 (a real body is longer: 2016 does not hold it).
+- `workloads/sod.mojo`: SHA(DG1) -> SHA(LDS security object) -> SHA(signed attributes) -> RSA verify
+  with the signature `s` and the modulus `n` witness, plus the commitment SHA(n || r) to the DSC key
+  (`r` 32 random bytes), the nullifier SHA(SHA(LDS security object) || scope) and a disclosed 32-byte
+  window of DG1, one proof of 1958 chains on 144 x 2688 (the bench grid; it fits 144 x 2016 too, where it
+  proves about 25 percent faster at the same proof size). The verifier gets the lengths, the offsets, the PKCS#1 padding
+  limbs, the commitment digest, the window, the scope and the nullifier.
+- `workloads/mrz.mojo`: the verifier's predicates on the window: nationality, birth date, sex and expiry
+  of a TD3 MRZ, age and validity on a date. The default window starts at the nationality (DG1 byte 59):
+  the document number stays hidden, the optional data after the expiry is disclosed. The predicates run
+  on the verifier's side on disclosed bytes; a hidden-date comparison inside the proof waits for the
+  masking layer, since the opened rows leak the witness anyway.
+- `workloads/dsc.mojo`: SHA(certificate body) -> RSA verify against the public CSCA key with `s`
+  witness; the body's 32-byte windows at the key's offset are wired to the commitment's windows, so the
+  DSC key inside the body is the committed one, and the commitment digest is public. 2003 chains with the
+  bench fixture's 650-byte body on 144 x 2688.
 - `workloads/passport.mojo`: the whole passport in one proof on 144 x 4032: the SOD's three groups, the
   nullifier group, the certificate body group and two RSA verifies on one column set (`rsa_columns` once,
-  `rsa_instance` per chain base); the body's 32-byte windows are wired to the SOD verify's q n products,
-  so the DSC key is a wire and there is no commitment group and no r. 3799 chains with the bench
-  fixture's 650-byte body (decisions.md "Passport in one proof").
+  `rsa_instance` per chain base). The body's 32-byte windows are wired to the SOD verify's `q n` products,
+  so the DSC key is a wire and there is no commitment group and no `r`. 3799 chains with the bench
+  fixture's body, about 3900 at real sizes.
 - `workloads/csca.mojo`: the verifier's check of the public inputs, beside `verify` on each proof.
   `passport_check(sod_inputs, dsc_inputs, registry)`: the DSC proof's CSCA key and exponent are in the
-  registry (a text file of key ids, the SHA-256 of the big-endian modulus, and exponents), the padding limbs
-  of both m are the PKCS#1 v1.5 SHA-256 encoding (the prover supplies them; unpinned, s^e = m holds for any
-  upper limbs), and both proofs carry one commitment digest. No chains: a wrong value breaks the trust in the
-  proof, not the proof.
-- A passport is one proof (`passport_check_one` on its public inputs), or the two proofs with one
-  commitment digest in both public inputs (`passport_check`). The DSC key, both signatures, the body and r
-  never reach the verifier. The prover is not zero-knowledge (the spec leaves it out of scope):
-  witness means "not given", the proof's opened rows still leak witness bytes until a masking layer exists.
-- Public columns in term form (docs/public-columns.md): the verifier's public data is under 1 MB per proof.
-- Numbers (M1 Pro, warm, `bench/bench_sod.mojo`, `bench/bench_dsc.mojo`, 2026-09-21): SOD 1.75 s prove,
-  1.12 MB, 0.25 s verify; DSC 1.39 s prove, 1.06 MB, 0.41 s verify. A passport: 3.1 s prove, 2.2 MB, 0.66 s
-  verify. Grids of 144 x 2688. The SOD fits 2016 too: 1.28 s prove, the same proof size, 0.23 s verify
-  (decisions.md "Units grouped across the odd index"). One proof (`bench/bench_passport.mojo`, 144 x 4032):
-  2.5 s prove, 1.36 MB, 0.65 s verify.
+  registry (a text file of key ids, the SHA-256 of the big-endian modulus, and exponents), the padding
+  limbs of both `m` are the PKCS#1 v1.5 SHA-256 encoding (the prover supplies them; unpinned, `s^e = m`
+  holds for any upper limbs), and both proofs carry one commitment digest. No chains: a wrong value
+  breaks the trust in the proof, not the proof.
+
+A passport is one proof (`passport_check_one` on its public inputs), or the two proofs with one
+commitment digest in both public inputs (`passport_check`). The DSC key, both signatures, the body and
+`r` never reach the verifier. The public columns are in term form (`docs/public-columns.md`), so the
+verifier's public data is under 1 MB per proof. The numbers are in `README.md`.
 
 ## One proof or two
 
-One proof holds the SOD, the body hash and the second RSA verify: 3799 chains with the bench fixture's body,
-about 3900 at real sizes, on 144 x 4032, the largest grid with accumulators. Against the two proofs on 2688
-it proves 20 percent faster, is 38 percent smaller and verifies in the same time (the boundaries and the
-clear vector grow with the grid, the second proof's fixed costs are gone); it drops the two commitment groups and the random bytes, since the
-DSC key is a wire from the body to the SOD verify. The two-proof form stays for a prover limited to 2688
-chains; its link is the commitment, which the DSC key needs there: with n public, the DSC check would be a
-proof about public data that the verifier checks itself in microseconds.
+One proof holds the SOD, the body hash and the second RSA verify on 144 x 4032, the largest grid with
+accumulators (the small grid needs a coset of `G2`, of order `2 h2`, inside `F2*`). Against the two
+proofs on 2688 it proves 20 percent faster, is 38 percent smaller and verifies in the same time (the
+boundaries and the clear vector grow with the grid, the second proof's fixed costs are gone); it drops the
+two commitment groups and the random bytes, since the DSC key is a wire from the body to the SOD verify.
+Two things made it fit: wiring ids in `F4*` instead of `F2*`, which frees the slot count, and the RSA
+rectangles without their tail chains (`docs/rsa.md`), which took the RSA lane from 1888 to 1745 chains
+per verify. A union of both statements as extra columns on one 2688 grid gains nothing: the opened
+columns double with the columns.
 
-## Next, in order
+The two-proof form stays for a prover limited to 2688 chains; its link is the commitment, which the DSC
+key needs there: with `n` public, the DSC check would be a proof about public data that the verifier
+checks itself in microseconds.
 
-1. Done: public columns in term form. Verify time halved; the verifier's public data is under 1 MB.
-2. Done: DSC certificate check as a second proof, the DSC key hidden under a commitment.
-3. Done: predicates and nullifier. The DG1 window is a public factor of its fingerprint; the nullifier is
-   one SHA-256 group (33 chains) whose first window is the LDS digest and whose second is the public scope.
-4. Done: CSCA registry as a public list on the verifier's side, with the padding and commitment checks of the
-   public inputs in `passport_check`. A Merkle path inside the proof would hide the signing CSCA, but the
-   disclosed window names the country; it waits for the masking layer.
-5. Done: zkPassport baseline on the same M1 (`bench/zkpassport/README.md`): six Honk subproofs of 0.7 to
-   1.2 s each (5.5 s in sum) and the recursive outer proof at 40 s; 14.7 KB per proof, 0.06 to 0.09 s to
-   verify, zero-knowledge. caracal7 in the same hour on the same loaded machine: 3.6 s for both proofs
-   (3.0 s idle), 2.15 MB, 1.5 s verify, not zero-knowledge.
-6. Done: one proof instead of two (`workloads/passport.mojo`, deferred item 1 below).
-7. Next: the masking layer (zero knowledge; the baseline's one clear advantage besides proof size).
+## Baseline
 
-## Deferred optimizations
+zkPassport's Noir circuits for the same passport, proved with Barretenberg on the same M1
+(`bench/zkpassport/README.md`): six Honk subproofs of 0.7 to 1.2 s each and a recursive outer proof of
+40 s; 14.7 KB per proof, 0.06 to 0.09 s to verify, zero-knowledge. Zero knowledge is the baseline's one
+clear advantage besides proof size; it is the next step here (`docs/zk.md`).
+
+## Open
 
 None of these cut security. In order of payoff:
 
-1. Done: one proof instead of two (decisions.md "Passport in one proof"). About 3900 chains at real sizes (the bench fixture's 650-byte certificate gives
-   about 3800), inside 4032, the largest grid with accumulators (the small grid needs a coset of G2, of
-   order 2 h2, inside F2*). Two prover limits met here before, neither passport-specific. The wiring ids
-   lived in F2*, where 4032 allowed three slots plus the factors and the RSA lane uses four; since
-   decisions.md "Wiring ids in F4" they are elements of F4* and the slot count is free. The RSA lane was
-   1888 chains, 89 percent of the passport, 4200 in one proof; the rectangles' tail chains were a
-   uniformity device, and without them (decisions.md "RSA rectangles without tails") the lane is 1745. The
-   axis-2 plans run the odd part 63 as one radix stage and the quotient's coset
-   inverses as dense GEMMs at K = 2 h2: the 8064 grid costs 6x per row (decisions.md "Measured: SHA-256 cost
-   per compression block"); 4032 measured at the same cells per second as 2688 on the SHA-256 chain bench
-   (96 x 2688 at 53 M cells/s, 96 x 4032 at 53, back to back, `bench_sha256_chain`), with a smaller proof
-   (278 KB against 292 KB) and 2.5x the verify time (409 ms against 160 ms) before the verifier's units
-   were grouped across the odd index (item 7, done): that cost was the odd part 63 of the grid, not its
-   size, and it is gone. The fold: one statement with the SOD groups, the body group and two RSA verifies
-   on 144 x 4032, n wired from the body's windows to the SOD verify, no commitment group; one 4032 proof
-   proves faster and is smaller than two 2688 proofs and verifies in the same time. A union of both
-   statements as extra columns on one 2688 grid gains nothing: the opened columns double with the columns.
-2. Verify time. After the grouped units (item 7) the SOD verify is 0.25 s: the clear vector 0.14 s (about
-   300 units against 756 clear entries), the small grid 0.04 s; the DSC verify is 0.41 s, of which the
-   boundaries are 0.19 s (the body's fingerprint sums, one row at a time; a batched Horner over all groups
-   is a small change). The clear check could materialize the unit sum once per r-free index instead of
-   per unit. Cheap, revisit second.
-3. The commitment group SHA(n || r), 81 chains in both proofs. A commitment to the digest of n would be
-   smaller but the DSC proof needs n in limbs, so it needs a hash-to-limbs wire. Not obvious; leave.
-4. One level of Karatsuba on the q n block: three 4 x 4 rectangles (48 products) for one 8 x 8 (64), 16
-   chains per modmul, 272 per verify. The wire budget that ruled it out is gone (ids in F4), but the
-   recombination is real work: the sums q_k + q_(k+4) bound on an idle u lane with cy and cz as wired
-   copies, a biased signed recombination on the middle block's heads with about ten stride masks, 257-bit
-   limbs (wider hi(r) reads), a bias change in the compare lane. Not needed for the fold; build it when a
-   statement needs the chains. The product cost is quadratic in bits, so a different limb count, lazy
-   reduction or Montgomery do not help, and 17 modmuls is minimal for e = 65537.
-5. Grid slack. The 2688 grid wastes about 590 chains in the SOD proof; a 2304 grid (h2 = 2^8 * 9) needs the
-   slot rule to take seven cosets. Look after item 1, which changes the grid anyway.
-6. Proof size (docs/profile.md). On the passport the three large regions are the openings, every column at
-   every point (514 KB: 485 columns times 53 points), the Z2 and Q3 lines (400 KB, five lines of h2
-   elements) and the level-1 opened rows (317 KB); the tail levels are 97 KB. The levers are the point
-   count (the limb lanes' cyclic-read offsets), the column count and h2, then the level-1 rate; not the
-   commitment.
-7. Done: units grouped across the odd index (decisions.md "Units grouped across the odd index"). Verify
-   0.67 -> 0.25 s on the SOD, 0.74 -> 0.41 s on the DSC, 0.61 -> 0.30 s on the RSA verify, and the odd
-   part no longer sets the verify time, so 2016 and 4032 verify like 2688.
+1. Verify time. The SOD verify is the clear vector (about 300 units against 756 clear entries) and the
+   small grid; the DSC verify's boundaries (the body's fingerprint sums, one row at a time; a batched
+   Horner over all groups is a small change). The clear check could materialize the unit sum once per
+   r-free index instead of per unit.
+2. The commitment group SHA(n || r), 81 chains in both proofs of the two-proof form. A commitment to the
+   digest of `n` would be smaller, but the DSC proof needs `n` in limbs, so it needs a hash-to-limbs wire.
+3. One level of Karatsuba on the `q n` block, 272 chains per verify (`docs/rsa.md`).
+4. Proof size (`docs/profile.md`). On the passport the three large regions are the openings (every column
+   at every point), the Z2 and Q3 lines and the level-1 opened rows. The levers are the point count (the
+   limb lanes' cyclic-read offsets), the column count and `h2`, then the level-1 rate; not the commitment.

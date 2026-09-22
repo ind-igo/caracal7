@@ -64,4 +64,4 @@ def main() raises:
     run4[Tile(BM=64, BN=64, BK=8, TM=4, TN=4, mma=False)](ctx, arena, a, b, c, "F4 64/64/8 4x4")
     run4[Tile(BM=32, BN=64, BK=8, TM=2, TN=4, mma=False)](ctx, arena, a, b, c, "F4 32/64/8 2x4")
     run4[Tile(BM=32, BN=32, BK=16, TM=2, TN=2, mma=False)](ctx, arena, a, b, c, "F4 32/32/16 2x2")
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks

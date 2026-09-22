@@ -29,7 +29,7 @@ modmul but the last): the products a_i a_j for i <= j only, w = 2 off the diagon
 off-diagonal r counts twice too); one tail chain, then the diagonals p = 2 limbs - 2 down to 0, each with
 i ascending from its head; the square (i, i) passes its hi to (i, i + 1), the last chain of the next
 diagonal. limbs (limbs + 1) / 2 + 1 chains for a triangle, limbs^2 (+ 1 with the tail) for a rectangle: 37,
-65 and 64 at 2048 bits; 1745 per verify (decisions.md "RSA rectangles without tails").
+65 and 64 at 2048 bits; 1745 per verify (docs/rsa.md).
 
 The compare lane on the AB heads: u_p = lo(t_ab) + K_p + hi(u_(p-1)) - lo(t_qn) - r_p with K_0 = 2^258 + 4
 and K_p = 2^258 after, lo(t_qn) wired from the QN head (the cy accumulator ingests cy on the AB heads and

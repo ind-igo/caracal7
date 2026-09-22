@@ -24,7 +24,7 @@ transforms radix stages:
                coordinate columns as one E value R(point) and adds alpha^f gate (R(omega1 x) - scale R)
     quotient   q1m over G1 -> the axis-1 coefficients of Q1 (one GEMM), then dft_axis over G2 -> the A, B
                coefficients; q2m, the qinv2p plan -> the Q2 coefficients; k_coef_columns -> the F2
-               coefficients of the 3 e coordinate columns (the Frobenius-real split, decisions.md 2026-09-17).
+               coefficients of the 3 e coordinate columns (the Frobenius-real split).
                Before that the stage evaluated A, B, Q2 on H and the encoder inverted the 60 columns
                back: 13 ms of round trip at 32 x 8064"""
 
@@ -268,8 +268,7 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
 
 def k_values_to_trace[p: Params](base: Base, vals: Buf[1], trace: Buf[1], groups: Int32):
     """trace[q * e + tau, x] = coordinate tau of V_q(x) for x in H, q < groups, vals (groups, x, e):
-    E-valued columns (A, B, Q2; the accumulators) are ordinary F-valued coordinate columns from here
-    on (see docs/decisions.md)."""
+    E-valued columns (A, B, Q2; the accumulators) are ordinary F-valued coordinate columns from here on."""
     comptime N = p.N()
     comptime e = p.e
     var gid = Int(global_idx.x)

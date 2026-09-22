@@ -4,7 +4,7 @@ Status: **conditional analysis, not certification**. The executable ledger
 uses the current source with `E=F_(127^20)` and query target 112. This note
 records checked citations, our proof steps, and the remaining composition
 conditions. A successful calculation or test does not establish a security
-level. Configuration and review history are in `docs/decisions.md`.
+level.
 
 **Current assurance checkpoint:** [security-assurance.md](security-assurance.md)
 covers 20 cases, including RSA, SOD, DSC, and passport. The DKT26 joint-list
@@ -127,10 +127,7 @@ cases give **105.67-106.41**. The prover, verifier, field, proof format, query
 counts, and all non-gap allowances are unchanged. P1-P5 remain open.
 
 DKT26 is Dao, Kominers, and Thaler, *Reed-Solomon Codes Beyond Johnson:
-Efficient Decoding and Smaller Cryptographic Proofs*. The local source is
-`~/notes/raw/papers/rs-beyond-johnson.md`; the displayed equations were checked
-in the saved `pdf/rs-beyond-johnson.pdf`. Source revisions and review history
-are in [decisions.md](decisions.md#dkt26-johnson-mca-comparison-2026-09-20).
+Efficient Decoding and Smaller Cryptographic Proofs*. The displayed equations were checked against the paper.
 
 **Theorem 5.12, p. 53**, applies to degree-at-most-D RS codes on any n
 prescribed distinct field points, in every characteristic. It requires
@@ -684,8 +681,7 @@ For this update, all 16 workload reports and four tail-rate comparisons ran.
 The build with `--Werror` passed. `sh run_tests.sh` passed 28 test files and
 15 benchmarks, including execution of the soundness self-checks. Independent
 80-digit arithmetic checked the displayed totals and the upward gap charges.
-The per-deliverable review record is in `docs/decisions.md`. These checks do
-not discharge the remaining protocol proof obligations.
+These checks do not discharge the remaining protocol proof obligations.
 
 Existing adversarial tests already do more than corrupt serialized proofs:
 

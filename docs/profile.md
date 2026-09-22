@@ -7,8 +7,8 @@ are its step marks, and the byte regions are the proof layout of `proof.mojo` wa
 region. Refresh with the same driver when a stage changes; the numbers in `README.md` are the
 Criterion harness's and move separately.
 
-Machine: Apple M1 Pro 16 GB, load average about 30 from other work, 2026-09-22 after the factored
-openings and the three-coset LDE (`docs/decisions.md`), warm prover (the third prove of a prepared
+Machine: Apple M1 Pro 16 GB, load average about 30 from other work, after the factored
+openings and the three-coset LDE, warm prover (the third prove of a prepared
 session), `CLIENT` profile (`E = F_127^20`, Johnson regime, 20 grinding
 bits, tail rate 1/8). The hash inputs are 2048 bytes; Poseidon is 16 elements; the RSA, SOD, DSC
 and passport fixtures are the bench files' (2048-bit keys, e = 65537).
@@ -74,7 +74,7 @@ verify in two places that are not the commitment at all: the boundaries (the wir
 the public factors' fingerprints, one Horner scan per factor over the public data) and the clear
 vector (units times clear length; the clear vector is the odd part `m1 m2` of the grid times the
 unfolded digits, 1134 elements on 4032). The SOD's 108 ms small grid is its many chain-end terms.
-These are the items of `docs/passport.md`, deferred optimization 2.
+These are the open verify-time items of `docs/passport.md`.
 
 ## Proof bytes
 

@@ -89,4 +89,4 @@ def main() raises:
     ctx.synchronize()
     report("quotient", Int(perf_counter_ns() - t0), 8 * (p.h1() * 2 * p.h1() * 2 * p.h2()
                                                           + 2 * p.h2() * 2 * p.h2() * p.h1() + p.h1() * p.h1() * p.h2() + p.h2() * p.h2() * p.h1()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks

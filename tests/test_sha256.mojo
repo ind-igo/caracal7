@@ -72,7 +72,7 @@ def test_prover_round_trip() raises:
     var w = Sha256(message(128))
     var proof = prove_workload[p, Blake3, Sha256](ctx, w)
     assert_true(verify_workload[p, Blake3, Sha256](proof^, w, w.public_inputs[p]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def _round_trip[q: Params](ctx: DeviceContext, bytes: Int) raises:
@@ -86,7 +86,7 @@ def test_prover_round_trip_on_split_odd_axes() raises:
     var ctx = DeviceContext()
     _round_trip[CLIENT.grid(32, 250)](ctx, 128)
     _round_trip[CLIENT.grid(32, 321)](ctx, 256)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_wrong_digest_is_rejected() raises:
@@ -110,7 +110,7 @@ def test_wrong_digest_is_rejected() raises:
         assert_equal(String(e), "restriction fails")
         ok = False
     assert_false(ok)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_public_data_rejects_a_message_past_the_grid() raises:

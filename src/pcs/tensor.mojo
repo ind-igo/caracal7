@@ -12,8 +12,7 @@ q2^x2 likewise, so a digit of x1 carries the r-free base and a twist rho1^(c1 2^
 row scalars br^r are br^r1 (br^m1)^r2. Folding an untwisted digit at rho multiplies the scalar by
 (1 - rho) f(0) + rho f(1) (the fold weight of tail.mojo), a twisted one multiplies the m1 or m2 scalars
 of its axis; the odd digit is never folded, so the clear check sums the units per r against the clear
-vector. The verifier never holds a vector of length N, and the unit count does not grow with M
-(decisions.md "Units grouped across the odd index").
+vector. The verifier never holds a vector of length N, and the unit count does not grow with M.
 """
 
 from std.bit import log2_floor

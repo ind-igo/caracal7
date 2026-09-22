@@ -1,4 +1,4 @@
-"""The sorted copy of a lookup instance (spec 6.3, docs/milestone-3-lookup.md): the record columns
+"""The sorted copy of a lookup instance (spec 6.3, docs/lookup.md): the record columns
 f permuted into table order, written into the trace columns s before encode.
 
 The frontend hands the prover an advice index, one u32 per row, the table position of the record
@@ -14,7 +14,7 @@ are f, den columns are s, both of width w_num):
 
 TODO(memory): spec 6.4 sorts on (addr, ts) keys, where equal keys are not identical records, so a
 stable multi-pass radix sort replaces the histogram-scan-scatter triple here. It lands with the
-memory descriptor kind; the client profile has no memory (configuration.md 3).
+memory descriptor kind; the client profile has no memory.
 
 ponytail: one thread scans the K bins; a two-level scan when K grows past a few thousand.
 """

@@ -117,7 +117,7 @@ def test_prover_round_trip() raises:
     var w = Poseidon(inputs(8))
     var proof = prove_workload[p, Blake3, Poseidon](ctx, w)
     assert_true(verify_workload[p, Blake3, Poseidon](proof^, w, w.public_inputs[p]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_prover_round_trip_two_chunks() raises:
@@ -125,7 +125,7 @@ def test_prover_round_trip_two_chunks() raises:
     var w = Poseidon(inputs(16))
     var proof = prove_workload[p2, Blake3, Poseidon](ctx, w)
     assert_true(verify_workload[p2, Blake3, Poseidon](proof^, w, w.public_inputs[p2]()))
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_wrong_digest_is_rejected() raises:
@@ -149,7 +149,7 @@ def test_wrong_digest_is_rejected() raises:
     except e:
         ok = False
     assert_false(ok)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_wrong_coefficient_is_rejected() raises:
@@ -180,7 +180,7 @@ def test_wrong_coefficient_is_rejected() raises:
     except e:
         ok = False
     assert_false(ok)
-    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks (decisions.md 2026-09-16)
+    _ = ctx   # the context must outlive the buffers of this scope: torn down first, NVIDIA deadlocks
 
 
 def test_public_data_rejects_a_bad_digest_word() raises:
