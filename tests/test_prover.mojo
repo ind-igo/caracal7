@@ -93,7 +93,7 @@ def test_layout_plans_the_arena() raises:
     # every offset is inside the arena and 256-aligned
     for off in [L.w.tree, L.z.tree, L.q.tree, L.families, L.accs, L.shifts, L.acc.num, L.acc.den, L.acc.scratch, L.acc.zval, L.acc.chain_prod,
                 L.acc.z2, L.acc.n_end, L.acc.d_end, L.sg.lines, L.sg.q3, L.lde.ltmp, L.lde.lde, L.lde.residual, L.lde.quotient, L.open.w_tab,
-                L.open.w_z, L.open.open_full, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
+                L.open.classes, L.open.w_z, L.open.a_main, L.open.a_zero, L.open.stored_t, L.open.t_main, L.open.t_zero, L.open.open_full, L.open.openings, L.open.open_partial, L.open.fold_y, L.open.s_tab, L.open.running0, L.query.dom1, L.query.pts, L.query.partial,
                 L.query.positions, L.query.stage, L.prefix, L.chal.stage1, L.chal.alpha, L.chal.z, L.chal.beta_gamma, L.chal.beta_full, L.chal.batch, L.chal.r]:
         assert_true(off < L.bytes and off % 256 == 0)
     print("arena for 53 + 5 e columns:", L.bytes // (1 << 20), "MiB")
@@ -497,6 +497,14 @@ def test_accumulator_entries_come_in_coordinate_bundles() raises:
     assert_true("read with basis t" in _shape_error(c, wrong_basis))
     assert_true("e copies" in _shape_error(c, extra))
     assert_true("never as col_b" in _shape_error(c, as_b))
+
+
+def test_family_shifts_are_even() raises:
+    """A read shifts by a power of omega, an even step on the residual grid: the LDE holds no values on H x H."""
+    var c = synthetic_statement().compile[p]()
+    var odd = c.families.copy()
+    set_u16(odd, ENT_A + 2, 1)
+    assert_true("even on the residual grid" in _shape_error(c, odd))
 
 
 def _shape_error(c: Compiled, fam: List[UInt8]) -> String:

@@ -193,6 +193,8 @@ struct Shape(Writable):
                 raise Error("family entry reads a column past the public columns")
             if en.dj1_a >= 2 * p.h1() or en.dj2_a >= 2 * p.h2() or (en.col_b != NONE and (en.dj1_b >= 2 * p.h1() or en.dj2_b >= 2 * p.h2())):
                 raise Error("family entry shift is outside the residual grid")
+            if en.dj1_a % 2 != 0 or en.dj2_a % 2 != 0 or (en.col_b != NONE and (en.dj1_b % 2 != 0 or en.dj2_b % 2 != 0)):
+                raise Error("family entry shifts are by powers of omega, even on the residual grid (the LDE holds no values on H x H)")
             if en.chal > chal_count(chals):
                 raise Error("family entry names a challenge element past the derivation table")
             if pub_a and pub_b:

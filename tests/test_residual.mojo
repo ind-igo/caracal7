@@ -13,10 +13,10 @@ from core.arena import Arena, Bump
 from pcs.encode import EncLayout, to_packed, idft2
 from relations.ir import ENTRY, NONE, PUB, entry, residual_at, eval_values, tile_values
 from workloads.synthetic import SYNTHETIC_COLUMNS, SYNTHETIC_PUBLIC_COLUMNS, SYNTHETIC_PUBLIC_M, synthetic_statement, synthetic_trace, synthetic_publics, synthetic_public_values, synthetic_public_value
-from relations.residual import lde, residual, quotient, quotient_elems
+from relations.residual import lde, lde_bytes, ltmp_bytes, lde_index, residual, quotient, quotient_elems
 from core.bytes import list_e
 
-comptime p = CLIENT.grid(72, 32)
+comptime p = CLIENT.grid(72, 96)     # h2 with an odd part: axis 2 takes the generic radix path (32 is the dense product, which hid a strided-write bug)
 comptime C = SYNTHETIC_COLUMNS
 comptime N = p.N()
 comptime h1 = p.h1()
@@ -50,8 +50,8 @@ struct Run:
         var tab = TableLayout.__init__[p](bump.alloc(0))
         _ = bump.alloc(tab.bytes)
         var families = bump.alloc(len(c.families))
-        var ltmp = bump.alloc(cw * 2 * h2 * G1 * 2)
-        var lde_buf = bump.alloc((cw + cp) * G * 2)
+        var ltmp = bump.alloc(ltmp_bytes[p](cw))
+        var lde_buf = bump.alloc(lde_bytes[p](cw + cp))
         var pub_vals = bump.alloc(cp * N)
         var pub_buf = bump.alloc(cp * N * 2)
         var res_buf = bump.alloc(G * p.e)
@@ -82,12 +82,12 @@ struct Run:
         to_packed[p](ctx, arena, enc, tab)
         lde[p](ctx, arena, enc.coeff, cw, tab, ltmp, lde_buf)
         if with_public:
-            lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + cw * G * 2)
+            lde[p](ctx, arena, pub_buf, cp, tab, ltmp, lde_buf + lde_bytes[p](cw))
         residual[p](ctx, arena, lde_buf, families, len(c.families) // ENTRY, tab, alpha, chals, res_buf, families, len(c.families) // ENTRY, 0, 0)
         quotient[p](ctx, arena, res_buf, tab, scratch, coeff_q)
 
         var ch = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * N * 2)
-        var lh = ctx.enqueue_create_host_buffer[DType.uint8]((cw + cp) * G * 2)
+        var lh = ctx.enqueue_create_host_buffer[DType.uint8](lde_bytes[p](cw + cp))
         var rh = ctx.enqueue_create_host_buffer[DType.uint8](G * p.e)
         var qh = ctx.enqueue_create_host_buffer[DType.uint8](quotient_elems[p]() * p.e)
         var sh = ctx.enqueue_create_host_buffer[DType.uint8](3 * p.e * N * 2)
@@ -165,16 +165,24 @@ def _random_e(seed: Int) -> E:
 
 
 def test_lde_matches_direct_evaluation() raises:
+    """Six points on every third column, then whole rows of column 0 across all three cosets (a strided
+    write of one third once overwrote another third's rows between the sampled points)."""
     var r = Run()
-    var points: List[Int] = [0, 1, G1 + 1, 5 * G1 + 7, (G2 - 1) * G1 + G1 - 1, 17 * G1 + 100]
+    var points: List[Int] = [G1, 1, G1 + 1, 5 * G1 + 7, (G2 - 1) * G1 + G1 - 1, 17 * G1 + 100]   # never (even, even): that is H x H
+    var sweep = List[Int]()
+    for j2 in [1, 3, 8, G2 - 1]:
+        for j1 in range(G1):
+            if j1 % 2 == 0 and j2 % 2 == 0:
+                continue
+            sweep.append(j2 * G1 + j1)
     for c in range(0, C, 3):
-        for n in points:
+        for n in points if c > 0 else sweep:
             var j1 = n % G1
             var j2 = n // G1
             var z1 = ext_embed[E_LEVEL](ext_pow[1](r.d.g1, j1))
             var z2 = ext_embed[E_LEVEL](ext_pow[1](r.d.g2, j2))
             var want = r.col_at(c, z1, z2)
-            var got = ext_embed[E_LEVEL](r.f2(r.lde, ((c * G2 + j2) * G1 + j1) * 2))
+            var got = ext_embed[E_LEVEL](r.f2(r.lde, lde_index[p](c, j1, j2) * 2))
             assert_true(want == got, "lde mismatch")
 
 
@@ -201,11 +209,11 @@ def _check_on_g(r: Run) raises:
             var en = entry(r.fam, k)
             var a1 = (j1 + en.dj1_a) % G1
             var a2 = (j2 + en.dj2_a) % G2
-            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, ((en.col_a * G2 + a2) * G1 + a1) * 2)))
+            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, lde_index[p](en.col_a, a1, a2) * 2)))
             var b1 = (j1 + en.dj1_b) % G1
             var b2 = (j2 + en.dj2_b) % G2
             var cb = 0 if en.col_b == NONE else en.col_b
-            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, ((cb * G2 + b2) * G1 + b1) * 2)))
+            reads.append(ext_embed[E_LEVEL](r.f2(r.lde, lde_index[p](cb, b1, b2) * 2)))
         var z1 = ext_embed[E_LEVEL](ext_pow[1](r.d.g1, j1))
         var z2 = ext_embed[E_LEVEL](ext_pow[1](r.d.g2, j2))
         var want = residual_at(r.fam, r.alpha, r.chals, z1, z2, e1, e2, reads)

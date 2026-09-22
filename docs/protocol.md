@@ -247,6 +247,6 @@ bits and small limbs; a dense integer dot product has no cheap relation here (`d
 | 3 accumulators | `relations/accumulate` | `_boundaries`, `_wiring` (steps 9, 10) |
 | 5 quotients | `relations/residual` (`lde`, `residual`, `quotient`), `relations/smallgrid` | `_residual`, `_small_grid` (steps 11, 12) |
 | 13 restrictions | | `_restrictions` |
-| 7 openings | `pcs/open` (`k_build_queries`, `open`, `compact_openings`, `expand_beta`, `fold`) | `_opening`, `_PublicReads`, `_expand_beta` |
+| 7 openings | `pcs/open` (`point_tables`, `class_weights` and `open_stage1`, `open_stage2`, or `build_queries` and `open_direct`; `compact_openings`, `expand_beta`, `fold`) | `_opening`, `_PublicReads`, `_expand_beta` |
 | 14 to 17 tail | `Prover._tail_level`, `_open_previous`, `pcs/tail` | `_Tail` on `pcs/tensor` units, `_open_previous`, `pcs/merkle.check_multiproof` |
 | section 4 transcript | `core/transcript` on the device | `HostTranscript` |

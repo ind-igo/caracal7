@@ -7,8 +7,9 @@ are its step marks, and the byte regions are the proof layout of `proof.mojo` wa
 region. Refresh with the same driver when a stage changes; the numbers in `README.md` are the
 Criterion harness's and move separately.
 
-Machine: Apple M1 Pro 16 GB, load average about 10 from other work, 2026-09-21, warm prover (the
-third prove of a prepared session), `CLIENT` profile (`E = F_127^20`, Johnson regime, 20 grinding
+Machine: Apple M1 Pro 16 GB, load average about 30 from other work, 2026-09-22 after the factored
+openings and the three-coset LDE (`docs/decisions.md`), warm prover (the third prove of a prepared
+session), `CLIENT` profile (`E = F_127^20`, Johnson regime, 20 grinding
 bits, tail rate 1/8). The hash inputs are 2048 bytes; Poseidon is 16 elements; the RSA, SOD, DSC
 and passport fixtures are the bench files' (2048-bit keys, e = 65537).
 
@@ -28,28 +29,31 @@ unprofiled warm prove on the small statements and within noise on the large ones
 
 | stage | sha256 | keccak | poseidon | ecdsa | rsa-2048 | sod | dsc | passport |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| encode W | 8 | 5 | 7 | 38 | 91 | 231 | 202 | 313 |
-| merkle W | 3 | 1 | 2 | 5 | 8 | 22 | 18 | 23 |
-| accumulate | 0 | 0 | 1 | 10 | 18 | 31 | 29 | 45 |
-| encode Z | 0 | 0 | 8 | 43 | 63 | 121 | 121 | 162 |
-| merkle Z | 0 | 0 | 1 | 4 | 6 | 14 | 14 | 13 |
-| small grid | 0 | 0 | 1 | 1 | 1 | 3 | 2 | 2 |
-| lde | 4 | 4 | 13 | 40 | 114 | 301 | 227 | 439 |
-| residual | 5 | 4 | 11 | 40 | 93 | 318 | 210 | 477 |
-| quotient | 6 | 2 | 5 | 15 | 53 | 77 | 72 | 109 |
-| encode Q | 8 | 1 | 4 | 8 | 26 | 45 | 41 | 55 |
-| merkle Q | 2 | 1 | 1 | 2 | 5 | 10 | 9 | 10 |
-| build_queries | 2 | 2 | 2 | 2 | 7 | 23 | 21 | 35 |
-| open | 8 | 10 | 16 | 23 | 39 | 231 | 193 | 330 |
-| fold | 0 | 0 | 1 | 4 | 13 | 15 | 13 | 21 |
-| tail levels, transcript, finish | 28 | 20 | 31 | 29 | 66 | 141 | 106 | 134 |
-| sum of stages | 74 | 50 | 104 | 264 | 603 | 1583 | 1278 | 2168 |
-| warm prove, unprofiled | 84 | 58 | 113 | 268 | 599 | 1508 | 1266 | 2167 |
+| encode W | 8 | 5 | 7 | 38 | 90 | 228 | 199 | 310 |
+| merkle W | 2 | 1 | 2 | 5 | 8 | 22 | 18 | 22 |
+| accumulate | 0 | 0 | 1 | 10 | 18 | 32 | 28 | 46 |
+| encode Z | 0 | 0 | 8 | 42 | 62 | 120 | 119 | 160 |
+| merkle Z | 0 | 0 | 1 | 5 | 7 | 21 | 13 | 16 |
+| small grid | 0 | 0 | 1 | 1 | 2 | 12 | 3 | 3 |
+| lde | 4 | 4 | 14 | 39 | 100 | 263 | 201 | 388 |
+| residual | 5 | 4 | 11 | 43 | 99 | 325 | 220 | 486 |
+| quotient | 6 | 2 | 5 | 15 | 52 | 72 | 71 | 108 |
+| encode Q | 7 | 2 | 4 | 9 | 25 | 41 | 42 | 55 |
+| merkle Q | 3 | 1 | 2 | 3 | 5 | 10 | 9 | 10 |
+| build_queries | 1 | 1 | 2 | 1 | 7 | 1 | 1 | 3 |
+| open | 5 | 4 | 8 | 15 | 38 | 133 | 125 | 195 |
+| fold | 1 | 0 | 1 | 4 | 8 | 14 | 13 | 22 |
+| tail levels, transcript, finish | 29 | 19 | 28 | 30 | 77 | 118 | 98 | 141 |
+| sum of stages | 71 | 43 | 95 | 260 | 598 | 1412 | 1160 | 1965 |
+| warm prove, unprofiled | 81 | 58 | 106 | 261 | 593 | 1378 | 1160 | 1957 |
 
-Reading it: on the hash statements the encoder and the openings are the budget and the whole
-prove is under 120 ms. On the wide statements (RSA and up) the residual pass and the LDE that
-feeds it are the largest pair, about 40 percent of the passport, then `encode W` and `open`. The
-tail is 5 to 10 percent everywhere; the Merkle trees are under 3 percent.
+Reading it: on the hash statements the encoder and the tail are the budget and the whole prove is
+under 110 ms. On the wide statements (RSA and up) the residual pass and the LDE that feeds it are
+the largest pair, about 45 percent of the passport, then `encode W` and `open`. The openings are
+factored by the classes of points that share `z2` (`open.point_classes`: the SOD's 52 points fall
+into 14 classes, so the contraction runs over 28 weight rows instead of 52 points) where that wins,
+and are the direct GEMM on RSA and Poseidon, whose points fall into almost as many classes. The tail
+is 5 to 15 percent everywhere; the Merkle trees are under 3 percent.
 
 ## Verifier steps, ms
 

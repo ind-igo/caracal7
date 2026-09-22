@@ -541,13 +541,15 @@ def _vcap(r: Int, V: Int) -> Int:
 
 def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     ctx: DeviceContext, arena: Arena, src: Int, dst: Int, scratch: Int, W: Int, lines: Int, tab: Int,
-    dst_line: Int = 0, dst_j: Int = 0
+    dst_line: Int = 0, dst_j: Int = 0, mid: Int = -1
 ) raises:
     """`lines` lines of h = n1 n2 k3 rows (W F2 per row, or W = 1 F bytes when bytes_in) -> plan.n rows.
-    Stages go src -> dst -> scratch -> dst; `scratch` holds n rows per line and may alias `src` when src
-    is dead after the call. `tab` is the plan's table (tables.mojo). The last stage writes output row j
-    of a line at dst + line dst_line + j dst_j (default: lines of n contiguous rows). V consecutive
-    inner positions per thread (W a multiple of V; 4 when rows are wide)."""
+    Stages go src -> mid -> scratch -> dst; `scratch` holds n rows per line and may alias `src` when src
+    is dead after the call; `mid` (default dst) holds n contiguous rows per line, so pass one when dst
+    is strided into a buffer other calls have written (the dense and the n1 = 1 paths do not use it).
+    `tab` is the plan's table (tables.mojo). The last stage writes output row j of a line at
+    dst + line dst_line + j dst_j (default: lines of n contiguous rows). V consecutive inner positions per
+    thread (W a multiple of V; 4 when rows are wide)."""
     comptime n = plan.n
     comptime n1 = plan.n1
     comptime n2 = plan.n2
@@ -570,6 +572,7 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
     var Ri = W if bytes_in else R
     var dl = dst_line if dst_line > 0 else n * R
     var dj = dst_j if dst_j > 0 else R
+    var md = mid if mid >= 0 else dst
     comptime if APPLE8 and plan.has_dense():
         # the short axis as one dense product on the 8x8 op: positions (line, w), rows k at Ri, outputs j at dj
         if not bytes_in or W == 1:                  # byte rows wider than one position stay on the stages
@@ -593,10 +596,10 @@ def dft_axis[plan: DftPlan, V: Int = 1, bytes_in: Bool = False](
             return
     _stage[n3, k3, bytes_in, V3c, LB3c](ctx, arena, Radix(
         src=src, so_line=h * Ri, so_pre=0, so_pre_lo=0, sk=n1 * n2 * Ri, si=(1 if bytes_in else 2),
-        dst=dst, to_line=n * R, to_pre=0, to_pre_lo=0, tj=n1 * n2 * R, ti=2,
+        dst=md, to_line=n * R, to_pre=0, to_pre_lo=0, tj=n1 * n2 * R, ti=2,
         tab=tab + plan.t3(), od=1, od_lo=1, tabmod=1, inner=n1 * n2 * W // V3c, total=lines // LB3c * n1 * n2 * W // V3c))
     _stage[n2, n2, False, V2c, LB2c](ctx, arena, Radix(
-        src=dst, so_line=n * R, so_pre=n1 * n2 * R, so_pre_lo=0, sk=n1 * R, si=2,
+        src=md, so_line=n * R, so_pre=n1 * n2 * R, so_pre_lo=0, sk=n1 * R, si=2,
         dst=scratch, to_line=n * R, to_pre=n1 * R, to_pre_lo=0, tj=n3 * n1 * R, ti=2,
         tab=tab + plan.t2(), od=n3, od_lo=1, tabmod=n3, inner=n1 * W // V2c, total=lines // LB2c * n3 * n1 * W // V2c))
     comptime if na == 1:

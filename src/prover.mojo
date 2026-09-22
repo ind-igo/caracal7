@@ -23,12 +23,12 @@ from core.transcript import TranscriptLayout, reset, absorb, squeeze_elements, s
 from core.transcript import DS_PREFIX, DS_TREE_W, DS_TREE_Z, DS_TREE_Q, DS_OPENINGS, DS_TAIL_ROOT, DS_TAIL_ROUND, DS_CLEAR
 from proof import Shape, ProofWriter, TailLevel, VERSION, prefix_bytes
 from core.hash import Hash
-from pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, build_queries, open, open_splits, fold, expand_beta, compact_openings, table_len, factor_len, TAIL_F4
-from pcs import DOM_BYTES, ROUND_ROWS, domain_bytes, tail_encode, points, running0, tail_materialize, tail_round, tail_fold, power_table_len
+from pcs import merkle, query_gather, root_offset, tree_nodes, multiproof_region, point_tables, ftab_at, point_classes, class_weights, open_factored, build_queries, open_direct, open_transpose, open_stage1, open_stage2, running0, stage1_k, main_rows, partial_bytes, fold, expand_beta, compact_openings, table_len, factor_len, TAIL_F4
+from pcs import DOM_BYTES, ROUND_ROWS, domain_bytes, tail_encode, points, tail_materialize, tail_round, tail_fold, power_table_len
 from relations import ENTRY, POINT, ACC, END, WIRE, CHAL, KIND_LOOKUP, KIND_HORNER, acc_kind, tile_values
 from relations.statement import Compiled
 from relations import AccLayout, accumulate, horner, wiring, derive_chals, counting_sort, merge_tables
-from relations import lde, residual, quotient, quotient_elems, k_values_to_trace
+from relations import lde, residual, quotient, quotient_elems, lde_bytes, ltmp_bytes, k_values_to_trace
 from relations import SmallGridLayout, small_grid_accumulator, small_grid_wiring, small_grid_end, small_grid_values
 from core.bytes import Buf, get_u16
 from core.backend import BACKEND
@@ -67,45 +67,73 @@ struct LdeLayout(TrivialRegisterPassable):
     (witness, accumulator, then public), the residual and the quotient's interpolation scratch."""
     var pub_vals: Int       # (public column, x2, x1)       public column values on H (load_public)
     var pub_coeff: Int      # (public column, k2, k1, 2)    their coefficients (idft2 in load_public), the LDE input
-    var ltmp: Int           # (column, G2, G1, 2)           LDE after axis 1, then the axis-2 scratch
-    var lde: Int            # (column, G2, G1, 2)
+    var ltmp: Int           # three (column, k2, i1, 2)     LDE after axis 1, and the axis-2 scratch (residual.lde)
+    var lde: Int            # (column, t, 3 h1, 2)          the three cosets off H by row pair (residual.lde_index)
     var residual: Int       # (G2, G1, e)
     var quotient: Int       # quotient_elems x e            Q1, Q2 interpolation scratch (residual.mojo)
-    var block: Int          # bytes of one column's LDE
 
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
-        self.block = 4 * N * 2
         self.pub_vals = bump.alloc(shape.columns_p * N)   # loaded once too: the selected ingest terms read it in every prove's Z stage
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)   # loaded once, must survive repeated proves
-        self.ltmp = bump.alloc(max(shape.columns_w, max(shape.columns_z, shape.columns_p)) * self.block, ST_LOAD, ST_LDE)   # load_public's scratch too
-        self.lde = bump.alloc((shape.columns_w + shape.columns_z + shape.columns_p) * self.block, ST_LDE, ST_RES)
+        self.ltmp = bump.alloc(ltmp_bytes[p](max(shape.columns_w, max(shape.columns_z, shape.columns_p))), ST_LOAD, ST_LDE)   # load_public's scratch too
+        self.lde = bump.alloc(lde_bytes[p](shape.columns_w + shape.columns_z + shape.columns_p), ST_LDE, ST_RES)
         self.residual = bump.alloc(4 * N * p.e, ST_RES, ST_QUO)
         self.quotient = bump.alloc(quotient_elems[p]() * p.e, ST_QUO, ST_QUO)
 
-    def lde_at(self, column: Int) -> Int:
-        return self.lde + column * self.block
+    def lde_at[p: Params](self, column: Int) -> Int:
+        return self.lde + lde_bytes[p](column)
 
 
 struct OpenLayout(TrivialRegisterPassable):
-    """The openings at the P points (open.mojo) and the fold to the level-2 message."""
+    """The openings at the P points (open.mojo, factored by the Q classes of points that share z2) and the
+    fold to the level-2 message."""
     var w_tab: Int          # (P, table_len, e)     per-point powers and Lagrange factors, then (P, factor_len, e)
-    var w_z: Int            # (slot, P, e)          evaluation queries
+    var classes: Int        # (2 P, u16)            the class of every point, then a representative point per class
+    var classes_n: Int      # Q
+    var factored: Bool      # open.open_factored: the class GEMMs, or the direct GEMM over w_z
+    var w_z: Int            # (slot, P, e)          the direct path's evaluation queries (else empty)
+    var a_main: Int         # (K, 2 Q, e)           stage-1 weights of the x1 >= 1 rows, K = 2 h2 (open.stage1_k)
+    var a_zero: Int         # (K, 4 Q, e)           of the x1 = 0 rows
+    var stored_t: Int       # (column, row, K)      one tree's stored columns transposed: the x1 >= 1 rows, then the x1 = 0 rows
+    var t_main: Int         # (2 Q, column, NM, e)  stage-1 contractions, NM = open.main_rows
+    var t_zero: Int         # (4 Q, column, m1, e)
     var open_full: Int      # (P, column, e)        <w_z, stored(c)> per stored column
     var openings: Int       # (P, opened, e)        the sent openings: one value per opened column (Shape.opened)
-    var open_partial: Int   # (splits, column, P, e) split-K partials of `open`
+    var open_partial: Int   # (splits, column, row, e) split-K partials of `open`
     var fold_y: Int         # (slot, e)             y = sum beta_c stored(c), the level-2 message
+    var s_tab: Int          # (2 Q, NA, e)          the running query's point sums per class
     var running0: Int       # (slot, e)             sum_p gamma_p w_{z_p}, the level-2 running query
 
     def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
         comptime N = p.N()
+        comptime K = stage1_k[p]()
+        comptime NM = main_rows[p]()
+        comptime NA = (1 << p.a1) * p.m1
         var widest = max(shape.columns_w, max(shape.columns_z, shape.columns_q))
-        self.w_tab = bump.alloc(shape.points * (table_len[p]() + factor_len[p]()) * p.e, ST_OPEN, ST_OPEN)
-        self.w_z = bump.alloc(shape.points * N * p.e, ST_OPEN, ST_RUN0)
+        var Q = point_classes(shape.point_list, shape.points)[1]
+        self.classes_n = Q
+        var f = open_factored[p](shape.points, Q)
+        self.factored = f
+        self.w_tab = bump.alloc(shape.points * (table_len[p]() + factor_len[p]()) * p.e, ST_OPEN, ST_RUN0)
+        self.classes = bump.alloc(4 * shape.points)
+        self.w_z = bump.alloc(0 if f else shape.points * N * p.e, ST_OPEN, ST_OPEN)
+        self.a_main = bump.alloc(K * 2 * Q * p.e if f else 0, ST_OPEN, ST_OPEN)
+        self.a_zero = bump.alloc(K * 4 * Q * p.e if f else 0, ST_OPEN, ST_OPEN)
+        self.stored_t = bump.alloc(widest * N if f else 0, ST_OPEN, ST_OPEN)
+        self.t_main = bump.alloc(2 * Q * widest * NM * p.e if f else 0, ST_OPEN, ST_OPEN)
+        self.t_zero = bump.alloc(4 * Q * widest * p.m1 * p.e if f else 0, ST_OPEN, ST_OPEN)
         self.open_full = bump.alloc(shape.points * shape.columns() * p.e, ST_OPEN, ST_OPEN)
         self.openings = bump.alloc(shape.points * shape.opened() * p.e, ST_OPEN)
-        self.open_partial = bump.alloc(shape.points * open_splits[p]() * widest * p.e, ST_OPEN, ST_OPEN)
+        var partial = 0                                     # per tree: fewer columns can mean more splits, so not the widest tree's
+        for columns in [shape.columns_w, shape.columns_z, shape.columns_q]:
+            if f:
+                partial = max(partial, max(partial_bytes(2 * Q, columns * NM, K), partial_bytes(4 * Q, columns * p.m1, K)))
+            else:
+                partial = max(partial, partial_bytes(shape.points, columns, N))
+        self.open_partial = bump.alloc(partial, ST_OPEN, ST_OPEN)
         self.fold_y = bump.alloc(N * p.e, ST_FOLD, ST_TAIL)             # tail level 0 folds it (or it is the clear vector)
+        self.s_tab = bump.alloc(2 * Q * NA * p.e, ST_RUN0, ST_RUN0)
         self.running0 = bump.alloc(N * p.e, ST_RUN0, ST_TAIL)
 
 
@@ -304,6 +332,7 @@ struct Prover[p: Params, H: Hash]:
         _upload(ctx, self.arena, L.families_g, merged[0])
         _upload(ctx, self.arena, L.merge, merged[1])
         _upload(ctx, self.arena, L.shifts, S.point_list)
+        _upload(ctx, self.arena, L.open.classes, point_classes(S.point_list, S.points)[0])
         if len(S.accs) > 0:
             _upload(ctx, self.arena, L.accs, S.accs)
         if len(S.chals) > 0:
@@ -404,7 +433,8 @@ struct Prover[p: Params, H: Hash]:
         var y_len = N
         var running = L.open.running0
         if len(S.tail) > 0:
-            running0[Self.p](ctx, self.arena, L.open.w_z, L.chal.beta_gamma + S.opened() * e, S.points, L.open.running0)
+            running0[Self.p](ctx, self.arena, ftab_at[Self.p](L.open.w_tab, S.points), L.open.classes, S.points, L.open.classes_n,
+                             L.chal.beta_gamma + S.opened() * e, L.open.s_tab, L.open.running0)
         for i in range(len(S.tail)):
             self._tail_level(ctx, i, T, y, y_len, running)
             y = L.tail[i].y
@@ -501,11 +531,12 @@ struct Prover[p: Params, H: Hash]:
         """The LDE of every column onto the residual grid, the residual, and the quotient as the Q tree's coefficients."""
         ref L = self.layout
         ref S = self.shape
-        lde[Self.p](ctx, self.arena, L.w.enc.coeff, S.columns_w, L.tables, L.lde.ltmp, L.lde.lde_at(0))
+        lde[Self.p](ctx, self.arena, L.w.enc.coeff, S.columns_w, L.tables, L.lde.ltmp, L.lde.lde_at[Self.p](0))
         if S.columns_z > 0:
-            lde[Self.p](ctx, self.arena, L.z.enc.coeff, S.columns_z, L.tables, L.lde.ltmp, L.lde.lde_at(S.columns_w))
+            lde[Self.p](ctx, self.arena, L.z.enc.coeff, S.columns_z, L.tables, L.lde.ltmp, L.lde.lde_at[Self.p](S.columns_w))
         if S.columns_p > 0:
-            lde[Self.p](ctx, self.arena, L.lde.pub_coeff, S.columns_p, L.tables, L.lde.ltmp, L.lde.lde_at(S.columns_w + S.columns_z))
+            var c0 = S.columns_w + S.columns_z
+            lde[Self.p](ctx, self.arena, L.lde.pub_coeff, S.columns_p, L.tables, L.lde.ltmp, L.lde.lde_at[Self.p](c0))
         self._mark(ctx, "lde")
         residual[Self.p](ctx, self.arena, L.lde.lde, L.families, S.entries, L.tables, L.chal.alpha, L.chal.stage1, L.lde.residual,
                          L.families_g, self.entries_g, L.accs, len(S.accs) // ACC, L.merge)
@@ -519,13 +550,25 @@ struct Prover[p: Params, H: Hash]:
         ref L = self.layout
         ref S = self.shape
         comptime e = Self.p.e
-        build_queries[Self.p](ctx, self.arena, L.chal.z, L.shifts, S.points, L.tables, self.domains, L.open.w_tab, L.open.w_z)
+        var ftab = ftab_at[Self.p](L.open.w_tab, S.points)
+        point_tables[Self.p](ctx, self.arena, L.chal.z, L.shifts, S.points, L.tables, self.domains, L.open.w_tab)
+        if L.open.factored:
+            class_weights[Self.p](ctx, self.arena, ftab, L.open.classes, S.points, L.open.classes_n, L.open.a_main, L.open.a_zero)
+        else:
+            build_queries[Self.p](ctx, self.arena, ftab, S.points, L.open.w_z)
         self._mark(ctx, "build_queries")
         for t in [(L.w, 0), (L.z, S.columns_w), (L.q, S.columns_w + S.columns_z)]:
             if t[0].enc.columns == 0:
                 continue                                    # no Z tree without accumulators
-            open[Self.p](ctx, self.arena, L.open.w_z, S.points, t[0].enc.stored, t[0].enc.columns, L.open.open_partial,
-                         L.open.open_full + t[1] * e, S.columns())
+            if not L.open.factored:
+                open_direct[Self.p](ctx, self.arena, L.open.w_z, S.points, t[0].enc.stored, t[0].enc.columns, L.open.open_partial,
+                                    L.open.open_full + t[1] * e, S.columns())
+                continue
+            open_transpose[Self.p](ctx, self.arena, t[0].enc.stored, t[0].enc.columns, L.open.stored_t)
+            open_stage1[Self.p](ctx, self.arena, L.open.classes_n, t[0].enc.columns, L.open.stored_t, L.open.a_main, L.open.a_zero,
+                                L.open.t_main, L.open.t_zero, L.open.open_partial)
+            open_stage2[Self.p](ctx, self.arena, ftab, L.open.classes, S.points, L.open.classes_n, t[0].enc.columns,
+                                L.open.t_main, L.open.t_zero, L.open.open_full + t[1] * e, S.columns())
         compact_openings(ctx, self.arena, L.open.open_full, S.points, S.columns(), S.columns_w, S.opened(), L.open.openings)
         self._mark(ctx, "open")
 

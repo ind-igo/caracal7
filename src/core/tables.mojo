@@ -257,9 +257,11 @@ struct TableLayout(TrivialRegisterPassable):
     var gate1: Int      # (2 h1, 2)     g1^j - e1, the chain gate (X1 - e1) on G1; e1 = omega1^-1
     var gate2: Int      # (2 h2, 2)     g2^j - e2
     var c2p: Int        # (2 h2, 2)     the coset points c_t = gamma2 g2^t of the small grid (smallgrid.mojo)
-    var fwd1: Int       # DftPlan(2 h1, h1) stage tables of the axis-1 forward DFT (dft.mojo)
+    var fwd1e: Int      # DftPlan(h1, h1) stage tables of the axis-1 forward DFT onto H1 (residual.lde)
+    var fwd1o: Int      # the same onto the coset g1 H1, the twist g1^k inside
     var inv1: Int       # DftPlan(h1, h1) stage tables of the axis-1 inverse DFT, h1^-1 folded in
-    var fwd2: Int       # the same on axis 2
+    var fwd2e: Int      # DftPlan(h2, h2) coefficients -> H2 on axis 2 (residual.lde)
+    var fwd2o: Int      # the same onto the coset g2 H2, the twist g2^k inside
     var inv2: Int
     var ginv2p: Int     # DftPlan(2 h2, 2 h2) of the G2 inverse (residual.quotient step 3), (2 h2)^-1 folded in
     var qinv2p: Int     # DftPlan(h2, h2) of quotient step 5: coset values t -> coefficient k, g2^-k h2^-1 omega2^(-t k)
@@ -285,9 +287,11 @@ struct TableLayout(TrivialRegisterPassable):
         self.gate1 = off; off += 2 * p.h1() * 2
         self.gate2 = off; off += 2 * p.h2() * 2
         self.c2p = off; off += 2 * p.h2() * 2
-        self.fwd1 = off; off += DftPlan(2 * p.h1(), p.h1()).bytes()
+        self.fwd1e = off; off += DftPlan(p.h1(), p.h1()).bytes()
+        self.fwd1o = off; off += DftPlan(p.h1(), p.h1()).bytes()
         self.inv1 = off; off += DftPlan(p.h1(), p.h1()).bytes()
-        self.fwd2 = off; off += DftPlan(2 * p.h2(), p.h2()).bytes()
+        self.fwd2e = off; off += DftPlan(p.h2(), p.h2()).bytes()
+        self.fwd2o = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.inv2 = off; off += DftPlan(p.h2(), p.h2()).bytes()
         self.ginv2p = off; off += DftPlan(2 * p.h2(), 2 * p.h2()).bytes()
         self.qinv2p = off; off += DftPlan(p.h2(), p.h2()).bytes()
@@ -336,9 +340,11 @@ def build_tables[p: Params](ctx: DeviceContext, t: TableLayout, d: Domains) rais
     _fill_rs(h, t.rs.base - t.base, t.rs, d.level1, p.K())
 
     _residual_tables[p](h, t, d)
-    _dft_tables(h, t.fwd1, DftPlan(2 * p.h1(), p.h1()), d.g1, 1)
+    _dft_tables(h, t.fwd1e, DftPlan(p.h1(), p.h1()), d.omega1, 1)
+    _dft_tables(h, t.fwd1o, DftPlan(p.h1(), p.h1()), d.omega1, 1, twist_in=d.g1)
     _dft_tables(h, t.inv1, DftPlan(p.h1(), p.h1()), w1_inv, inv_h1)
-    _dft_tables(h, t.fwd2, DftPlan(2 * p.h2(), p.h2()), d.g2, 1)
+    _dft_tables(h, t.fwd2e, DftPlan(p.h2(), p.h2()), d.omega2, 1)
+    _dft_tables(h, t.fwd2o, DftPlan(p.h2(), p.h2()), d.omega2, 1, twist_in=d.g2)
     _dft_tables(h, t.inv2, DftPlan(p.h2(), p.h2()), w2_inv, inv_h2)
     _dft_tables(h, t.ginv2p, DftPlan(2 * p.h2(), 2 * p.h2()), ext_pow[1](d.g2, 2 * p.h2() - 1), f_inv(UInt8((2 * p.h2()) % 127)))
     return h^

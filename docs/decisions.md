@@ -2851,3 +2851,71 @@ bench/bench_soundness.mojo`, its full output run, and `sh run_tests.sh`
 (31 test files and 18 bench files, including execution of the soundness
 self-check). Working and staged whitespace checks passed. Pre-existing
 unrelated soundness/decision edits and the local AGENTS file were excluded.
+
+
+## Factored openings and the three-coset LDE (2026-09-22, M1 Pro)
+
+Two "more work than necessary" items from a prover-wide look at where the stages repeat themselves.
+
+**Openings.** The opening GEMM contracted P e rows over the N slots of every stored column, P the
+point count (12 to 53). The slot weight of a pair (x1, x2, r) is `Za(x1, r1) Zb(x2, r2)` on the pair's
+value and `Pa(x1, r1) Pb(x2, r2)` on its conjugate (`slot_weight`, spec 9.1), and `Zb`, `Pb` depend on
+the point only through `z2`, that is through `dj2` of the point list. So the points fall into Q classes
+by `dj2` (`pcs/open.point_classes`), and the contraction runs in two stages: over the (x2, r2, coord)
+slots once per class (the GEMM `open` with K = 2 h2 on a transposed copy of the stored columns,
+`k_transpose_stored`; the x1 = 0 pairs, which `slot_target` maps to several cases, contract against
+their own 4 Q weight rows, the others against 2 Q), then over the (x1, r1) rows per point, E by E
+(`k_stage2`). The level-2 running query `sum_p gamma_p w_z` factors the same way (`k_class_sums`,
+`k_running0`), so the full `w_z` (P N e bytes, 615 MB on the passport) is never built and
+`build_queries` is the point and class tables only. The classes are what the statement has: the SOD's
+52 points fall into 14, ECDSA's 12 into 3, keccak's 28 into 4, but RSA's 18 into 10 and Poseidon's 28
+into 18 (their reads shift along x2: `k2` reads across chains), so `open_factored` takes the factored
+path only when `2 Q (H1 + 1) < P H1` and the direct GEMM otherwise, over a `w_z` built as before. The
+direct path also got cheaper: `gemm_splits` caps the split-K count by the grid instead of 1,024 chunks
+of partials to sum (Poseidon's openings 16 -> 8 ms on the direct path).
+
+Three versions of the transpose lost before one won: scattered two-byte stores (144 ms on the passport's
+W tree, more than the GEMM it fed), one 512-byte block per tile (launch-bound), and 8 KB blocks through
+threadgroup memory with two-byte lanes (2 GB/s, 19 ms on ECDSA); the one kept moves the same blocks in
+8-byte lanes, four pairs a lane both ways, 1 ms a tree.
+
+**LDE.** `R` vanishes on `H x H` by construction and `k_residual` already wrote zeros there, but the
+LDE evaluated every column on all four cosets of `G`. Now axis 1 is two h1-point DFTs (onto `H1`, and
+onto the coset `g1 H1` with the twist `g1^k` in its tables) and axis 2 three h2-point DFTs, so 3 N
+values per column, not 4 N, and `ltmp` three blocks of N instead of four; the buffer is per column by
+row pair, the even row's odd j1 then the odd row's even and odd j1 (`lde_index`, each third padded to
+whole cache lines by `lde_row`), and `Shape` now rejects a family shift that is not a power of omega
+(an odd shift on `G` would read the omitted quadrant). Three things cost time on the way:
+
+- The residual is ALU-bound (counters: ALU limiter about 80 percent in both versions), so index
+  arithmetic per read shows: a full `lde_index` per read (about eight integer operations more than the
+  two constant multiplies of the (j2, j1) layout) cost 15 to 25 percent on the ECDSA grid whatever the
+  layout, mapping or padding. `LdePoint` precomputes the thread's row pair, i1 and third; a read adds
+  the halved shift with a wrap (shifts are even, so the third never changes). Residual kernel at
+  144 x 576, 64 columns, 252 entries: 6.6 ms before, 6.9 after (alternating runs).
+- A two-block layout (all even j1 first, then all odd) put a row's two halves a buffer apart and cost
+  the same 15 percent even with the cheap index; the row-pair layout keeps them on one page.
+- `dft_axis` uses `dst` as its stage-3 intermediate on the generic path, so three axis-2 calls writing
+  strided thirds into one buffer overwrote each other's finished rows; the 72 x 32 test grid takes the
+  dense product on Apple and never hit it (the 192 x 4032 and 288 x 128 prover tests did, and Codex's
+  second pass found it by reading). `dft_axis` takes a `mid` block now and `lde` orders its calls so the
+  three ltmp blocks serve as source, intermediate and scratch; `test_residual` runs on 72 x 96 (a
+  generic-path axis 2) and sweeps whole rows.
+
+Numbers (stage profile, ms, the old code in a worktree of HEAD and the new back to back; the machine
+at load average 30 to 40 from other work, so the small statements are within noise):
+
+| | sha256 | keccak | poseidon | ecdsa | rsa-2048 | sod | dsc | passport |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| classes / points | 8/20 | 4/28 | 18/28 | 3/12 | 10/18 | 14/52 | 14/50 | 14/53 |
+| path | factored | factored | direct | factored | direct | factored | factored | factored |
+| lde | 4 -> 4 | 4 -> 4 | 13 -> 14 | 41 -> 39 | 115 -> 100 | 305 -> 263 | 263 -> 201 | 472 -> 388 |
+| residual | 5 -> 5 | 5 -> 4 | 13 -> 11 | 41 -> 43 | 93 -> 99 | 422 -> 325 | 255 -> 220 | 569 -> 486 |
+| build_queries | 2 -> 1 | 1 -> 1 | 4 -> 2 | 2 -> 1 | 7 -> 7 | 21 -> 1 | 21 -> 1 | 37 -> 3 |
+| open | 7 -> 5 | 10 -> 4 | 16 -> 8 | 20 -> 15 | 41 -> 38 | 236 -> 133 | 227 -> 125 | 355 -> 195 |
+| warm prove | 85 -> 81 | 65 -> 58 | 113 -> 106 | 269 -> 261 | 607 -> 593 | 1565 -> 1378 | 1516 -> 1160 | 2283 -> 1957 |
+
+Proof bytes and the verifier are unchanged (the openings are the same values; the protocol did not
+move). Reviewed twice by Opus and Codex: the first pass found the byte-wide class ids (u16 now), a
+partial region sized for the widest tree when a narrower tree takes more splits (sized per tree), and
+the odd family shifts; the second pass the strided-write clobber above.

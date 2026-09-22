@@ -8,6 +8,8 @@ from max.gpu.host import DeviceContext, HostBuffer
 
 from core.field import F2, E, f_add, f_mul, ext_mul, ext_pow, ext_embed, E_LEVEL, E_BYTES
 from verifier import encode_at
+from pcs.open import slot_weight, host_table
+from core.bytes import host_base, Buf
 from core.params import CLIENT
 from core.hash import Blake3
 from proof import Shape
@@ -16,7 +18,7 @@ from relations.ir import shift_points, point_coord
 from workloads.synthetic import SYNTHETIC_COLUMNS, synthetic_statement, synthetic_trace
 from core.bytes import list_e
 
-comptime p = CLIENT.grid(72, 32)
+comptime p = CLIENT.grid(72, 96)     # m2 = 3: the factored openings split r into (r1, r2)
 comptime N = p.N()
 comptime h1 = p.h1()
 comptime h2 = p.h2()
@@ -95,8 +97,19 @@ def test_openings_and_fold() raises:
     for q in range(3):
         var want = _horner(scratch, srcs[q], p.e, p.e, list_e(z, 0), list_e(z, 1), h2)
         assert_true(want == list_e(openings, SYNTHETIC_COLUMNS + shape.columns_z // p.e + q), "quotient opening mismatch")
-    # fold at a few slots
+    # the level-2 running query at a few slots: sum_p gamma_p w_{z_p}[slot] from the host's slot weights
     var slots: List[Int] = [0, 1, 77, N // 2, N - 1]
+    var gamma = _dl(ctx, prover, L.chal.beta_gamma + O * p.e, P * p.e)
+    var running = _dl(ctx, prover, L.open.running0, N * p.e)
+    for slot in slots:
+        var acc = E(0)
+        for pt in range(P):
+            var dj1 = Int(pts[pt * 4]) | Int(pts[pt * 4 + 1]) << 8
+            var dj2 = Int(pts[pt * 4 + 2]) | Int(pts[pt * 4 + 3]) << 8
+            var tab = host_table[p](point_coord(list_e(z, 0), dj1, d.g1, p.h1()), point_coord(list_e(z, 1), dj2, d.g2, p.h2()), d.rho1, d.rho2)
+            acc = f_add(acc, ext_mul[E_LEVEL](list_e(gamma, pt), slot_weight[p](slot, host_base(tab), Buf[E_BYTES](0), 0, d.rho1, d.rho2)))
+        assert_true(acc == list_e(running, slot), "running query mismatch")
+    # fold at a few slots
     for slot in slots:
         var acc = E(0)
         for c in range(C):

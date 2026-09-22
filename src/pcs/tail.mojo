@@ -79,20 +79,6 @@ def k_points(base: Base, positions: Buf[4], count: Int32, dom: Buf[4], L0: Int32
     pts.store(base, q, pt)
 
 
-def k_running0[p: Params](base: Base, w_z: Buf[E_BYTES], gamma: Buf[E_BYTES], P: Int32, dst: Buf[E_BYTES]):
-    """The level-2 running query: sum_p gamma_p w_{z_p}."""
-    comptime N = p.N()
-    var slot = global_idx.x
-    if slot >= N:
-        return
-    var acc = EF(0)
-    for pt in range(Int(P)):
-        acc += fp_ext_mul[E_LEVEL](to_f32(gamma.load(base, pt)), to_f32(w_z.load(base, slot * Int(P) + pt)))
-        if pt % 4 == 3:
-            acc = fp_reduce(acc)
-    dst.store(base, slot, fp_canonical(acc))
-
-
 comptime POW_LO = 256              # pt^i = pt^(i & 255) pt^(256 (i >> 8)): the level-1 power table holds both factors
 
 
@@ -295,11 +281,6 @@ def tail_encode(ctx: DeviceContext, arena: Arena,
 def points(ctx: DeviceContext, arena: Arena, positions: Int, count: Int, dom: Int, L0: Int, pts: Int) raises:
     ctx.enqueue_function[k_points](arena.buf, Buf[4](positions), Int32(count), Buf[4](dom), Int32(L0), Buf[4](pts),
                                    grid_dim=_grid(count), block_dim=BACKEND.block)
-
-
-def running0[p: Params](ctx: DeviceContext, arena: Arena, w_z: Int, gamma: Int, P: Int, dst: Int) raises:
-    ctx.enqueue_function[k_running0[p]](arena.buf, Buf[E_BYTES](w_z), Buf[E_BYTES](gamma), Int32(P), Buf[E_BYTES](dst),
-                                        grid_dim=_grid(p.N()), block_dim=BACKEND.block)
 
 
 def tail_materialize[p: Params](ctx: DeviceContext, arena: Arena, level1: Bool,

@@ -105,7 +105,7 @@ def breakdown[p: Params, W: Workload](name: String, ctx: DeviceContext, w: W) ra
     var warm = (perf_counter_ns() - t0) // 1000000
     _ = prover.prove(ctx, inputs, profile=True)
     print("\n## ", name, "  grid ", p.h1(), " x ", p.h2(), "  columns W/Z/Q ", prover.shape.columns_w, "/", prover.shape.columns_z, "/", prover.shape.columns_q,
-          "  points ", prover.shape.points, "  proof ", len(proof), " B  warm prove ", warm, " ms")
+          "  points ", prover.shape.points, " in ", prover.layout.open.classes_n, " classes  proof ", len(proof), " B  warm prove ", warm, " ms")
     print("  prove stages:")
     for i in range(len(prover.profile_names)):
         if prover.profile_ms[i] > 0:

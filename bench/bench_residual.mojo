@@ -10,7 +10,7 @@ from core.arena import Arena, Bump
 from pcs.encode import EncLayout, to_packed
 from relations.ir import ENTRY, Families
 from workloads.synthetic import synthetic_statement
-from relations.residual import lde, residual, quotient, quotient_elems
+from relations.residual import lde, lde_bytes, ltmp_bytes, residual, quotient, quotient_elems
 
 comptime p = CLIENT.grid(72, 32)
 comptime COLS = 64
@@ -36,8 +36,8 @@ def main() raises:
     var tab = TableLayout.__init__[p](bump.alloc(0))
     _ = bump.alloc(tab.bytes)
     var families = bump.alloc(f.count * ENTRY)
-    var ltmp = bump.alloc(COLS * 2 * p.h2() * 2 * p.h1() * 2)
-    var lde_buf = bump.alloc(COLS * G * 2)
+    var ltmp = bump.alloc(ltmp_bytes[p](COLS))
+    var lde_buf = bump.alloc(lde_bytes[p](COLS))
     var res_buf = bump.alloc(G * p.e)
     var scratch = bump.alloc(quotient_elems[p]() * p.e)
     var coeff_q = bump.alloc(3 * p.e * p.N() * 2)      # the F2 coefficients of the 3 e columns
@@ -71,7 +71,7 @@ def main() raises:
     for _ in range(REPS):
         lde[p](ctx, arena, e.coeff, COLS, tab, ltmp, lde_buf)
     ctx.synchronize()
-    report("lde", Int(perf_counter_ns() - t0), COLS * (p.N() * 2 * p.h1() + 2 * p.h1() * 2 * p.h2() * p.h2()))
+    report("lde", Int(perf_counter_ns() - t0), COLS * (p.N() * 2 * p.h1() + 3 * p.N() * p.h2()))
 
     residual[p](ctx, arena, lde_buf, families, f.count, tab, alpha, chals, res_buf, families, f.count, 0, 0)
     ctx.synchronize()

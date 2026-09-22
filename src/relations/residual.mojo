@@ -2,8 +2,12 @@
 
 Grid G = G1 x G2, G_l = <g_l> of order 2 h_l; point j is g_l^j, even j is H_l, odd j the coset.
 Buffers (bytes; slowest ... fastest):
-    lde       (column, j2, j1, 2)      F2 values on G: witness, Z coordinate, then public columns (one index space)
-    ltmp      (column, k2, j1, 2)      after the axis-1 forward DFT
+    lde       (column, t, 3 h1, 2)          F2 values on the three cosets of G off H (witness, Z coordinate, then public
+                                             columns, one index space), per column by row pair t: the odd j1 of the even
+                                             row 2 t, then the even j1 and the odd j1 of the odd row 2 t + 1, i1 = j1 // 2
+                                             within each third (`lde_index`; R is zero on H x H, so the residual never
+                                             reads there and the LDE never evaluates there: 3 N per column, not 4 N)
+    ltmp      three (column, k2, i1, 2)      the axis-1 outputs at odd j1 and at even j1, and a spare: the axis-2 scratch (`lde`)
     families  (entry, ENTRY)           the compiled family list, kappa folded in after alpha
     residual  (j2, j1, e)              R = sum_j alpha^j R_j on G
     quotient  four E-valued scratch tables, QUOTIENT_ELEMS x e bytes (see `quotient`)
@@ -11,7 +15,7 @@ Buffers (bytes; slowest ... fastest):
                                        encoder's `coeff`, written directly (no values on H, no idft2)
 The coset steps are launches of backend.gemm_f2 ("shapes are GEMMs", design section 8), the full-length
 transforms radix stages:
-    lde        dft_axis per axis (three radix stages, dft.mojo): coefficients k -> the points of G
+    lde        two dft_axis on axis 1, three on axis 2 (three radix stages each, dft.mojo): coefficients k -> the three cosets of G off H
     residual   the one stage that is not a GEMM launch: k_residual, one thread per column position and
                two rows, gathers X[entry][point] = mult(point) * c_a(shift_a point) * c_b(shift_b point)
                and accumulates the e / 2 kappa lanes per row in registers (the GEMM skeleton's shared-memory
@@ -82,31 +86,67 @@ def k_merge_kappa(base: Base, families: Buf[1], merge: Buf[1], idx_off: Int32, c
     Buf[E_BYTES](families_g.at(u * ENTRY)).store(base, 0, kappa)
 
 
-@always_inline
-def _read[p: Params](base: Base, lde: Buf[2], at: Int, j1: Int, j2: Int) -> F2:
-    """c(shift point) for the read descriptor (col, dj1, dj2) at `at`; shifts are below the domain size."""
-    comptime G1 = 2 * p.h1()
-    comptime G2 = 2 * p.h2()
-    var col = u16(base, at)
-    var a = j1 + u16(base, at + 2)
-    if a >= G1:
-        a -= G1
-    var b = j2 + u16(base, at + 4)
-    if b >= G2:
-        b -= G2
-    return lde.load(base, (col * G2 + b) * G1 + a)
+def lde_row[p: Params]() -> Int:
+    """F2 per third of a row pair: h1 rounded up to whole 64-byte lines, so a warp's 32 consecutive values
+    are one line (at 288 bytes per third, half the warps straddled two: the residual ran 15 percent slower)."""
+    return (p.h1() + 31) // 32 * 32
 
 
 @always_inline
-def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, j1: Int, j2: Int) -> E:
-    """R(point) = sum_t b_t R_t(point) from the e coordinate columns at col: with R_t = u_t + i v_t in F2,
-    coordinate 2l is u_2l - v_(2l + 1) and 2l + 1 is v_2l + u_(2l + 1) (i^2 = -1, i = b_1)."""
-    comptime G1 = 2 * p.h1()
-    comptime G2 = 2 * p.h2()
+def lde_index[p: Params](col: Int, j1: Int, j2: Int) -> Int:
+    """F2 element of c(g1^j1, g2^j2) in the LDE buffer: column col, row pair t = j2 // 2, then the third: the
+    even row's odd j1, the odd row's even j1, the odd row's odd j1, then i1 = j1 // 2 (thirds `lde_row` apart).
+    Never called at (even, even): that is H x H. A row pair is one run, so a thread's reads stay on the pages
+    the old (j2, j1) layout kept them on (a two-block layout cost the residual 15 percent)."""
+    comptime W = lde_row[p]()
+    return (col * p.h2() + (j2 >> 1)) * 3 * W + (j2 & 1) * (1 + (j1 & 1)) * W + (j1 >> 1)
+
+
+@fieldwise_init
+struct LdePoint(TrivialRegisterPassable):
+    """A thread's point in the LDE layout: row pair t = j2 // 2, i1 = j1 // 2, and its third of the pair
+    (`lde_index`). Shifts are even, so a read keeps the third and adds half the shift to t and i1: two constant
+    multiplies and the wraps per read, as on the full grid (the full `lde_index` per read, about eight integer
+    operations more, cost the ALU-bound residual 15 to 25 percent)."""
+    var t: Int
+    var i1: Int
+    var third: Int
+
+    @always_inline
+    def __init__[p: Params](out self, j1: Int, j2: Int):
+        self.t = j2 >> 1
+        self.i1 = j1 >> 1
+        self.third = (j2 & 1) * (1 + (j1 & 1)) * lde_row[p]()
+
+    @always_inline
+    def at[p: Params](self, col: Int, di1: Int, dt: Int) -> Int:
+        """The element of column col at the point shifted by (2 di1, 2 dt); di1 < h1 and dt <= h2 (a shift below
+        the domain plus the second row of a thread), so one subtraction wraps each."""
+        comptime W = lde_row[p]()
+        var i1 = self.i1 + di1
+        if i1 >= p.h1():
+            i1 -= p.h1()
+        var t = self.t + dt
+        if t >= p.h2():
+            t -= p.h2()
+        return (col * p.h2() + t) * 3 * W + self.third + i1
+
+
+@always_inline
+def _read[p: Params](base: Base, lde: Buf[2], at: Int, pt: LdePoint, dt: Int) -> F2:
+    """c(shift point) for the read descriptor (col, dj1, dj2) at `at`, `dt` row pairs below the point;
+    shifts are below the domain size and even (Shape)."""
+    return lde.load(base, pt.at[p](u16(base, at), u16(base, at + 2) >> 1, (u16(base, at + 4) >> 1) + dt))
+
+
+@always_inline
+def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, pt: LdePoint, di1: Int) -> E:
+    """R(point shifted by omega1^di1) = sum_t b_t R_t from the e coordinate columns at col: with R_t = u_t + i v_t
+    in F2, coordinate 2l is u_2l - v_(2l + 1) and 2l + 1 is v_2l + u_(2l + 1) (i^2 = -1, i = b_1)."""
     var r = E(0)
     comptime for l in range(E_BYTES // 2):
-        var a = lde.load(base, ((col + 2 * l) * G2 + j2) * G1 + j1)
-        var b = lde.load(base, ((col + 2 * l + 1) * G2 + j2) * G1 + j1)
+        var a = lde.load(base, pt.at[p](col + 2 * l, di1, 0))
+        var b = lde.load(base, pt.at[p](col + 2 * l + 1, di1, 0))
         r[2 * l] = f_sub(a[0], b[1])
         r[2 * l + 1] = f_add(a[1], b[0])
     return r
@@ -117,9 +157,11 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
     (the rows 2 t apart share the entry descriptors and kappa, and have V loads in flight) with the e / 2
     kappa lanes per row accumulated in registers: X = mult(point) c_a(shift_a point) c_b(shift_b point)
     is gathered once and multiplies the E kappa lane by lane (F2 times F2 per lane on fp32 lanes, 128
-    terms between reductions like gemm_f2). Threads walk the odd rows, then the odd columns of the even
-    rows; R is zero on H x H for a satisfied statement, so the last quadrant's threads write zero. The
-    Horner transitions are k_horner's, launched after this one."""
+    terms between reductions like gemm_f2). Threads walk the odd rows (the even j1 of a row first, then the
+    odd, so a warp reads one third of a row pair), then the odd columns of the even rows; R is zero on H x H
+    for a satisfied statement, so the last quadrant's threads write zero. The Horner transitions are
+    k_horner's, launched after this one. One body after the point is chosen: a body per branch inlines twice
+    and ran 15 percent slower."""
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     comptime V = 2 if p.h2() % 2 == 0 else 1
@@ -135,7 +177,7 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
     var j2: Int
     if gid < R1:
         j2 = 2 * V * (gid // G1) + 1
-        j1 = gid % G1
+        j1 = 2 * (gid % p.h1()) + (gid % G1) // p.h1()      # the even j1 first, then the odd: a warp reads one third of a row pair
     elif gid < R1 + R2:
         var g = gid - R1
         j2 = 2 * V * (g // p.h1())
@@ -146,6 +188,7 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         j1 = 2 * (g % p.h1())
         dst.store(base, j2 * G1 + j1, E(0))
         return
+    var pt = LdePoint.__init__[p](j1, j2)
     var g1f = fp_center(gate1.load(base, j1))
     var g2f = InlineArray[V2, V](fill=V2(0))
     var re = InlineArray[VH, V](fill=VH(0))
@@ -162,9 +205,9 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         var kre = to_f32(kap[0])
         var kim = to_f32(kap[1])
         comptime for t in range(V):
-            var v = to_f32(_read[p](base, lde, ent + ENT_A, j1, j2 + 2 * t))
+            var v = to_f32(_read[p](base, lde, ent + ENT_A, pt, t))
             if second:
-                v = fp_mul_f2(v, to_f32(_read[p](base, lde, ent + ENT_B, j1, j2 + 2 * t)))
+                v = fp_mul_f2(v, to_f32(_read[p](base, lde, ent + ENT_B, pt, t)))
             if mult == 1:
                 v = fp_mul_f2(v, g1f)
             elif mult == 2:
@@ -201,15 +244,13 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
     var j2: Int
     if gid < Q1:
         j2 = 2 * (gid // G1) + 1
-        j1 = gid % G1
+        j1 = 2 * (gid % p.h1()) + (gid % G1) // p.h1()
     else:
         j2 = 2 * ((gid - Q1) // p.h1())
         j1 = 2 * ((gid - Q1) % p.h1()) + 1
+    var pt = LdePoint.__init__[p](j1, j2)
     var g = fp_center(gate1.load(base, j1))
     var acc = to_f32(dst.load(base, j2 * G1 + j1))
-    var jn = j1 + 2
-    if jn >= G1:
-        jn -= G1
     for k in range(Int(n_accs)):
         var d = accs.offset(k * ACC)
         if Int(d.load(base, 38)) != KIND_HORNER:
@@ -218,8 +259,8 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
         var first = u16(base, d.at(2))
         var ka = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS) * ENTRY)).load(base, 0))
         var kb = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS + 1) * ENTRY)).load(base, 0))
-        var v = fp_reduce(fp_ext_mul[E_LEVEL](ka, to_f32(_z_read[p](base, lde, col, jn, j2)))
-                          + fp_ext_mul[E_LEVEL](kb, to_f32(_z_read[p](base, lde, col, j1, j2))))
+        var v = fp_reduce(fp_ext_mul[E_LEVEL](ka, to_f32(_z_read[p](base, lde, col, pt, 1)))
+                          + fp_ext_mul[E_LEVEL](kb, to_f32(_z_read[p](base, lde, col, pt, 0))))
         var h = ef_planes(v)                            # times the gate, an F2 scalar, lane by lane
         acc += ef_merge(h[0] * g[0] - h[1] * g[1], h[0] * g[1] + h[1] * g[0])
     dst.store(base, j2 * G1 + j1, fp_canonical(acc))
@@ -331,16 +372,39 @@ def merge_tables(families: List[UInt8], accs: List[UInt8], entries: Int) raises 
 
 def lde[p: Params](ctx: DeviceContext, arena: Arena,
                    coeff: Int, columns: Int, tab: TableLayout, ltmp: Int, dst: Int) raises:
-    """coeff (column, k2, k1, 2) -> dst (column, j2, j1, 2): forward DFT per axis onto G (spec 10.2),
-    three radix stages each (dft.mojo). The twist by g^i is inside the tables, so there is no separate
-    pass. ltmp holds G2 rows of G1 per column: axis 1 writes its first half and scratches in the
-    second, axis 2 reads the first half and scratches over both."""
+    """coeff (column, k2, k1, 2) -> dst, the values on the three cosets of G off H in the row-pair layout of
+    `lde_index` (spec 10.2). Axis 1 is two h1-point DFTs of the coefficients, onto H1 and onto the coset g1 H1
+    (the twist inside its tables); axis 2 is three h2-point DFTs, the odd-j1 lines onto H2 (the even rows) and
+    onto the coset g2 H2 (the odd rows), the even-j1 lines onto the coset only, each writing its third of the
+    row pairs; three radix stages each (dft.mojo). ltmp is three blocks of (column, k2, i1, 2), N F2 per column:
+    the odd and even axis-1 outputs and a spare; the axis-2 calls take their intermediate and scratch from the
+    blocks that are free at that point (a strided dst must not double as the intermediate)."""
     comptime h1 = p.h1()
     comptime h2 = p.h2()
-    comptime G1 = 2 * h1
-    var half = columns * h2 * G1 * 2
-    dft_axis[DftPlan(G1, h1)](ctx, arena, coeff, ltmp, ltmp + half, 1, columns * h2, tab.base + tab.fwd1)
-    dft_axis[DftPlan(2 * h2, h2), 4](ctx, arena, ltmp, dst, ltmp, G1, columns, tab.base + tab.fwd2)
+    comptime N = p.N()
+    comptime W = lde_row[p]()
+    var block = columns * N * 2
+    var odd = ltmp
+    var even = ltmp + block
+    var spare = ltmp + 2 * block
+    dft_axis[DftPlan(h1, h1)](ctx, arena, coeff, even, spare, 1, columns * h2, tab.base + tab.fwd1e)
+    dft_axis[DftPlan(h1, h1)](ctx, arena, coeff, odd, spare, 1, columns * h2, tab.base + tab.fwd1o)
+    # axis 2 writes strided thirds of the row pairs, so each call's contiguous intermediate goes to a
+    # scratch block, never to dst (the generic path's stage 3 would overwrite the thirds already written):
+    # the even lines first, their block then free for the two odd-line calls
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, even, dst + W * 2, even, h1, columns, tab.base + tab.fwd2o, dst_line=3 * W * h2 * 2, dst_j=3 * W * 2, mid=spare)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, odd, dst, spare, h1, columns, tab.base + tab.fwd2e, dst_line=3 * W * h2 * 2, dst_j=3 * W * 2, mid=even)
+    dft_axis[DftPlan(h2, h2), 4](ctx, arena, odd, dst + 2 * W * 2, spare, h1, columns, tab.base + tab.fwd2o, dst_line=3 * W * h2 * 2, dst_j=3 * W * 2, mid=even)
+
+
+def lde_bytes[p: Params](columns: Int) -> Int:
+    """Bytes of the LDE buffer of `columns` columns: h2 row pairs of three `lde_row` thirds each."""
+    return columns * 3 * lde_row[p]() * p.h2() * 2
+
+
+def ltmp_bytes[p: Params](columns: Int) -> Int:
+    """Bytes of the LDE scratch for `columns` columns at once: three blocks of N F2 each."""
+    return columns * 3 * p.N() * 2
 
 
 def residual[p: Params](ctx: DeviceContext, arena: Arena,
