@@ -26,6 +26,7 @@ from relations.ir import FIX_ONE, FIX_E
 from relations.statement import Statement, Layout, Term, Read, BIT, GATE_2, restriction_line
 from workload import Workload
 from max.algorithm import parallelize
+from std.math import iota
 
 comptime ROUNDS = 64
 comptime WORDS = 8              # state words a .. h
@@ -106,6 +107,32 @@ def _add(addends: List[UInt32], mut carry: List[UInt32]) raises -> UInt32:
             carry[k] |= UInt32((cout >> k) & 1) << UInt32(z)
         cin = cout
     return s
+
+
+def _v(*xs: UInt32) -> InlineArray[UInt32, 8]:
+    """Up to eight addends, zero-padded (a zero addend leaves the sum and the carries unchanged)."""
+    var a = InlineArray[UInt32, 8](fill=0)
+    for i in range(len(xs)):
+        a[i] = xs[i]
+    return a^
+
+
+def _add8(a: InlineArray[UInt32, 8], k: Int, mut carry: InlineArray[UInt32, 3]) raises -> UInt32:
+    """`_add` on all 32 bit positions at once: the carry out of bit z is the sum of the addends' low z + 1 bits
+    over 2^(z+1); its bits land in the first k words of `carry`."""
+    var z = iota[DType.uint64, ROWS]()
+    var low = (SIMD[DType.uint64, ROWS](2) << z) - 1
+    var acc = SIMD[DType.uint64, ROWS](0)
+    var total: UInt64 = 0
+    for i in range(8):
+        acc += SIMD[DType.uint64, ROWS](UInt64(a[i])) & low
+        total += UInt64(a[i])
+    var cout = acc >> (z + 1)
+    if (cout >> UInt64(k)).reduce_max() != 0:
+        raise Error("carry does not fit its bit columns")
+    for j in range(k):
+        carry[j] |= UInt32((((cout >> UInt64(j)) & 1) << z).reduce_add())
+    return UInt32(total & 0xFFFFFFFF)
 
 
 def sigma0(x: UInt32) -> UInt32:
@@ -605,24 +632,32 @@ def lane_words(head: List[UInt32], digest_in: List[UInt32], chains: Int, B: Int,
             for i in range(16):
                 block.append(w[t - 63 + i])
             st = compress(iv(), block)
-    st = iv()
-    var hist = List[UInt32](capacity=chains * WORDS)      # the state entering every chain
+    var init = iv()
+    var sw = InlineArray[UInt32, WORDS](fill=0)
+    for i in range(WORDS):
+        sw[i] = init[i]
+    var hist = List[UInt32](length=chains * WORDS, fill=0)   # the state entering every chain
     var out = List[UInt32](capacity=chains * (SHA_COLUMNS + 1))
-    var digest = digest_in.copy()
+    var digest = InlineArray[UInt32, WORDS](fill=0)
+    var has_digest = len(digest_in) == WORDS
+    if has_digest:
+        for i in range(WORDS):
+            digest[i] = digest_in[i]
     for t in range(chains):
         var live = t < n
         var b = t // ROUNDS
         var end = live and t % ROUNDS == ROUNDS - 1
         var k = kc[t % ROUNDS] if live else 0
-        hist.extend(st.copy())
-        var a = st[0]
-        var bb = st[1]
-        var c = st[2]
-        var d = st[3]
-        var e = st[4]
-        var f = st[5]
-        var g = st[6]
-        var h = st[7]
+        for i in range(WORDS):
+            hist[t * WORDS + i] = sw[i]
+        var a = sw[0]
+        var bb = sw[1]
+        var c = sw[2]
+        var d = sw[3]
+        var e = sw[4]
+        var f = sw[5]
+        var g = sw[6]
+        var h = sw[7]
         var w1 = w[(t + 1) % chains]
         var w14 = w[(t + 14) % chains]
         var s0x = rotr(a, 2) ^ rotr(a, 13)
@@ -636,40 +671,48 @@ def lane_words(head: List[UInt32], digest_in: List[UInt32], chains: Int, B: Int,
         var g0m = w1 >> 3
         var g1x = rotr(w14, 17) ^ rotr(w14, 19)
         var g1m = w14 >> 10
-        var wc = List[UInt32](length=2, fill=0)
-        var ws = _add([g1x ^ g1m, w[(t + 9) % chains], g0x ^ g0m, w[t]], wc)
+        var wc = InlineArray[UInt32, 3](fill=0)
+        var ws = _add8(_v(g1x ^ g1m, w[(t + 9) % chains], g0x ^ g0m, w[t]), 2, wc)
         var back = (t - 63) * WORDS
-        var ac = List[UInt32](length=3, fill=0)
-        var ec = List[UInt32](length=3, fill=0)
-        var nxt = List[UInt32](capacity=WORDS)
-        var cc = List[UInt32](capacity=6)
+        var ac = InlineArray[UInt32, 3](fill=0)
+        var ec = InlineArray[UInt32, 3](fill=0)
+        var nxt = InlineArray[UInt32, WORDS](fill=0)
+        var cc = InlineArray[UInt32, 6](fill=0)
         if live:
-            nxt.append(_add([h, s1, ch, w[t], s0, mj, k, hist[back] if end else 0], ac))
+            nxt[0] = _add8(_v(h, s1, ch, w[t], s0, mj, k, hist[back] if end else 0), 3, ac)
         else:
-            nxt.append(_add([a], ac))
+            nxt[0] = _add8(_v(a), 3, ac)
+        var ci = 0
         for i in range(1, WORDS):
             if i == 4:
                 if live:
-                    nxt.append(_add([d, h, s1, ch, w[t], k, hist[back + 4] if end else 0], ec))
+                    nxt[4] = _add8(_v(d, h, s1, ch, w[t], k, hist[back + 4] if end else 0), 3, ec)
                 else:
-                    nxt.append(_add([e], ec))
+                    nxt[4] = _add8(_v(e), 3, ec)
                 continue
-            var one = List[UInt32](length=1, fill=0)
-            nxt.append(_add([st[i - 1] if live else st[i], hist[back + i] if end else 0], one))
-            cc.append(one[0])
-        out.extend(st.copy())
+            var one = InlineArray[UInt32, 3](fill=0)
+            nxt[i] = _add8(_v(sw[i - 1] if live else sw[i], hist[back + i] if end else 0), 1, one)
+            cc[ci] = one[0]
+            ci += 1
+        for i in range(WORDS):
+            out.append(sw[i])
         var dg: UInt32 = 0
-        if live and t % ROUNDS < PAD_AT and len(digest) == WORDS:
+        if live and t % ROUNDS < PAD_AT and has_digest:
             dg = digest[t % ROUNDS]
         if end and (b < B - 1 or reset_last):              # the sum goes to dg, the next state is the IV
             digest = nxt.copy()
-            nxt = iv()
-        out.extend(nxt.copy())
-        out.extend([w[t], ws, wc[0], wc[1], s0x, s0, s1x, s1, ab, mj, ch, g0x, g0m, g1x, g1m,
-                    ac[0], ac[1], ac[2], ec[0], ec[1], ec[2]])
-        out.extend(cc^)
+            has_digest = True
+            for i in range(WORDS):
+                nxt[i] = init[i]
+        for i in range(WORDS):
+            out.append(nxt[i])
+        for v in [w[t], ws, wc[0], wc[1], s0x, s0, s1x, s1, ab, mj, ch, g0x, g0m, g1x, g1m,
+                  ac[0], ac[1], ac[2], ec[0], ec[1], ec[2]]:
+            out.append(v)
+        for i in range(6):
+            out.append(cc[i])
         out.append(dg)
-        st = nxt^
+        sw = nxt.copy()
     return out^
 
 
@@ -715,40 +758,49 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
         d = sha256_chain(d, B)
         prevs.append(_digest_words(d))
     var failed = List[String](length=M, fill=String())
+    var lanes = List[List[UInt32]](length=M, fill=List[UInt32]())
     var tp = t.unsafe_ptr()
 
     @parameter
     def one_lane(j: Int):
-        """Lane j's words into its rows crt(z, j) of every SHA column; lanes write disjoint rows."""
+        """Lane j's words: 44 per chain, the lane's state chained through its blocks."""
         var head = List[UInt32](capacity=16)
         if j == 0:
             head = m.copy()
         else:
             head.extend(prevs[j].copy())
             head.extend(pad32())
-        var words: List[UInt32]
         try:
-            words = lane_words(head, prevs[j], h2, B, j < M - 1)
+            lanes[j] = lane_words(head, prevs[j], h2, B, j < M - 1)
         except e:
             failed[j] = String(e)
-            return
-        var rows = List[Int](capacity=ROWS)
-        for z in range(ROWS):
-            rows.append(crt(z, j, M))
-        for i in range(SHA_COLUMNS + 1):
-            var col = tp.unsafe_offset(cols[i])
-            for k in range(h2):
-                var w = words[k * (SHA_COLUMNS + 1) + i]
-                var dst = col.unsafe_offset(k * h1)
-                for z in range(ROWS):
-                    dst[unsafe_offset=rows[z]] = UInt8((w >> UInt32(31 - z)) & 1)
 
     parallelize[one_lane](M)
     for j in range(M):
         if failed[j].byte_length() > 0:
             raise Error(failed[j])
+
+    @parameter
+    def one_column(task: Int):
+        """Column i of lane j into its rows crt(z, j); the (lane, column) pairs write disjoint bytes."""
+        var j = task // (SHA_COLUMNS + 1)
+        var i = task % (SHA_COLUMNS + 1)
+        var rows = InlineArray[Int, ROWS](fill=0)
+        for z in range(ROWS):
+            rows[z] = crt(z, j, M)
+        var col = tp.unsafe_offset(cols[i])
+        for k in range(h2):
+            var w = lanes[j][k * (SHA_COLUMNS + 1) + i]
+            var dst = col.unsafe_offset(k * h1)
+            for z in range(ROWS):
+                dst[unsafe_offset=rows[z]] = UInt8((w >> UInt32(31 - z)) & 1)
+
+    parallelize[one_column](M * (SHA_COLUMNS + 1))
     var n = ROUNDS * B
-    for k in range(h2):
+
+    @parameter
+    def one_chain(k: Int):
+        """The per-row selector columns on chain k."""
         var b0c = chain_word(m, kc, n, B, 8, k) != 0
         var s8c = chain_word(m, kc, n, B, 7, k) != 0
         var endlast = chain_word(m, kc, n, B, 9, k) != 0
@@ -756,11 +808,14 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
             var lane0 = rho % M == 0
             var notlast = rho % M != M - 1
             var l0b0 = lane0 and b0c
-            t[col_l0b0 * N + k * h1 + rho] = 1 if l0b0 else 0
-            t[col_s8w * N + k * h1 + rho] = 1 if s8c and not l0b0 else 0
-            t[col_rstx * N + k * h1 + rho] = 1 if endlast and notlast else 0
-            t[col_lane0w * N + k * h1 + rho] = 1 if lane0 else 0
-            t[col_notlastw * N + k * h1 + rho] = 1 if notlast else 0
+            var at = k * h1 + rho
+            tp[unsafe_offset=col_l0b0 * N + at] = 1 if l0b0 else 0
+            tp[unsafe_offset=col_s8w * N + at] = 1 if s8c and not l0b0 else 0
+            tp[unsafe_offset=col_rstx * N + at] = 1 if endlast and notlast else 0
+            tp[unsafe_offset=col_lane0w * N + at] = 1 if lane0 else 0
+            tp[unsafe_offset=col_notlastw * N + at] = 1 if notlast else 0
+
+    parallelize[one_chain](h2)
     return t^
 
 
@@ -815,9 +870,22 @@ struct Sha256Chain(Workload, Copyable, Movable):
         var message = List[UInt8](capacity=DIGEST)
         for i in range(DIGEST):
             message.append(public_inputs[i])
+        var cols = List[List[UInt8]](length=CHAIN_PUBLICS, fill=List[UInt8]())
+        var failed = List[String](length=CHAIN_PUBLICS, fill=String())
+
+        @parameter
+        def one_column(l: Int):
+            try:
+                cols[l] = chain_public_values[p](message, l)
+            except e:
+                failed[l] = String(e)
+
+        parallelize[one_column](CHAIN_PUBLICS)
         var data = List[UInt8]()
         for l in range(CHAIN_PUBLICS):
-            data.extend(chain_public_values[p](message, l))
+            if failed[l].byte_length() > 0:
+                raise Error(failed[l])
+            data.extend(Span(cols[l]))
         var init = iv()
         for i in range(WORDS):
             var line = List[UInt8](capacity=h1)
