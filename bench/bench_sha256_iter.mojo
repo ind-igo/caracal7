@@ -1,8 +1,9 @@
 """SHA-256 hash chain in the shape of OpenVM's `sha256_iter` guest: start from SHA-256 of the empty message and
 hash the 32-byte digest n times (docs/bench-plan.md, Track 3). The chain is split into segments of one grid;
 the last digest of a segment is the first message of the next, and every segment is its own proof (no
-aggregation). One timer per segment from the start value to the proof bytes: host trace, advice, public data,
-loads and prove. The prover setup (arena, tables, a cold prove for the kernel compile) is a separate number.
+aggregation). One timer from the start value to the last proof's bytes, with the host trace, advice, public
+data, loads and proves inside; the host builds the next segment while the device proves the current one. The
+prover setup (arena, tables, a cold prove for the kernel compile) is a separate number.
 Every segment proof is verified, and the last digest is checked against the host chain.
 
     ./bench_sha256_iter [n ...]      default: 1000 10000 150000
@@ -18,7 +19,7 @@ from max.gpu.host import DeviceContext
 from core.params import Params, CLIENT
 from core.hash import Blake3
 from prover import Prover, load_trace, load_advice, load_public
-from relations.statement import advice
+from relations.statement import advice, Layout
 from workloads.sha256 import Sha256Chain, sha256, sha256_chain, chain_hashes
 from workload import prove_prepared, verify_workload
 
@@ -48,9 +49,9 @@ struct Totals(Movable):
     var start: List[UInt8]      # the first message of the next segment
     var hashes: Int
     var segments: Int
-    var prove_ms: Float64       # sum of the input-to-proof times
-    var host_ms: Float64        # of which host work: digest, trace, advice, public data
-    var load_ms: Float64        # of which uploads
+    var prove_ms: Float64       # input to the last proof, verification excluded
+    var host_ms: Float64        # host work: digest, trace, advice, public data (mostly under the device work)
+    var load_ms: Float64        # uploads
     var setup_ms: Float64
     var verify_ms: Float64
     var proof_bytes: Int
@@ -69,8 +70,33 @@ struct Totals(Movable):
         self.arena_bytes = 0
 
 
+struct Segment(Movable):
+    """One segment's host data: built on the CPU while the device proves the previous segment."""
+    var w: Sha256Chain
+    var public: List[UInt8]
+    var trace: List[UInt8]
+    var idx: List[UInt8]
+    var data: List[UInt8]
+
+    def __init__[p: Params](out self, layout: Layout, start: List[UInt8]) raises:
+        self.w = Sha256Chain(start.copy())
+        self.public = self.w.public_inputs[p]()
+        self.trace = self.w.trace[p](layout)
+        self.idx = advice[p](layout, self.trace)
+        self.data = Sha256Chain.public_data[p](layout, self.public)
+
+
+def _load[p: Params](ctx: DeviceContext, mut prover: Prover[p, Blake3], s: Segment) raises:
+    load_trace[p, Blake3](ctx, prover, s.trace)
+    load_advice[p, Blake3](ctx, prover, s.idx)
+    load_public[p, Blake3](ctx, prover, s.data)
+    ctx.synchronize()
+
+
 def run_grid[p: Params](ctx: DeviceContext, count: Int, mut t: Totals) raises:
-    """`count` segments of chain_hashes[p]() hashes on one prover."""
+    """`count` segments of chain_hashes[p]() hashes on one prover, pipelined: the host builds segment i + 1
+    while the device proves segment i, and the upload of i + 1 follows proof i. The timer runs from the
+    first segment's start value to the last proof and stops only for verification."""
     if count == 0:
         return
     var t0 = perf_counter_ns()
@@ -81,31 +107,42 @@ def run_grid[p: Params](ctx: DeviceContext, count: Int, mut t: Totals) raises:
     _ = prove_prepared[p, Blake3, Sha256Chain](ctx, prover, w0, layout, w0.public_inputs[p]())   # cold: kernel compile
     t.setup_ms += _ms(t0)
     t.arena_bytes = max(t.arena_bytes, prover.layout.bytes)
-    for _ in range(count):
+    t0 = perf_counter_ns()
+    var cur = Segment.__init__[p](layout, t.start)
+    t.host_ms += _ms(t0)
+    var t1 = perf_counter_ns()
+    _load[p](ctx, prover, cur)
+    t.load_ms += _ms(t1)
+    for i in range(count):
+        prover.prove_begin(ctx, cur.public)
+        if i + 1 < count:
+            t1 = perf_counter_ns()
+            var nxt = Segment.__init__[p](layout, List[UInt8](cur.public[32:]))
+            t.host_ms += _ms(t1)
+            var proof = prover.prove_end(ctx)
+            t1 = perf_counter_ns()
+            _load[p](ctx, prover, nxt)
+            t.load_ms += _ms(t1)
+            t.prove_ms += _ms(t0)
+            _verify[p](proof^, cur, t)
+            cur = nxt^
+        else:
+            var proof = prover.prove_end(ctx)
+            t.prove_ms += _ms(t0)
+            _verify[p](proof^, cur, t)
         t0 = perf_counter_ns()
-        var w = Sha256Chain(t.start.copy())
-        var public = w.public_inputs[p]()
-        var trace = w.trace[p](layout)
-        var idx = advice[p](layout, trace)
-        var data = Sha256Chain.public_data[p](layout, public)
-        var t1 = perf_counter_ns()
-        load_trace[p, Blake3](ctx, prover, trace)
-        load_advice[p, Blake3](ctx, prover, idx)
-        load_public[p, Blake3](ctx, prover, data)
-        ctx.synchronize()
-        var t2 = perf_counter_ns()
-        var proof = prover.prove(ctx, public)
-        t.prove_ms += _ms(t0)
-        t.host_ms += Float64(t1 - t0) / 1e6
-        t.load_ms += Float64(t2 - t1) / 1e6
-        t.proof_bytes += len(proof)
-        t0 = perf_counter_ns()
-        if not verify_workload[p, Blake3, Sha256Chain](proof^, w, public):
-            raise Error("segment proof rejected")
-        t.verify_ms += _ms(t0)
-        t.start = List[UInt8](public[32:])
-        t.hashes += chain_hashes[p]()
-        t.segments += 1
+
+
+def _verify[p: Params](var proof: List[UInt8], s: Segment, mut t: Totals) raises:
+    """Outside the timer: check the segment proof and move the chain on to its last digest."""
+    t.proof_bytes += len(proof)
+    var tv = perf_counter_ns()
+    if not verify_workload[p, Blake3, Sha256Chain](proof^, s.w, s.public):
+        raise Error("segment proof rejected")
+    t.verify_ms += _ms(tv)
+    t.start = List[UInt8](s.public[32:])
+    t.hashes += chain_hashes[p]()
+    t.segments += 1
 
 
 def run(ctx: DeviceContext, n: Int, segment: Int) raises:

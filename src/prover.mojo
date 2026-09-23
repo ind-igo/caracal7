@@ -357,10 +357,22 @@ struct Prover[p: Params, H: Hash]:
             self.t0 = now
 
     def prove(mut self, ctx: DeviceContext, public_inputs: Span[UInt8, _], profile: Bool = False) raises -> List[UInt8]:
+        """prove_begin, then prove_end."""
+        self.prove_begin(ctx, public_inputs, profile)
+        return self.prove_end(ctx)
+
+    def prove_end(mut self, ctx: DeviceContext) raises -> List[UInt8]:
+        """Wait for the device and read the staged proof values into the proof bytes."""
+        var out = self.proof.finish()
+        self._mark(ctx, "finish")
+        return out^
+
+    def prove_begin(mut self, ctx: DeviceContext, public_inputs: Span[UInt8, _], profile: Bool = False) raises:
         """Spec section 10 in order. The trace must already be in the arena at layout.w.enc.trace.
         Every call is an enqueue; proof values are staged as async copies and read after the one
-        synchronize in `proof.finish`. `profile` inserts a synchronize after every stage and records
-        the stage times in profile_names / profile_ms (a measurement mode, never the production path)."""
+        synchronize in `proof.finish` (prove_end), so the host is free until then. `profile` inserts a
+        synchronize after every stage and records the stage times in profile_names / profile_ms (a
+        measurement mode, never the production path)."""
         self.profile = profile
         self.t0 = perf_counter_ns()
         self.profile_names = List[String]()
@@ -447,9 +459,6 @@ struct Prover[p: Params, H: Hash]:
         self._mark(ctx, "transcript clear")
         self._open_previous(ctx, len(S.tail), T)
         self._mark(ctx, "open last")
-        var out = self.proof.finish()
-        self._mark(ctx, "finish")
-        return out^
 
     # ---- stages, in protocol order ----
 

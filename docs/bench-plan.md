@@ -91,21 +91,25 @@ with a fixed cost, closer to the csp row than to a chain.
 ### The hash chain
 
 The hash chain is the main row of this track. OpenVM's `sha256_iter` starts from the SHA-256 of the empty
-message and hashes the 32-byte digest 150,000 times. The a16z `sha2-chain` has the same shape. One hash of a
-32-byte value is one compression, so OpenVM's 10 MiB result also compares per compression: about 0.033 ms,
-against caracal7's 0.22 ms per hash on the RTX 3090 (`README.md`). The GPUs differ and the sizes differ by
-about 190x, so this is not yet a fair comparison. The chain bench makes it fair:
+message and hashes the 32-byte digest 150,000 times. The a16z `sha2-chain` has the same shape. The chain costs
+OpenVM much more per hash than its 10 MiB SHA-256 row costs per compression, because every hash runs the
+guest's hasher (97 M RISC-V instructions for the 150K chain).
 
-1. **Same input.** Start from SHA-256 of the empty message, as `sha256_iter` does, and check the final digest
-   against OpenVM's output at the same n.
-2. **Same timer.** The input-to-proof timer of the rules above; the host trace is inside it.
-3. **Same scale.** n = 1K, 10K and 150K. Split the chain into segments of the largest grid that fits the card
-   (875 hashes on `CLIENT.grid(224, 8064)` today). The last digest of each segment is the public input of the
-   next segment. Report the sum of the segment times. This compares with OpenVM's `app_proof` line, which is
-   also segments without aggregation.
-4. **No aggregation.** Caracal7 has no recursion, so 150K hashes give about 170 proofs of about 190 KB, about
-   33 MB in total, where OpenVM gives one aggregated proof. Show the total proof bytes, and show the other
-   systems both with and without aggregation (OpenVM's leaf and internal proofs add about 1 s).
+Built: `bench/bench_sha256_iter.mojo` and `bench/openvm/`; the numbers are in `README.md`. How it is fair:
+
+1. **Same input.** SHA-256 of the empty message, then n hashes; the last digest is checked against the host
+   chain and against Python `hashlib`.
+2. **Same timer.** From the start value to the last proof's bytes, with the host trace inside. The host builds
+   the next segment while the device proves the current one. OpenVM's `app_prove_time_ms` also includes
+   execution and trace generation and excludes keygen.
+3. **Same scale.** n = 1K, 10K and 150K in segments: 875 hashes (`CLIENT.grid(224, 8064)`), the rest in 375 and
+   125. The last digest of a segment is the public input of the next. Only the 125-hash grid is in the
+   soundness ledger (the larger grids split codewords), so the bench also runs the chain in 125-hash
+   segments.
+4. **No aggregation.** Caracal7 has no recursion: 150K hashes give 172 proofs, 72 MB. OpenVM's rows are shown
+   with and without its leaf and internal aggregation (about 15 s more, one 315 KB proof).
+
+Still to do: the Keccak chain in the same form; a verify time for OpenVM; the chain on a second card.
 
 ### Other systems on the same box
 
@@ -133,9 +137,9 @@ In this order. Each item is one change with its own check.
    `BENCH_INPUT_PROFILE=full` on the M1, and the pull request to csp-benchmarks.
 3. **Track 2 throughput bench.** `bench/bench_throughput.mojo`: SHA-256, Keccak-f, Poseidon, Poseidon2 on the
    largest grid that fits; the 1365-permutation Keccak instance.
-4. **Track 3 chain bench.** Change `bench/bench_sha256_chain.mojo`: the `sha256_iter` start value, the digest
-   check, the segment sweep, the new timer. Then the Keccak chain in the same form.
-5. **Track 3 recipes.** `bench/openvm/README.md`, then RISC Zero and SP1, each run on the same box as item 4.
+4. **Track 3 chain bench.** Done for SHA-256 (`bench/bench_sha256_iter.mojo`). Next: the Keccak chain in the
+   same form.
+5. **Track 3 recipes.** `bench/openvm/` is done. Next: RISC Zero and SP1, each on the same box.
 6. **Tables.** One script reads the JSON rows of every track and writes the tables for `README.md`.
 
 ## Open questions

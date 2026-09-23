@@ -122,6 +122,30 @@ RTX 3090 (Vast.ai, 2026-09-16, `bench_sha256_chain`, warm prove median, proof ve
 
 The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
 
+### SHA-256 chain against OpenVM on one RTX 5090
+
+`bench/bench_sha256_iter.mojo` and OpenVM v2.0.2 with its CUDA prover on its `sha256_iter` guest
+(`bench/openvm/README.md`), on one rented box (RTX 5090, AMD EPYC 7B12). The chain: SHA-256 of the empty
+message, then n hashes of the 32-byte digest; the last digest agrees with Python `hashlib`. The caracal7 timer
+runs from the start value to the last proof's bytes, with the host trace inside; the host builds the next
+segment while the GPU proves the current one. The prover setup (arena, a cold prove) is 0.7 s more.
+OpenVM's number is its `app_prove_time_ms`, which includes execution and trace generation and excludes keygen.
+
+| n | system | proofs | prove s | ms per hash | proof bytes | verify s |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 150,000 | caracal7, 875-hash segments | 172 | 39.6 | 0.26 | 71.6 M | 91.0 |
+| 150,000 | caracal7, 125-hash segments | 1200 | 87.2 | 0.58 | 299.8 M | 171.6 |
+| 150,000 | OpenVM, segment proofs | 21 | 47.5 | 0.32 | | |
+| 150,000 | OpenVM, aggregated | 1 | 62.4 | 0.42 | 315,319 | |
+| 10,000 | caracal7, 875-hash segments | 12 | 2.82 | 0.28 | 4.9 M | 6.2 |
+| 1,000 | caracal7, 875-hash segments | 2 | 0.53 | 0.53 | 0.67 M | 0.7 |
+
+Of the 0.26 ms per hash, the GPU work is 0.22; the host work (0.10) is mostly under it. Caracal7 has no
+recursion, so a long chain is many proofs; the verify is host-side and outside the timer. Security is not the
+same: the 125-hash grid has 87.57 interactive and 107.2 work bits in the conditional ledger
+(`docs/soundness.md`); the 875-hash grid splits codewords, which the ledger does not cover; OpenVM states a
+100-bit target for these parameters.
+
 ### csp-benchmarks results
 
 `docs/soundness.md` and `bench/bench_soundness.mojo` track the conditional security budget:
