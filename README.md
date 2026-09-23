@@ -125,7 +125,8 @@ The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
 ### SHA-256 chain against OpenVM on one RTX 5090
 
 `bench/bench_sha256_iter.mojo` and OpenVM v2.0.2 with its CUDA prover on its `sha256_iter` guest
-(`bench/openvm/README.md`), on one rented box (RTX 5090, AMD EPYC 7B12). The chain: SHA-256 of the empty
+(`bench/openvm/README.md`), on one rented box (RTX 5090, AMD EPYC 7B12); the raw data is in
+`bench/openvm/results.md`. The chain: SHA-256 of the empty
 message, then n hashes of the 32-byte digest; the last digest agrees with Python `hashlib`. The caracal7 timer
 runs from the start value to the last proof's bytes, with the host trace inside; the host builds the next
 segment while the GPU proves the current one. The prover setup (arena, a cold prove) is 0.7 s more.
