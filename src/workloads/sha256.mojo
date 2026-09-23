@@ -25,6 +25,7 @@ from core.params import Params
 from relations.ir import FIX_ONE, FIX_E
 from relations.statement import Statement, Layout, Term, Read, BIT, GATE_2, restriction_line
 from workload import Workload
+from max.algorithm import parallelize
 
 comptime ROUNDS = 64
 comptime WORDS = 8              # state words a .. h
@@ -699,27 +700,53 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
     var t = List[UInt8](length=layout.columns_w() * N, fill=0)
     var kc = k_const()
     var m = padded_words(message)
-    var prev = List[UInt32]()                                 # the digest entering the lane
     var col_l0b0 = layout.col("l0b0")
     var col_s8w = layout.col("s8w")
     var col_rstx = layout.col("rstx")
     var col_lane0w = layout.col("lane0w")
     var col_notlastw = layout.col("notlastw")
-    for j in range(M):
+    var cols = List[Int](capacity=SHA_COLUMNS + 1)
+    for i in range(SHA_COLUMNS + 1):
+        cols.append(layout.col(names[i]) * N)
+    var prevs = List[List[UInt32]](capacity=M)                # the digest entering lane j: the last of lane j - 1
+    prevs.append(List[UInt32]())
+    var d = message.copy()
+    for _ in range(1, M):
+        d = sha256_chain(d, B)
+        prevs.append(_digest_words(d))
+    var failed = List[String](length=M, fill=String())
+    var tp = t.unsafe_ptr()
+
+    @parameter
+    def one_lane(j: Int):
+        """Lane j's words into its rows crt(z, j) of every SHA column; lanes write disjoint rows."""
         var head = List[UInt32](capacity=16)
         if j == 0:
             head = m.copy()
         else:
-            head.extend(prev.copy())
+            head.extend(prevs[j].copy())
             head.extend(pad32())
-        var words = lane_words(head, prev, h2, B, j < M - 1)
+        var words: List[UInt32]
+        try:
+            words = lane_words(head, prevs[j], h2, B, j < M - 1)
+        except e:
+            failed[j] = String(e)
+            return
+        var rows = List[Int](capacity=ROWS)
+        for z in range(ROWS):
+            rows.append(crt(z, j, M))
         for i in range(SHA_COLUMNS + 1):
-            var col = layout.col(names[i])
+            var col = tp.unsafe_offset(cols[i])
             for k in range(h2):
                 var w = words[k * (SHA_COLUMNS + 1) + i]
+                var dst = col.unsafe_offset(k * h1)
                 for z in range(ROWS):
-                    t[col * N + k * h1 + crt(z, j, M)] = UInt8((w >> UInt32(31 - z)) & 1)
-        prev = _digest_words(sha256_chain(message, (j + 1) * B))   # the lane's last digest: dg of the next lane
+                    dst[unsafe_offset=rows[z]] = UInt8((w >> UInt32(31 - z)) & 1)
+
+    parallelize[one_lane](M)
+    for j in range(M):
+        if failed[j].byte_length() > 0:
+            raise Error(failed[j])
     var n = ROUNDS * B
     for k in range(h2):
         var b0c = chain_word(m, kc, n, B, 8, k) != 0
@@ -751,11 +778,14 @@ def chain_public_values[p: Params](message: List[UInt8], l: Int) raises -> List[
         for rho in range(h1):
             vals.append(chain_row_selector(l, rho, p.m1))
         return vals^
-    var vals = List[UInt8](capacity=p.h2() * h1)
+    var vals = List[UInt8](length=p.h2() * h1, fill=0)
     for t in range(p.h2()):
         var w = chain_word(m, kc, n, B, l, t)
+        if w == 0:
+            continue
+        var dst = vals.unsafe_ptr().unsafe_offset(t * h1)
         for rho in range(h1):
-            vals.append(UInt8((w >> UInt32(31 - rho % ROWS)) & 1))
+            dst[unsafe_offset=rho] = UInt8((w >> UInt32(31 - rho % ROWS)) & 1)
     return vals^
 
 

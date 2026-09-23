@@ -1048,11 +1048,16 @@ def restriction_line[p: Params](layout: Layout, i: Int, vals: List[UInt8]) raise
 def interpolate_line(vals: List[UInt8], omega: F2, h: Int) raises -> List[UInt8]:
     """h F values on <omega> -> h F2 monomial coefficients (2 bytes each): c_k = h^-1 sum_x v(x) omega^(-k x)."""
     var inv_h = f_pow(SIMD[DType.uint8, 1](UInt8(h % 127)), 125)
+    var pw = List[F2](capacity=h)                 # omega^e
+    pw.append(F2(1, 0))
+    for e in range(1, h):
+        pw.append(ext_mul[1](pw[e - 1], omega))
     var out = List[UInt8](capacity=h * 2)
     for k in range(h):
         var acc = F2(0)
         for x in range(h):
-            acc = f_add(acc, ext_mul[1](F2(vals[x], 0), ext_pow[1](omega, (h - (k * x) % h) % h)))
+            if vals[x] != 0:
+                acc = f_add(acc, ext_mul[1](F2(vals[x], 0), pw[(h - (k * x) % h) % h]))
         var c = ext_mul[1](acc, F2(inv_h[0], 0))
         out.append(c[0])
         out.append(c[1])

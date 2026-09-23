@@ -17,7 +17,8 @@ from max.gpu.host import DeviceContext
 
 from core.params import Params, CLIENT
 from core.hash import Blake3
-from prover import Prover
+from prover import Prover, load_trace, load_advice, load_public
+from relations.statement import advice
 from workloads.sha256 import Sha256Chain, sha256, sha256_chain, chain_hashes
 from workload import prove_prepared, verify_workload
 
@@ -48,6 +49,8 @@ struct Totals(Movable):
     var hashes: Int
     var segments: Int
     var prove_ms: Float64       # sum of the input-to-proof times
+    var host_ms: Float64        # of which host work: digest, trace, advice, public data
+    var load_ms: Float64        # of which uploads
     var setup_ms: Float64
     var verify_ms: Float64
     var proof_bytes: Int
@@ -58,6 +61,8 @@ struct Totals(Movable):
         self.hashes = 0
         self.segments = 0
         self.prove_ms = 0
+        self.host_ms = 0
+        self.load_ms = 0
         self.setup_ms = 0
         self.verify_ms = 0
         self.proof_bytes = 0
@@ -80,8 +85,19 @@ def run_grid[p: Params](ctx: DeviceContext, count: Int, mut t: Totals) raises:
         t0 = perf_counter_ns()
         var w = Sha256Chain(t.start.copy())
         var public = w.public_inputs[p]()
-        var proof = prove_prepared[p, Blake3, Sha256Chain](ctx, prover, w, layout, public)
+        var trace = w.trace[p](layout)
+        var idx = advice[p](layout, trace)
+        var data = Sha256Chain.public_data[p](layout, public)
+        var t1 = perf_counter_ns()
+        load_trace[p, Blake3](ctx, prover, trace)
+        load_advice[p, Blake3](ctx, prover, idx)
+        load_public[p, Blake3](ctx, prover, data)
+        ctx.synchronize()
+        var t2 = perf_counter_ns()
+        var proof = prover.prove(ctx, public)
         t.prove_ms += _ms(t0)
+        t.host_ms += Float64(t1 - t0) / 1e6
+        t.load_ms += Float64(t2 - t1) / 1e6
         t.proof_bytes += len(proof)
         t0 = perf_counter_ns()
         if not verify_workload[p, Blake3, Sha256Chain](proof^, w, public):
@@ -111,7 +127,7 @@ def run(ctx: DeviceContext, n: Int, segment: Int) raises:
     print('{"system":"caracal7","workload":"sha256_iter","n":', n, ',"segment_hashes":', segment,
           ',"segments":', t.segments, ',"device":"', ctx.name(), '","total_ms":', t.prove_ms,
           ',"ms_per_hash":', t.prove_ms / Float64(n), ',"hashes_per_s":', Float64(n) * 1e3 / t.prove_ms,
-          ',"setup_ms":', t.setup_ms, ',"proof_bytes":', t.proof_bytes, ',"verify_ms":', t.verify_ms,
+          ',"host_ms":', t.host_ms, ',"load_ms":', t.load_ms, ',"setup_ms":', t.setup_ms, ',"proof_bytes":', t.proof_bytes, ',"verify_ms":', t.verify_ms,
           ',"arena_bytes":', t.arena_bytes, ',"digest":"', _hex(t.start), '"',
           ',"interactive_bits":', ('"' + INTERACTIVE_BITS + '"') if covered else "null",
           ',"work_bits":', ('"' + WORK_BITS + '"') if covered else "null",

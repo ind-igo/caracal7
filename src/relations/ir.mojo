@@ -32,6 +32,7 @@ real family list exists; the kernel does not care.
 from core.field import F2, F4, E, f_add, f_mul, f_sub, f_pow, ext_mul, ext_pow, ext_embed, ext_one, ext_inv, E_LEVEL, E_BYTES
 from core.bytes import get_u16, set_u16, list_e, check_field_bytes
 from core.params import Params
+from std.memory import unsafe_memcpy
 
 comptime ENTRY = 48
 comptime ENT_A = E_BYTES            # col_a, dj1_a, dj2_a (u16 each) after the e-byte kappa
@@ -709,8 +710,8 @@ def tile_values(publics: Span[UInt8, _], values: Span[UInt8, _], h1: Int, h2: In
         var col = i * h2 * h1
         if values[off] != TERMS:
             for x2 in range(h2):
-                for t in range(h1):
-                    out[col + x2 * h1 + t] = values[off + (x2 % period) * h1 + t]
+                unsafe_memcpy(dest=out.unsafe_ptr().unsafe_offset(col + x2 * h1),
+                              src=values.unsafe_ptr().unsafe_offset(off + (x2 % period) * h1), count=h1)
             continue
         var terms = get_u16(values, off + 1)
         var pos = off + 3
