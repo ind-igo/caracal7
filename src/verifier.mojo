@@ -21,7 +21,7 @@ from core.field import F2, F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_emb
 from core.tables import Domains, RsDomain, f4_primitive, node_id
 from pcs import pack_slot, join_index, check_multiproof, distinct_sorted, host_r3, rbar_at, tail_encode_at, quadratic_at
 from pcs.tensor import Unit, query_units, consistency_units, row_units, clear_value, f4_dual
-from relations import ENTRY, NONE, ACC, END, WIRE, ID, PUBF, GRP, id_at, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_terms, eval_line, lagrange, column_offsets, TERMS
+from relations import ENTRY, NONE, ACC, END, WIRE, ID, PUBF, GRP, id_at, group_offsets, group_mask, KIND_LOOKUP, KIND_HORNER, acc_z_col, acc_start, acc_kind, acc_table, PUB, RES, ZERO, POINT, FIX_ONE, FIX_E, required_points, entry, derived_chals, lookup_constant, horner_chain_end, selector_values, point_index, point_coord, residual_at, interp_cyclic, eval_values, eval_values_with, eval_terms, eval_line, lagrange, column_offsets, TERMS
 from core.bytes import get_u16, list_e, check_field_bytes
 
 
@@ -618,7 +618,7 @@ struct _PublicReads[p: Params]:
     """Reads for residual_at: an opening for a committed column, the public data evaluated at the point for a
     public column (index at or past columns_w + columns_z), cached per (column, point). A term-form column
     costs one product per row value and per chain against the point's Lagrange values, cached per point (axis 1)
-    and per (point, m) (axis 2); a dense period is interpolated in full (`eval_values`)."""
+    and per (point, m) (axis 2); a dense period is interpolated in full on the same values (`eval_values_with`)."""
     var base: Int               # columns_w + columns_z: the first public index
     var columns_w: Int
     var columns: Int            # shape.opened(), the openings stride
@@ -675,14 +675,14 @@ struct _PublicReads[p: Params]:
             var m = get_u16(self.publics, i * PUB)
             var x1 = point_coord(self.z1, get_u16(self.pts, point * 4), self.g1, Self.p.h1())
             var x2 = point_coord(self.z2, get_u16(self.pts, point * 4 + 2), self.g2, Self.p.h2())
+            if point not in self.l1:
+                self.l1[point] = lagrange(Self.p.h1(), self.w1, x1)
+            var key = point * 65536 + m
+            if key not in self.l2:
+                self.l2[key] = lagrange(Self.p.h2() // m, ext_pow[1](self.w2, m), ext_pow[E_LEVEL](x2, m))
             if self.public[off] != TERMS:
-                self.cache[slot] = eval_values(self.public, off, m, Self.p.h1(), Self.p.h2(), self.w1, self.w2, x1, x2)
+                self.cache[slot] = eval_values_with(self.public, off, self.l1[point], self.l2[key])
             else:
-                if point not in self.l1:
-                    self.l1[point] = lagrange(Self.p.h1(), self.w1, x1)
-                var key = point * 65536 + m
-                if key not in self.l2:
-                    self.l2[key] = lagrange(Self.p.h2() // m, ext_pow[1](self.w2, m), ext_pow[E_LEVEL](x2, m))
                 self.cache[slot] = eval_terms(self.public, off, self.l1[point], self.l2[key])
             self.valid[slot] = True
         return self.cache[slot]

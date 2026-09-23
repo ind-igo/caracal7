@@ -138,7 +138,7 @@ non-Rust path; its numbers are about 150 ms higher on the small cases and 260 ms
 Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-process GPU-only times are the
 `warm prove` line of `bench/bench_<target>.mojo`.
 
-**2026-09-18, Apple M1 Pro 16 GB (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average about 7 during the run); proof bytes from the 2026-09-22 run after the single-value openings of `E`-valued columns, which left the times unchanged; the two ECDSA rows from the 2026-09-23 run (load average about 10) after the verifier stopped re-validating the public data per public factor, which the other rows' verify times predate**
+**2026-09-18, Apple M1 Pro 16 GB (Criterion mean of 10 samples; `collect_benchmarks` fills the durations and the memory report; load average about 7 during the run); proof bytes from the 2026-09-22 run after the single-value openings of `E`-valued columns, which left the times unchanged; the two ECDSA rows from the 2026-09-23 run (load average about 10) after three verifier changes the other rows' verify times predate: no re-validation of the public data per public factor, the chain-constant public columns as one chain of data, and the Lagrange values cached per point**
 
 | target | input | prove ms | verify ms | proof bytes | preprocessing bytes | peak RSS MB | cells |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -157,8 +157,8 @@ Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-pro
 | poseidon | 8 | 105 | 40 | 294,589 | 129,252 | 57 | 1,916,928 |
 | poseidon | 12 | 169 | 50 | 323,525 | 321,544 | 64 | 4,472,832 |
 | poseidon | 16 | 164 | 49 | 320,389 | 321,544 | 63 | 4,472,832 |
-| ecdsa | 1 sig | 311 | 91 | 474,628 | 497,940 | 88 | 19,574,784 |
-| ecdsa_p256 | 1 sig | 775 | 224 | 621,724 | 1,178,372 | 125 | 36,495,360 |
+| ecdsa | 1 sig | 317 | 77 | 472,996 | 497,940 | 88 | 19,574,784 |
+| ecdsa_p256 | 1 sig | 784 | 169 | 622,876 | 1,178,372 | 119 | 36,495,360 |
 
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
 session's arena being released); the small rows move a few ms between runs on a loaded machine.

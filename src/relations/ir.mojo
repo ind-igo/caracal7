@@ -648,9 +648,14 @@ def eval_values(vals: Span[UInt8, _], off: Int, m: Int, h1: Int, h2: Int, w1: F2
     """A public column at a point from its values: `vals` holds one period, (h2 / m, h1) F bytes from `off`,
     and the column is a polynomial in (X1, X2^m), so it is the period's interpolant on <w2^m> at x2^m
     (docs/public-columns.md). Barycentric per axis: h1 + h2 / m inversions, then one F x E product per value."""
-    var period = h2 // m
-    var l1 = lagrange(h1, w1, x1)
-    var l2 = lagrange(period, ext_pow[1](w2, m), ext_pow[E_LEVEL](x2, m))
+    return eval_values_with(vals, off, lagrange(h1, w1, x1), lagrange(h2 // m, ext_pow[1](w2, m), ext_pow[E_LEVEL](x2, m)))
+
+
+def eval_values_with(vals: Span[UInt8, _], off: Int, l1: List[E], l2: List[E]) raises -> E:
+    """`eval_values` with the Lagrange values of both axes given (the verifier caches them per point): the
+    period is (len(l2), len(l1)) values."""
+    var h1 = len(l1)
+    var period = len(l2)
     var acc = E(0)
     for t2 in range(period):
         var row = E(0)

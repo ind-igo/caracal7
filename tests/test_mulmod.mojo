@@ -423,18 +423,18 @@ def _p256_claim(ops: List[Op], inputs: List[List[UInt8]]) raises -> List[UInt8]:
 def _p256_round_trip(ctx: DeviceContext, ops: List[Op], inputs: List[List[UInt8]], tamper: Int = -1) raises -> String:
     """Prove the circuit over P-256 and verify; `tamper` flips a bit of the claim's values first."""
     var claim = _p256_claim(ops, inputs)
-    var c = mulmod_statement(True, ops, True, CURVE_P256).compile[p]()
-    var shape = mulmod_statement(True, ops, True, CURVE_P256).compile[p]().take_shape()
-    var cc = mulmod_statement(True, ops, True, CURVE_P256).compile[p]()
+    var c = mulmod_statement(True, ops, True, CURVE_P256, m=p.h2()).compile[p]()
+    var shape = mulmod_statement(True, ops, True, CURVE_P256, m=p.h2()).compile[p]().take_shape()
+    var cc = mulmod_statement(True, ops, True, CURVE_P256, m=p.h2()).compile[p]()
     var trace = circuit_trace[p](c.layout, circuit_values(inputs, ops, List[Big](), CURVE_P256), ops, curve=CURVE_P256)
-    var data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256)
+    var data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256, m=p.h2())
     var prover = Prover[p, Blake3](ctx, c^.take_shape(), cc.families.copy())
     load_trace[p, Blake3](ctx, prover, trace)
     load_public[p, Blake3](ctx, prover, data)
     var proof = prover.prove(ctx, claim)
     if tamper >= 0:
         claim[parse_circuit(claim)[1] + tamper] ^= 1
-        data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256)
+        data = circuit_public_data[p](ops, claim, parse_circuit(claim)[1], CURVE_P256, m=p.h2())
     try:
         _ = verify[p, Blake3](proof^, shape, claim, cc.families, data)
     except e:

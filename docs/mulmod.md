@@ -107,8 +107,8 @@ The spec binds the copies of the high half to `r` with two fingerprints, `F_hi` 
 `F_copies`. A Horner accumulator has row-uniform coefficients, so nothing in the IR fingerprints half a
 column: a copy bound by a fingerprint of all of `r`, or by a cyclic transition, is `r` rotated, and the
 rotated low half lands in the piles. The one thing that knows a row's weight is a public column, so the fold
-uses one: `lo` is the selector of the low-half rows, the same 144 values on every chain (`m = 1`, a dense
-block; `m = h2` once the statement knows the grid). Then the copy is `h = cp * r@80` and the pile reads
+uses one: `lo` is the selector of the low-half rows, the same 144 values on every chain (`m = h2` on the
+ECDSA workloads: one chain of public data, `h1` products for the verifier per point; `m = 1` by default). Then the copy is `h = cp * r@80` and the pile reads
 `lo * r_w`: `h` is exactly the high half at slots 0 to 259 and zero elsewhere, the pile is exactly
 `lo_w + sum_s hi_{w - s}`, and `o = lo + hi (2^32 + 977) < 2^294`. The same selectors fold `o` into `f`.
 Two column sets and two selectors replace the spec's four copies and two accumulators. The copy selector
@@ -172,7 +172,7 @@ canonical when honest) the product is below `2^512`, word 16 is zero, `S` lies i
 in `[-7, 7]`. The trace writer (`_p256_chain`) refuses a carry outside `[-8, 7]`.
 
 Cost against secp256k1's folds: 16 fewer bit columns (220 W against 236 on ECDSA), 18 more public
-columns (36 against 18, dense until the constant columns take `m = h2`), and 11 more opening points (23
+columns (36 against 18; 24 of them chain-constant, so `m = h2` leaves 12 dense), and 11 more opening points (23
 against 12: the word offsets are distinct cyclic reads, and every point opens every column, `points x
 opened columns x 20 B` of proof). The nine-pass alternative (the four-term identity applied until the
 value is short) would have shared its four offsets across passes but cost nine `f + carry` column sets;
@@ -229,6 +229,5 @@ is 0 or 1: the fingerprint reads 257 bits, and a higher claim would verify again
 
 ## Not done
 
-The chain-end families that would make edges to the next chain free, and `m = h2` on the constant public
-columns (the statement does not know the grid). The curve and the ECDSA composition are the next layer:
-`docs/ecdsa.md`.
+The chain-end families that would make edges to the next chain free. The curve and the ECDSA composition
+are the next layer: `docs/ecdsa.md`.

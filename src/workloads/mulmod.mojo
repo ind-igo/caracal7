@@ -496,11 +496,13 @@ def product_certificate(mut st: Statement, zeros: Bool = True) raises -> List[In
     return rz^
 
 
-def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True, curve: Int = CURVE_K1) raises -> Statement:
+def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bool = True, curve: Int = CURVE_K1, m: Int = 1) raises -> Statement:
     """`zeros = False` drops the zero rows: the unsound variant the test proves the idle-row carry against.
     `circuit` (default one product of public operands): see `Op`. `pin` puts the circuit bytes at the head
     of the public inputs (a workload whose circuit is fixed in code needs no header). `curve` picks the
-    moduli and the product reduction: secp256k1's two folds, or the P-256 word pass of `_p256_families`."""
+    moduli and the product reduction: secp256k1's two folds, or the P-256 word pass of `_p256_families`. `m` is
+    the period parameter of the chain-constant public columns: `m = h2` (the workload knows its grid) makes
+    their public data one chain of values, which the verifier evaluates in `h1` products instead of `N`."""
     var ops = circuit.copy() if len(circuit) > 0 else single_op()
     var at = _place(ops)
     var st = Statement()
@@ -530,13 +532,13 @@ def mulmod_statement(zeros: Bool = True, circuit: List[Op] = List[Op](), pin: Bo
         for k in range(ACARRY):
             for j in range(Q):
                 st.col(_lane(L, "c" + String(k) + String(j)), BIT)
-    # ponytail: dense (h2, h1) blocks; the constant ones take m = h2 once the statement knows the grid
+    # the chain-constant columns (`_consts`, the piece rows) take period m: m = h2 makes them one chain of data
     for name in _consts(curve)[0]:
-        st.pub(name, 1)
+        st.pub(name, m)
     for j in range(Q):
         st.pub("pb" + String(j), 1)
     for t in range(PIECES):
-        st.pub("s" + String(t), 1)
+        st.pub("s" + String(t), m)
     for L in range(LANES):
         for name in ["sy", "sz", "sm", "qz"]:
             st.pub(_lane(L, name), 1)
@@ -1325,11 +1327,12 @@ struct Mulmod(Workload, Copyable, Movable):
         return circuit_public_data[p](parsed[0], public_inputs, parsed[1])
 
 
-def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int, curve: Int = CURVE_K1) raises -> List[UInt8]:
+def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int, curve: Int = CURVE_K1, m: Int = 1) raises -> List[UInt8]:
     """The public blocks of `_consts` (the same on every chain), pb{j} (the chain's modulus bits), s{t} (the
     rows of piece t), per lane sy, sz, sm, qz; then every factor's ingest columns in statement order: an a
     operand in its pieces (12 columns), any other value plain (4). The factor values are the VALUE-byte
-    values at `off` of `values`, in factor order."""
+    values at `off` of `values`, in factor order. `m` is the statement's period parameter of the constant
+    columns: their blocks are `h2 / m` chains."""
     comptime N = p.N()
     if p.h1() != ROWS:
         raise Error("the instance needs " + String(ROWS) + " rows per chain")
@@ -1337,9 +1340,11 @@ def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int,
     if chain_count(ops) > p.h2() or (len(values) - off) % VALUE != 0:
         raise Error("public inputs are the circuit then " + String(VALUE) + "-byte values")
     var consts = _consts(curve)[1].copy()
-    var data = List[UInt8](capacity=(len(consts) + 7 + 4 * LANES) * N + (len(values) - off) // VALUE * PIECES * Q * ROWS)
+    if p.h2() % m != 0:
+        raise Error("the constant columns' period m divides h2")
+    var data = List[UInt8](capacity=(len(consts) + PIECES) * (N // m) + (Q + 4 * LANES) * N + (len(values) - off) // VALUE * PIECES * Q * ROWS)
     for rows in consts:
-        for _ in range(p.h2()):
+        for _ in range(p.h2() // m):
             data.extend(rows.copy())
     var mods = List[Int](length=p.h2(), fill=MOD_P)
     var lanes = List[Int](length=p.h2() * LANES, fill=-1)
@@ -1355,7 +1360,7 @@ def circuit_public_data[p: Params](ops: List[Op], values: List[UInt8], off: Int,
             for x1 in range(ROWS):
                 data.append(mcols[mods[x2]][j * ROWS + x1])
     for t in range(PIECES):
-        for _ in range(p.h2()):
+        for _ in range(p.h2() // m):
             for x1 in range(ROWS):
                 data.append(UInt8(1) if _piece_row(t, x1) else UInt8(0))
     for L in range(LANES):

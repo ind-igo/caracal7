@@ -56,9 +56,12 @@ public column is a normal entry. No kernel knows the column is public.
 - **Verifier.** `column_offsets` parses and validates the public data once (bounds, F values, chains
   below the period) and returns each column's offset. Where `residual_at`'s reads are gathered, a column
   index at or past `columns_w + columns_z` evaluates its public data at the read's point instead of
-  taking an opening, cached per (column, point): a dense column by `eval_values`, a term column by
-  `eval_terms` (the row against the axis-1 Lagrange values, cached per point, times the sum of the
-  axis-2 Lagrange values over the chains, cached per point and `m`). The group checks walk terms (exact:
+  taking an opening, cached per (column, point). The Lagrange values of both axes are cached too, per
+  point on axis 1 and per point and `m` on axis 2 (`h1 + h2 / m` inversions each, once): a dense column
+  is `eval_values_with` on them, a term column `eval_terms` (the row against the axis-1 values times the
+  sum of the axis-2 values over the chains). A column whose values are the same on every chain is
+  declared with `m = h2`: one chain of public data, and `h1` products per point (the mulmod builder's
+  chain-constant columns take `m` from the workload's grid). The group checks walk terms (exact:
   one term of ones on the mask's chains in order; else every chain in the mask). A restriction check:
   the opening of `column` at the line point equals the degree `< h1` polynomial at `z1` (`eval_line`).
 - **Prover.** `load_public` takes the whole public data and tiles either form to `H` (`tile_values`);

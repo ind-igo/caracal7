@@ -155,8 +155,6 @@ change. Together they may take the passport to about 120 ms.
   (`open.mojo:132`) calls `table_entry` per entry, 80 `ext_pow` from zero plus one inversion per r: build the
   powers step by step and batch the 72 denominators. Parallelize the 53 points in `_Tail.__init__`
   (`verifier.mojo:387`).
-- **Hash statements.** `eval_values` (`ir.mojo:652`) builds both Lagrange vectors again for each (dense column,
-  point); cache them as the term path does at `ir.mojo:682`. About 10 ms of sha256's 39 ms.
 - **E arithmetic.** Every `ext_mul` converts u8 to f32, multiplies and canonicalizes. A multiply-accumulate with
   lazy reduction (centered operands, a reduction every 8 terms, inside the bound of `fp_e_mul`) gives about 1.5
   to 2x on the loops that remain.

@@ -106,7 +106,7 @@ struct EcdsaK1(Workload, Movable):
         return w.ops.copy()
 
     def statement[p: Params](self) raises -> Statement:
-        return mulmod_statement(True, EcdsaK1.circuit(), pin=False)
+        return mulmod_statement(True, EcdsaK1.circuit(), pin=False, m=p.h2())
 
     def trace[p: Params](self, layout: Layout) raises -> List[UInt8]:
         var w = walk(secp256k1(), self.r, self.s, self.e, self.q, True)
@@ -124,4 +124,4 @@ struct EcdsaK1(Workload, Movable):
         var values = List[UInt8](capacity=len(w.inputs) * VALUE)
         for v in w.inputs:
             values.extend(v.copy())
-        return circuit_public_data[p](w.ops, values, 0)
+        return circuit_public_data[p](w.ops, values, 0, m=p.h2())
