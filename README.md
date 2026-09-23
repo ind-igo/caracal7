@@ -77,6 +77,7 @@ uv sync
 ./run_tests.sh -D CARACAL_NVIDIA_MMA                       # the backend test first: a failure there is the fragment mapping
 uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_gemm.mojo -o bench_gemm && ./bench_gemm
 uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_sha256_chain.mojo -o bench_chain && ./bench_chain
+uv run mojo build --Werror -D CARACAL_NVIDIA_MMA -I src bench/bench_sha256_iter.mojo -o bench_iter && ./bench_iter   # OpenVM's sha256_iter shape, JSON rows
 ```
 
 Without a GPU the NVIDIA build still cross-compiles: `--target-accelerator sm_90` on any host.

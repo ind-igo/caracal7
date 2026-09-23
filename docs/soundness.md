@@ -6,10 +6,11 @@ are listed at the end. Nothing here is a measured attack cost.
 
 ## The numbers
 
-Every benchmark statement, 20 cases (the 16 csp-benchmarks cases on their 12 grids, RSA-2048,
-SOD, DSC and the passport), at `E = F_(127^20)`, 112-bit query target per level, 20 grinding bits:
+Every benchmark statement, 22 cases (the 16 csp-benchmarks cases on their 12 grids, P-256, the
+125-hash chain grid, RSA-2048, SOD, DSC and the passport), at `E = F_(127^20)`,
+112-bit query target per level, 20 grinding bits:
 
-| | all 20 cases | ECDSA |
+| | all 22 cases | ECDSA |
 |---|---:|---:|
 | interactive bits, ideal challenges, no credit for grinding | 87.50 to 88.37 | 88.21 |
 | work bits, the query error discounted by the 20 grinding bits | 107.12 to 108.18 | 108.03 |
@@ -33,7 +34,7 @@ the field term already exceeds the discounted query term, so their work row is c
 These are the executable's `johnson_dkt26_joint_list_conditional` row, the least conservative of
 the rows it prints. With only the numerator swapped for Haböck's (ePrint 2025/2110, Theorem 2) it
 gives 105.7 to 106.5 work bits; with Haböck's numerator and the older per-column list caps (16 to
-30 instead of 4 to 7) 81.0 to 99.5. The ledger covers these 20 statements only: it rejects a
+30 instead of 4 to 7) 81.0 to 99.5. The ledger covers these 22 statements only: it rejects a
 statement with Herder lookup or permutation accumulators, split codewords or another tail arity.
 
 ## What is charged

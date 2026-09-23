@@ -14,7 +14,7 @@ from relations.ir import ENTRY, ACC, END, WIRE, PUBF, RES, ZERO, NONE, KIND_HORN
 from relations.statement import Compiled, Statement, Term, BIT
 from workload import Workload
 from proof import Shape
-from workloads.sha256 import Sha256
+from workloads.sha256 import Sha256, Sha256Chain
 from workloads.keccak import Keccak
 from workloads.poseidon import Poseidon
 from workloads.ecurve import Point
@@ -560,6 +560,8 @@ def main() raises:
     # statement() uses EcdsaK1.circuit(), independent of signature values; no live walk or witness is needed.
     report[CLIENT.grid(144, 576)]("ecdsa", 32, EcdsaK1(Big(), Big(), Big(), Point.identity()))
     report[CLIENT.grid(144, 1152)]("ecdsa_p256", 32, EcdsaP256(Big(), Big(), Big(), Point.identity()))
+    # The one-codeword chain grid of bench/bench_sha256_iter.mojo; the 375 and 875 grids split codewords.
+    report[CLIENT.grid(32, 8064)]("sha256_chain", 125, Sha256Chain(List[UInt8](length=32, fill=0)))
     # Public benchmark metadata fixes these statements; no witnesses or GPU work are needed.
     var lengths: List[Int] = [String(SodFixture.DG1_HEX).byte_length() // 2, String(SodFixture.ECONTENT_HEX).byte_length() // 2, String(SodFixture.ATTRS_HEX).byte_length() // 2]
     var embeds: List[Int] = [SodFixture.EMBED_1, SodFixture.EMBED_2]
