@@ -61,6 +61,22 @@ Over `F` the distance is at the GV bound for rate 7/8 already at 16/128, so 24/1
 `F4` it moves the bound. Per query saved, 16/128 `F4` costs about 0.015 ms on the passport W tree
 (708 queries for 10.6 ms), 24/192 `F4` another 0.10 ms each (176 queries for 18.9 ms).
 
+## Proof size (model)
+
+Not measured: the opening side is not built. `bench/sketch/proofsize.py` models the level-1 region of the
+proof (per tree: the distinct opened rows times the row bytes, a 32-byte digest per multiproof sibling,
+a u32 header; 5 random position draws) and keeps every other region at its measured size
+(`docs/profile.md`; the tail sees the same `y_1`). On today's RS proofs the model gives 81, 251 and
+316 KB where the proofs measure 82, 251 and 314 KB. The sketched layout is one tree of `K + L_s` leaves
+per W, Z, Q; the message queries of the table above fall in the first `K` leaves, 350 queries (the RS code
+of the sketch at rate 1/2, `delta / 3`) in the rest.
+
+| statement | proof now | 16/128 F | 16/128 F4 | 24/192 F4 |
+|---|---:|---:|---:|---:|
+| sha256 | 0.19 MB | 1.74 MB (8.9x) | 1.42 MB (7.3x) | 1.34 MB (6.9x) |
+| rsa-2048 | 0.58 MB | 5.63 MB (9.7x) | 4.47 MB (7.7x) | 4.18 MB (7.2x) |
+| passport | 1.15 MB | 8.03 MB (7.0x) | 6.42 MB (5.6x) | 6.02 MB (5.2x) |
+
 ## Not built
 
 The opening side: two query pools, the level-1 functional of a sketch position (`H^T` of a generator row,
