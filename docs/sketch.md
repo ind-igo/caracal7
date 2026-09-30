@@ -18,17 +18,24 @@ the level-1 code. `src/pcs/sketch.mojo` holds all of it; the prover and the veri
 ## Measured
 
 M1 Pro, the W tree of each shape, ms per commit (`bench_sketch`, 5 repetitions, the two paths alternate).
-`to_packed` (`idft2`, `to_stored`, `pack`) is common to both and does not change: 5.8, 58 and 200 ms.
+`to_packed` (`idft2`, `to_stored`, `pack`) is common to both and does not change: 6, 61 and 195 ms.
 
 | shape | columns | RS encode + Merkle | sketched, H 16/128 | sketched, H 8/64 | sketched, H 16/64 |
 |---|---:|---:|---:|---:|---:|
-| sha256, 32 x 2688 | 43 | 7.5 | 2.1 | 1.8 | 2.4 |
-| rsa-2048, 144 x 2016 | 172 | 40.3 | 15.1 | 10.6 | 16.2 |
-| passport, 144 x 4032 | 285 | 140.2 | 52.0 | 29.7 | 55.9 |
+| sha256, 32 x 2688 | 43 | 7.6 | 2.2 | 1.8 | 2.4 |
+| rsa-2048, 144 x 2016 | 172 | 40.6 | 10.6 | 9.4 | 16.5 |
+| passport, 144 x 4032 | 285 | 141.9 | 36.4 | 24.9 | 43.7 |
 
-On the passport the sketch kernel alone is 40 ms at 16/128 (2.6 GB of row gathers, about 66 GB/s); the RS
-code of the sketch is 5 ms. The Z and Q trees scale the same way. A prove saves about 8 percent: most of
-`encode W` is `to_packed`, and the LDE and the residual do not change.
+On the passport the sketch kernel is 23 ms at 16/128 and 12.5 ms at 8/64, the RS code of the sketch 5 ms,
+the tree 7 ms. The Z and Q trees scale the same way. A prove saves about 8 percent: most of `encode W` is
+`to_packed`, and the LDE and the residual do not change.
+
+The kernel (`k_sketch`) reads `c` times the message, 2.6 GB at 16/128 on the passport, as rows in random
+order. Probes on that shape: with `x` read from 64 hot rows it took 20 ms, with no `x` reads 11 ms, so
+half of the first version (39 ms) was instructions. Four columns per thread (one entry decode per four
+columns, 512 contiguous bytes per SIMD group and row) and the entries as aligned 16-byte groups brought it
+to 23 ms; eight columns per thread crash the Metal shader compiler. Column tiles for cache reuse (16 to
+96 columns) and rows sorted by column did not help.
 
 ## Distance and queries
 

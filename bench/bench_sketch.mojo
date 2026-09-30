@@ -5,18 +5,15 @@ kernel, the RS code of the sketch, the Merkle tree over K + L_s leaves, against 
 L leaves. The two paths alternate within every repetition (M1 noise: A/B back to back)."""
 
 from std.time import perf_counter_ns
-from std.math import ceildiv
 from max.gpu.host import DeviceContext
 
 from core.params import CLIENT, Params
 from core.tables import Domains, TableLayout, build_tables
 from core.arena import Arena, Bump
 from core.hash import Blake3
-from core.bytes import Buf
-from core.backend import BACKEND
 from pcs.encode import EncLayout, to_packed, rs_encode
 from pcs.merkle import merkle, tree_nodes
-from pcs.sketch import SketchMatrix, SketchLayout, upload_sketch, sketch_code, k_sketch
+from pcs.sketch import SketchMatrix, SketchLayout, upload_sketch, sketch_code, sketch
 
 comptime REPS = 5
 comptime SHAPES = [(16, 128), (8, 64), (16, 64)]
@@ -94,9 +91,7 @@ def run[p: Params, COLS: Int](ctx: DeviceContext, name: String) raises:
             to_packed[p](ctx, arena, e, tab)
             ctx.synchronize()
             t0 = Int(perf_counter_ns())
-            ctx.enqueue_function[k_sketch](arena.buf, Buf[4](s.start), Buf[4](s.ent), Buf[4](s.code), Buf[4](s.u),
-                                           Int32(s.rows), Int32(s.columns),
-                                           grid_dim=ceildiv(s.rows * s.columns, BACKEND.block), block_dim=BACKEND.block)
+            sketch(ctx, arena, s)
             ctx.synchronize()
             sk[i] += w * _ms(t0)
             t0 = Int(perf_counter_ns())

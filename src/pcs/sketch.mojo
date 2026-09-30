@@ -18,7 +18,9 @@ Buffers (bytes; shapes slowest ... fastest):
 """
 
 from std.math import ceildiv
+from std.builtin.sort import sort
 from std.gpu import global_idx
+from std.memory import bitcast
 from max.gpu.host import DeviceContext, HostBuffer
 
 from core.field import F4, f_reduce
@@ -45,8 +47,8 @@ struct SketchMatrix(Movable):
         """The biregular ensemble: K c sockets in a seeded random order, cut into rows of `row_weight` (the
         last row takes the rest), one uniform F* coefficient per socket. A column repeated in a row keeps
         both entries; they add."""
-        if row_weight > MAX_ROW_WEIGHT:
-            raise Error("row weight above MAX_ROW_WEIGHT")
+        if row_weight > MAX_ROW_WEIGHT or row_weight % 4 != 0:
+            raise Error("row weight above MAX_ROW_WEIGHT or not a multiple of 4 (k_sketch loads four entries)")
         self.K = K
         self.rows = ceildiv(K * col_weight, row_weight)
         var rng = seed
@@ -59,6 +61,10 @@ struct SketchMatrix(Movable):
             var t = self.col[i]
             self.col[i] = self.col[j]
             self.col[j] = t
+        for a in range(ceildiv(len(self.col), row_weight)):  # each row by column: the same H; the rows in
+            var lo = a * row_weight                             # flight then read x in one moving window
+            var hi = min(lo + row_weight, len(self.col))
+            sort(Span(self.col)[lo:hi])
         self.coef = List[UInt8](capacity=len(self.col))
         for _ in range(len(self.col)):
             self.coef.append(UInt8(1 + _splitmix(rng) % 126))
@@ -137,25 +143,64 @@ def _put_u32(h: HostBuffer[DType.uint8], at: Int, v: Int):
         h[at + b] = UInt8((v >> (8 * b)) & 255)
 
 
-def k_sketch(base: Base, start: Buf[4], ent: Buf[4], x: Buf[4], u: Buf[4], rows: Int32, columns: Int32):
-    """u[a, c] = sum over row a of H of coef * x[col, c]; one thread per (a, c), c fastest, so a SIMD group
-    reads 32 consecutive columns of one message row per entry."""
+def k_sketch[V: Int](base: Base, start: Buf[4], ent: Buf[4], x: Buf[4], u: Buf[4], rows: Int32, columns: Int32):
+    """u[a, c] = sum over row a of H of coef * x[col, c]; one thread per (a, V consecutive columns), columns
+    fastest: an entry is decoded once per V columns, and a SIMD group reads 32 V 4 contiguous bytes of one
+    message row per entry. Rows start at multiples of the row weight (a multiple of 4), so the entries
+    load as aligned groups of four. A row of x is 4 columns bytes, so the V-column loads are 4-byte aligned."""
     var gid = Int(global_idx.x)
     var cols = Int(columns)
-    if gid >= Int(rows) * cols:
+    var groups = ceildiv(cols, V)
+    if gid >= Int(rows) * groups:
         return
-    var c = gid % cols
-    var a = gid // cols
-    var acc = SIMD[DType.uint32, 4](0)
-    for i in range(u32(base, start.at(a)), u32(base, start.at(a + 1))):
-        var w = u32(base, ent.at(i))
-        acc += x.load(base, (w >> 7) * cols + c).cast[DType.uint32]() * UInt32(w & 127)
-    u.store(base, a * cols + c, f_reduce(acc))
+    var c = (gid % groups) * V
+    var a = gid // groups
+    var n = min(V, cols - c)
+    var acc = SIMD[DType.uint32, 4 * V](0)
+    var lo = u32(base, start.at(a))
+    var hi = u32(base, start.at(a + 1))
+    for i in range(lo, hi, 4):
+        var w = bitcast[DType.uint32, 4](base.unsafe_load[width=16, alignment=16](ent.at(i)))
+        comptime for k in range(4):
+            if i + k < hi:
+                var at = x.at(Int(w[k] >> 7) * cols + c)
+                var v: SIMD[DType.uint8, 4 * V]
+                if n == V:
+                    v = base.unsafe_load[width=4 * V, alignment=4](at)
+                else:
+                    v = SIMD[DType.uint8, 4 * V](0)
+                    for j in range(n):
+                        v = _put4(v, j, base.unsafe_load[width=4, alignment=4](at + 4 * j))
+                acc += v.cast[DType.uint32]() * (w[k] & 127)
+    var r = f_reduce(acc)
+    if n == V:
+        base.unsafe_store[width=4 * V, alignment=4](u.at(a * cols + c), r)
+    else:
+        for j in range(n):
+            u.store(base, a * cols + c + j, _get4(r, j))
+
+
+@always_inline
+def _put4[w: Int](v: SIMD[DType.uint8, w], j: Int, q: SIMD[DType.uint8, 4]) -> SIMD[DType.uint8, w]:
+    var out = v
+    for l in range(4):
+        out[4 * j + l] = q[l]
+    return out
+
+
+@always_inline
+def _get4[w: Int](v: SIMD[DType.uint8, w], j: Int) -> SIMD[DType.uint8, 4]:
+    return SIMD[DType.uint8, 4](v[4 * j], v[4 * j + 1], v[4 * j + 2], v[4 * j + 3])
+
+
+def sketch[V: Int = 4](ctx: DeviceContext, arena: Arena, s: SketchLayout) raises:
+    """u = H x on the message rows of `code`."""
+    ctx.enqueue_function[k_sketch[V]](arena.buf, Buf[4](s.start), Buf[4](s.ent), Buf[4](s.code), Buf[4](s.u),
+                                      Int32(s.rows), Int32(s.columns),
+                                      grid_dim=ceildiv(s.rows * ceildiv(s.columns, V), BACKEND.block), block_dim=BACKEND.block)
 
 
 def sketch_code(ctx: DeviceContext, arena: Arena, s: SketchLayout) raises:
     """code rows 0 .. K-1 (the message, already in place) -> the sketch, then its RS code into rows K .. ."""
-    ctx.enqueue_function[k_sketch](arena.buf, Buf[4](s.start), Buf[4](s.ent), Buf[4](s.code), Buf[4](s.u),
-                                   Int32(s.rows), Int32(s.columns),
-                                   grid_dim=ceildiv(s.rows * s.columns, BACKEND.block), block_dim=BACKEND.block)
+    sketch(ctx, arena, s)
     rs_encode_on(ctx, arena, s.u, s.etmp, s.code + s.K * s.columns * 4, s.columns, s.rows, s.L0, s.m, s.rs)
