@@ -20,6 +20,12 @@ def test_sampler_is_biregular_and_seeded() raises:
         assert_equal(seen[i], 16)
     for a in range(h.rows):
         assert_equal(h.start[a + 1] - h.start[a], 128)
+    var f = SketchMatrix(1000, 16, 128, 7, 4)
+    assert_equal(len(f.coef), 4 * len(f.col))
+    for i in range(len(f.col)):
+        assert_true(Int(f.coef[4 * i]) + Int(f.coef[4 * i + 1]) + Int(f.coef[4 * i + 2]) + Int(f.coef[4 * i + 3]) > 0)
+        for b in range(4):
+            assert_true(f.coef[4 * i + b] < 127)
     var g = SketchMatrix(1000, 16, 128, 7)
     var o = SketchMatrix(1000, 16, 128, 8)
     var same = True
@@ -30,10 +36,10 @@ def test_sampler_is_biregular_and_seeded() raises:
     assert_true(same and differ)
 
 
-def _check(K: Int, cw: Int, rw: Int, cols: Int) raises:
+def _check(K: Int, cw: Int, rw: Int, cols: Int, width: Int = 1) raises:
     """Message rows kept, sketch rows = RS(H x) by direct evaluation on every coset."""
     var ctx = DeviceContext()
-    var h = SketchMatrix(K, cw, rw, 11)
+    var h = SketchMatrix(K, cw, rw, 11, width)
     var bump = Bump()
     var s = SketchLayout(bump, h, cols)
     var arena = Arena(ctx, bump.used)
@@ -56,7 +62,11 @@ def _check(K: Int, cw: Int, rw: Int, cols: Int) raises:
             for e in range(h.start[a], h.start[a + 1]):
                 var x = F4(xh[(h.col[e] * cols + c) * 4], xh[(h.col[e] * cols + c) * 4 + 1],
                            xh[(h.col[e] * cols + c) * 4 + 2], xh[(h.col[e] * cols + c) * 4 + 3])
-                u[a] = f_add(u[a], f_mul(x, F4(h.coef[e])))
+                if width == 1:
+                    u[a] = f_add(u[a], f_mul(x, F4(h.coef[e])))
+                else:
+                    var k = F4(h.coef[4 * e], h.coef[4 * e + 1], h.coef[4 * e + 2], h.coef[4 * e + 3])
+                    u[a] = f_add(u[a], ext_mul[2](x, k))
         for k in range(s.m):
             for s0 in [0, 1, s.L0 // 3, s.L0 - 1]:
                 var pt = dom.point(k * s.L0 + s0)
@@ -74,6 +84,9 @@ def _check(K: Int, cw: Int, rw: Int, cols: Int) raises:
 def test_sketch_code_matches_reference() raises:
     _check(4608, 16, 128, 35)      # 576 sketch rows, ragged columns
     _check(1000, 8, 64, 3)         # 125 rows: an odd sketch length
+    _check(4608, 24, 192, 35)      # a reduction inside the row (128 of 192 entries)
+    _check(4608, 16, 128, 35, 4)   # F4 coefficients: reductions every 28 entries
+    _check(1000, 24, 192, 3, 4)
 
 
 def main() raises:

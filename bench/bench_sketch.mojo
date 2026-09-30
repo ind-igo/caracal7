@@ -1,7 +1,7 @@
 """Sketched level-1 code (pcs/sketch.mojo) against the RS encoder, on the W tree shapes of sha256, RSA-2048 and
 the passport (docs/profile.md). Both read the same packed message: the sketched code's first K rows are
-`e.packed`, so to_packed is common and timed once. Per H shape (column weight, row weight): the sketch
-kernel, the RS code of the sketch, the Merkle tree over K + L_s leaves, against rs_encode and the tree over
+`e.packed`, so to_packed is common and timed once. Per H shape (column weight, row weight, coefficients): the sketch
+kernel, the RS code of the sketch, the Merkle tree over K + L_s leaves (H over F or over F4), against rs_encode and the tree over
 L leaves. The two paths alternate within every repetition (M1 noise: A/B back to back)."""
 
 from std.time import perf_counter_ns
@@ -16,7 +16,7 @@ from pcs.merkle import merkle, tree_nodes
 from pcs.sketch import SketchMatrix, SketchLayout, upload_sketch, sketch_code, sketch
 
 comptime REPS = 5
-comptime SHAPES = [(16, 128), (8, 64), (16, 64)]
+comptime SHAPES = [(16, 128, 1), (8, 64, 1), (16, 64, 1), (24, 192, 1), (16, 128, 4), (24, 192, 4)]   # (c, d, coefficient width)
 
 
 def main() raises:
@@ -42,7 +42,7 @@ def run[p: Params, COLS: Int](ctx: DeviceContext, name: String) raises:
     var ss = List[SketchLayout]()
     var trees = List[Int]()
     for sh in materialize[SHAPES]():
-        hs.append(SketchMatrix(p.K(), sh[0], sh[1], 1))
+        hs.append(SketchMatrix(p.K(), sh[0], sh[1], 1, sh[2]))
         ss.append(SketchLayout(bump, hs[len(hs) - 1], COLS))
         trees.append(bump.alloc(tree_nodes(ss[len(ss) - 1].leaves()) * Blake3.DIGEST))
     var tab = TableLayout.__init__[p](bump.alloc(0))
@@ -106,7 +106,7 @@ def run[p: Params, COLS: Int](ctx: DeviceContext, name: String) raises:
     var i = 0
     for sh in materialize[SHAPES]():
         var s = ss[i]
-        print("  H ", sh[0], "/", sh[1], " rows=", s.rows, " L_s=", s.m * s.L0, " (", s.m, " cosets)",
+        print("  H ", sh[0], "/", sh[1], " over F" if sh[2] == 1 else " over F4", " rows=", s.rows, " L_s=", s.m * s.L0, " (", s.m, " cosets)",
               "   sketch ", sk[i] / REPS, " ms   sketch + RS ", sr[i] / REPS, " ms   merkle over ", s.leaves(),
               " leaves ", sm[i] / REPS, " ms   sum ", (sr[i] + sm[i]) / REPS)
         i += 1
