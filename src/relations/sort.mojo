@@ -20,7 +20,7 @@ ponytail: one thread scans the K bins; a two-level scan when K grows past a few 
 """
 
 from std.math import ceildiv
-from std.gpu import global_idx
+from max.gpu import global_idx
 from std.atomic import Atomic
 from max.gpu.host import DeviceContext
 

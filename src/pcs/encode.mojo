@@ -36,7 +36,7 @@ L0 = 2^b * M with M | 315 (tables.RsTables); level 1 has K = N/4, the tail level
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx, block_idx, block_dim, global_idx
+from max.gpu import thread_idx, block_idx, block_dim, global_idx
 from max.gpu.host import DeviceContext
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
@@ -275,7 +275,7 @@ def k_rs_gather[B2: Int](base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt:
     var q = (((n1 - c0) & mask1) * Int(minv)) & mask1
     # fp32 lanes: x (twisted and reduced, |x| <= 190) times a canonical gA power is below 192 K per
     # coordinate; 64 terms stay below 12.3 M, exact
-    var acc = InlineArray[V4, B2](fill=V4(0))
+    var acc = Array[V4, B2](fill=V4(0))
     var terms = 0
     while q < Int(Q):
         var i = c0 + Mi * q
@@ -297,13 +297,13 @@ def k_rs_gather[B2: Int](base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt:
 
 
 @always_inline
-def _dif8(xs: InlineArray[V4, 8], wr: InlineArray[V2, 8]) -> InlineArray[V4, 8]:
+def _dif8(xs: Array[V4, 8], wr: Array[V2, 8]) -> Array[V4, 8]:
     """Decimation in frequency: y[2m] = DFT4(x_n + x_(n+4)), y[2m+1] = DFT4((x_n - x_(n+4)) W_8^n),
     DFT4 with W_4 = W_8^2 and W_8^4 = -1: 5 products, 24 sums (a dense 8 x 8 is 64 products).
     Inputs |x| <= 190 and |W| <= 63 keep every sum below 2^24; the outputs are reduced (|y| <= 190)."""
-    var ys = InlineArray[V4, 8](fill=V4(0))
-    var a = InlineArray[V4, 4](fill=V4(0))
-    var d = InlineArray[V4, 4](fill=V4(0))
+    var ys = Array[V4, 8](fill=V4(0))
+    var a = Array[V4, 4](fill=V4(0))
+    var d = Array[V4, 4](fill=V4(0))
     comptime for n in range(4):
         a[n] = xs[n] + xs[n + 4]
         comptime if n == 0:
@@ -340,10 +340,10 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     var block_base = ((((blk >> b2) << 6) << b2) + k2) * cols + c
     var pos_step = (1 << b2) * cols
     var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
-    var wr = InlineArray[V2, 8](fill=V2(0))       # W_8^m = gA^(m 2^b / 8)
+    var wr = Array[V2, 8](fill=V2(0))       # W_8^m = gA^(m 2^b / 8)
     comptime for m in range(8):
         wr[m] = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(m << (bb - 3))))
-    var xs = InlineArray[V4, 8](fill=V4(0))
+    var xs = Array[V4, 8](fill=V4(0))
     if ok:
         comptime for k in range(8):
             xs[k] = etmp.load(base, block_base + (n_lo + 8 * k) * pos_step).cast[DType.float32]()
@@ -388,15 +388,15 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     var step = (1 << (t + b2)) * Int(columns)
     var shift = bb - ss
     var mask = (1 << bb) - 1
-    var wr = InlineArray[V2, r](fill=V2(0))       # W_r^m = gA^(m 2^b / r)
+    var wr = Array[V2, r](fill=V2(0))       # W_r^m = gA^(m 2^b / r)
     comptime for m in range(r):
         wr[m] = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(m << (bb - lr))))
-    var xs = InlineArray[V4, r](fill=V4(0))
+    var xs = Array[V4, r](fill=V4(0))
     comptime for k in range(r):
         xs[k] = etmp.load(base, first + k * step).cast[DType.float32]()
-    var ys = InlineArray[V4, r](fill=V4(0))
+    var ys = Array[V4, r](fill=V4(0))
     comptime if r == 8:
-        var y8 = _dif8(rebind[InlineArray[V4, 8]](xs), rebind[InlineArray[V2, 8]](wr))
+        var y8 = _dif8(rebind[Array[V4, 8]](xs), rebind[Array[V2, 8]](wr))
         comptime for e in range(8):
             ys[e] = y8[e]
     else:
@@ -460,7 +460,7 @@ def _jw[W: SIMDLength](y: SIMD[DType.float32, W]) -> SIMD[DType.float32, W]:
 
 
 @always_inline
-def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: InlineArray[SIMD[DType.float32, W], r]) -> InlineArray[SIMD[DType.float32, W], r]:
+def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: Array[SIMD[DType.float32, W], r]) -> Array[SIMD[DType.float32, W], r]:
     """r-point DFT of xs (W / 4 F4 values per lane group, |x| <= 126) with the twiddles of row 1 of
     the (r, r) table `wr`. The twiddles of radix 3, 7, 9 lie in F (their orders divide 126); radix 5
     needs F4. The r - 1 powers sit in registers, indexed at compile time. Symmetric form: with
@@ -471,18 +471,18 @@ def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: InlineArray[SIMD
     2^17 (radix 5: j (x_k - x_(r-k)) has lanes <= 756, sums below 2^19); the outputs are unreduced."""
     comptime VF = SIMD[DType.float32, W]
     comptime h = (r - 1) // 2
-    var pw = InlineArray[V4, r](fill=V4(0))         # w_r^m, row 1 of the (r, r) table
+    var pw = Array[V4, r](fill=V4(0))         # w_r^m, row 1 of the (r, r) table
     comptime for m in range(1, r):
         pw[m] = fp_center(wr.load(base, r + m))
-    var cw = InlineArray[V4, h + 1](fill=V4(0))     # (w^m + w^-m) / 2, in F2 for every radix
-    var sw = InlineArray[V4, h + 1](fill=V4(0))     # (w^m - w^-m) / 2, in F2 j for radix 5 (lanes 2, 3)
+    var cw = Array[V4, h + 1](fill=V4(0))     # (w^m + w^-m) / 2, in F2 for every radix
+    var sw = Array[V4, h + 1](fill=V4(0))     # (w^m - w^-m) / 2, in F2 j for radix 5 (lanes 2, 3)
     cw[0] = V4(1, 0, 0, 0)                          # t k = 0 mod r happens for radix 9
     comptime for m in range(1, h + 1):
         cw[m] = fp_reduce((pw[m] + pw[r - m]) * 64.0)
         sw[m] = fp_reduce((pw[m] - pw[r - m]) * 64.0)
-    var ys = InlineArray[VF, r](fill=VF(0))
-    var sa = InlineArray[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
-    var sb = InlineArray[VF, h + 1](fill=VF(0))
+    var ys = Array[VF, r](fill=VF(0))
+    var sa = Array[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
+    var sb = Array[VF, h + 1](fill=VF(0))
     ys[0] = xs[0]
     comptime for k in range(1, h + 1):
         sa[k] = xs[k] + xs[r - k]
@@ -537,7 +537,7 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     var l = rest >> bb
     var first_lin = (l // st) * r * st + l % st
     var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
-    var xs = InlineArray[VF, r](fill=VF(0))
+    var xs = Array[VF, r](fill=VF(0))
     comptime for k in range(r):
         xs[k] = _ldw[V](base, etmp, ((first_lin + k * st) << bb) * Int(columns) + col_off, n)
     var ys = _dft_odd[r](base, wr, xs)
@@ -569,7 +569,7 @@ def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: 
     var col_off = t1 * cols + c
     var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[ra * rb * CW * 4]())
     if ok and y < rb:                                   # radix ra over lines base + k rb + y
-        var xs = InlineArray[V4, ra](fill=V4(0))
+        var xs = Array[V4, ra](fill=V4(0))
         comptime for k in range(ra):
             xs[k] = etmp.load(base, ((base_lin + k * rb + y) << bb) * cols + col_off).cast[DType.float32]()
         var ys = _dft_odd[ra](base, wa, xs)
@@ -577,7 +577,7 @@ def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: 
             sh.ptr.unsafe_store(((t * rb + y) * CW + Int(thread_idx.x)) * 4, fp_canonical(ys[t]))
     barrier()
     if ok and y < ra:                                   # radix rb over lines base + y rb + k
-        var xs = InlineArray[V4, rb](fill=V4(0))
+        var xs = Array[V4, rb](fill=V4(0))
         comptime for k in range(rb):
             xs[k] = sh.ptr.unsafe_load[width=4](((y * rb + k) * CW + Int(thread_idx.x)) * 4).cast[DType.float32]()
         var ys = _dft_odd[rb](base, wb, xs)

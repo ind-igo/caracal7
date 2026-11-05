@@ -13,7 +13,7 @@ are the verifier's side of the same formulas.
 
 from std.bit import log2_floor
 from std.math import ceildiv
-from std.gpu import global_idx, thread_idx, block_idx
+from max.gpu import global_idx, thread_idx, block_idx
 from max.gpu.host import DeviceContext
 
 from core.field import F4, E, f_add, f_sub, f_mul, ext_mul, ext_pow, ext_embed, ext_one, fp_ext_mul, fp_reduce, fp_canonical, E_LEVEL, E_BYTES, EF, to_f32
@@ -42,7 +42,7 @@ def e_mul_f4(v: E, w: F4) -> E:
 
 
 @always_inline
-def rbar_at(r: InlineArray[E, 3], a: Int, digits: Int) -> E:
+def rbar_at(r: Array[E, 3], a: Int, digits: Int) -> E:
     """prod_{i < digits} (bit i of a ? r_i : 1 - r_i): the fold weight of digit value a."""
     var w = ext_one[E_LEVEL]()
     for i in range(digits):
@@ -51,8 +51,8 @@ def rbar_at(r: InlineArray[E, 3], a: Int, digits: Int) -> E:
 
 
 @always_inline
-def _r3(base: Base, r: Buf[E_BYTES]) -> InlineArray[E, 3]:
-    var out = InlineArray[E, 3](fill=E(0))
+def _r3(base: Base, r: Buf[E_BYTES]) -> Array[E, 3]:
+    var out = Array[E, 3](fill=E(0))
     for i in range(3):
         out[i] = r.load(base, i)
     return out^
@@ -194,7 +194,7 @@ def k_round_partial(base: Base, w_tilde: Buf[E_BYTES], y: Buf[E_BYTES], length: 
     var dd = Int(d)
     var m = 1 << dd
     var rr = _r3(base, r)
-    var rb = InlineArray[E, 4](fill=E(0))
+    var rb = Array[E, 4](fill=E(0))
     for a in range(m):
         rb[a] = rbar_at(rr, a, dd)
     # fp32 lanes: up to four products of canonical values (below 1.4 M each, 5.6 M a sum) per sum, reduced to
@@ -324,8 +324,8 @@ def tail_fold(ctx: DeviceContext, arena: Arena, src: Int, rows: Int, r: Int, dst
 # ---- host side of the same formulas (verifier, tests) ----
 
 
-def host_r3(r: Span[UInt8, _]) -> InlineArray[E, 3]:
-    var out = InlineArray[E, 3](fill=E(0))
+def host_r3(r: Span[UInt8, _]) -> Array[E, 3]:
+    var out = Array[E, 3](fill=E(0))
     for i in range(3):
         out[i] = list_e(r, i)
     return out^

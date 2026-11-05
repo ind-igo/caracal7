@@ -268,10 +268,10 @@ def f4_trace(w: F4) -> UInt8:
     return acc[0]
 
 
-def f4_dual() raises -> InlineArray[F4, 4]:
+def f4_dual() raises -> Array[F4, 4]:
     """lambda_tau with coord_tau(V) = Tr(lambda_tau V) for the coordinate basis b = (1, i, j', i j'):
     lambda_tau = sum_l Tinv[tau, l] b_l over the trace form T[k, l] = Tr(b_k b_l)."""
-    var a = InlineArray[UInt8, 32](fill=0)               # 4 rows of (T | I)
+    var a = Array[UInt8, 32](fill=0)               # 4 rows of (T | I)
     for k in range(4):
         var bk = F4(0)
         bk[k] = 1
@@ -299,7 +299,7 @@ def f4_dual() raises -> InlineArray[F4, 4]:
                 for c in range(8):
                     var prod = f_mul(SIMD[DType.uint8, 1](m), SIMD[DType.uint8, 1](a[col * 8 + c]))
                     a[row * 8 + c] = f_sub(SIMD[DType.uint8, 1](a[row * 8 + c]), prod)[0]
-    var out = InlineArray[F4, 4](fill=F4(0))
+    var out = Array[F4, 4](fill=F4(0))
     for tau in range(4):
         for l in range(4):
             out[tau][l] = a[tau * 8 + 4 + l]
@@ -322,7 +322,7 @@ def _geometric(base: E, m1: Int, m2: Int) -> Tuple[List[E], List[E]]:
     return (s1^, s2^)
 
 
-def consistency_units[p: Params](pt: F4, weights: InlineArray[E, 4], dual: InlineArray[F4, 4], cw: Int, mut out: List[Unit]):
+def consistency_units[p: Params](pt: F4, weights: Array[E, 4], dual: Array[F4, 4], cw: Int, mut out: List[Unit]):
     """sum_tau weights[tau] g_{pt,cw,tau} as units: g_{pt,cw,tau}[slot(i, j)] = coord_tau(b_j pt^i') on the slots
     of codeword cw and 0 elsewhere (tail.mojo), i over (t, x1', x2 >> 2, r), j the two low bits of x2 and
     (i', cw) = split_index(i): per conjugate sigma the product is sigma(pt)^(i' mod 2^LOW) sigma(b_j)

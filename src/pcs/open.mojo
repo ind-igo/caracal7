@@ -29,7 +29,7 @@ from pcs.encode import slot_target
 from core.backend import BACKEND, APPLE8, Bytes, launch_gemm_f2, strided, frag8, mma8
 from core.bytes import Base, Buf, u16, set_u16
 from core.arena import Arena
-from std.gpu import global_idx, thread_idx, block_idx, lane_id
+from max.gpu import global_idx, thread_idx, block_idx, lane_id
 from max.gpu.sync import barrier
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
@@ -727,7 +727,7 @@ def k_open_apple8[BN: Int](base: Base, a: Int64, b: Int64, c: Int64, mrows: Int3
     var k_end = (z + 1) * KB
     var As = stack_allocation[DType.float16, address_space=AddressSpace.SHARED](row_major[BM * BK]())   # As[m][k]
     var Bs = stack_allocation[DType.float16, address_space=AddressSpace.SHARED](row_major[BK * BN]())   # Bs[k][n]
-    var acc = InlineArray[SIMD[DType.float32, 2], NT](fill=SIMD[DType.float32, 2](0))
+    var acc = Array[SIMD[DType.float32, 2], NT](fill=SIMD[DType.float32, 2](0))
 
     for kc in range(ceildiv(KB, BK)):
         var k_base = z * KB + kc * BK

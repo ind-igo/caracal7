@@ -21,7 +21,7 @@ from std.math import ceildiv
 from std.sys import is_defined
 from std.time import perf_counter_ns
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
-from std.gpu import global_idx, thread_idx, block_idx, lane_id
+from max.gpu import global_idx, thread_idx, block_idx, lane_id
 from max.gpu.host import DeviceContext
 
 from core.field import F2, f_reduce_signed, fp_canonical, fp_reduce, fp_center
@@ -151,8 +151,8 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
     var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
     var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
-    var x0 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
-    var x1 = InlineArray[SIMD[DType.int32, VL], kin](fill=0)
+    var x0 = Array[SIMD[DType.int32, VL], kin](fill=0)
+    var x1 = Array[SIMD[DType.int32, VL], kin](fill=0)
     comptime for k in range(kin):
         comptime if LB > 1:
             comptime for l in range(LB):
@@ -214,8 +214,8 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
     var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
     var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * r * 2
-    var x0 = InlineArray[VF, r](fill=VF(0))
-    var x1 = InlineArray[VF, r](fill=VF(0))
+    var x0 = Array[VF, r](fill=VF(0))
+    var x1 = Array[VF, r](fill=VF(0))
     comptime for k in range(r):
         var c = fp_center(base.unsafe_load[width=2, alignment=2](tab + k * 2))  # ct(k), centered
         var v0: VF
@@ -235,8 +235,8 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
             v1 = rebind[VF](v[1].cast[DType.float32]())
         x0[k] = VF(c[0]) * v0 - VF(c[1]) * v1
         x1[k] = VF(c[0]) * v1 + VF(c[1]) * v0
-    var cw = InlineArray[Float32, h + 1](fill=0)
-    var sw = InlineArray[Float32, h + 1](fill=0)
+    var cw = Array[Float32, h + 1](fill=0)
+    var sw = Array[Float32, h + 1](fill=0)
     cw[0] = 1.0
     comptime for m in range(1, h + 1):
         var wm = fp_center(base.unsafe_load[width=2, alignment=2](tab + (2 * r + m) * 2))
@@ -245,7 +245,7 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
         sw[m] = fp_reduce((wm[0] - wn[0]) * 64.0)
     # store y_j = rt(j) reduce(y) as it is complete: the live set stays at the pair sums, not r outputs
     @always_inline
-    @parameter
+    @__parameter
     def put(j: Int, v0: VF, v1: VF):
         var rt = fp_center(base.unsafe_load[width=2, alignment=2](tab + (r + j) * 2))   # rt(j), centered
         var u0 = fp_reduce(v0)
@@ -258,10 +258,10 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
         else:
             base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
 
-    var sa0 = InlineArray[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
-    var sa1 = InlineArray[VF, h + 1](fill=VF(0))
-    var sb0 = InlineArray[VF, h + 1](fill=VF(0))
-    var sb1 = InlineArray[VF, h + 1](fill=VF(0))
+    var sa0 = Array[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
+    var sa1 = Array[VF, h + 1](fill=VF(0))
+    var sb0 = Array[VF, h + 1](fill=VF(0))
+    var sb1 = Array[VF, h + 1](fill=VF(0))
     var y00 = x0[0]
     var y01 = x1[0]
     comptime for k in range(1, h + 1):
@@ -328,7 +328,7 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
     var src_pre = Int(o.src) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo)
     var dst_pre = Int(o.dst) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo)
     var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
-    var af = InlineArray[SIMD[DType.float16, 2], 2 * RQ * KT](fill=SIMD[DType.float16, 2](0))
+    var af = Array[SIMD[DType.float16, 2], 2 * RQ * KT](fill=SIMD[DType.float16, 2](0))
     comptime for jt in range(2 * RQ):
         comptime po = jt // RQ
         var j = (jt % RQ) * 8 + fr
@@ -357,7 +357,7 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
             var p = p0 + fc                          # the lane's positions p, p + 1; past the line end they are masked
             var ok0 = p < inner
             var ok1 = p + 1 < inner
-            var acc = InlineArray[SIMD[DType.float32, 2], 2 * RQ](fill=SIMD[DType.float32, 2](0))
+            var acc = Array[SIMD[DType.float32, 2], 2 * RQ](fill=SIMD[DType.float32, 2](0))
             comptime for kq in range(KQ):
                 var off = src_line + (kq * 8 + fr) * Int(o.sk) + p * SI
                 comptime if bytes_in:
@@ -457,8 +457,8 @@ def k_dft8[n: Int, kin: Int, bytes_in: Bool](base: Base, o: Radix):
     var contig_k = Int(o.sk) == SI
     var contig_j = Int(o.tj) == 2
     var tab = Int(o.tab)
-    var bf0 = InlineArray[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # T fragments, re
-    var bf1 = InlineArray[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # im
+    var bf0 = Array[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # T fragments, re
+    var bf1 = Array[SIMD[DType.float16, 2], KQ * JQ](fill=SIMD[DType.float16, 2](0))   # im
     comptime for i in range(KQ * JQ):
         var f = base.unsafe_load[width=4](tab + (i * 32 + lane) * 4).cast[DType.float16]()
         bf0[i] = SIMD[DType.float16, 2](f[0], f[2])
@@ -473,8 +473,8 @@ def k_dft8[n: Int, kin: Int, bytes_in: Bool](base: Base, o: Radix):
         var w = Int(UInt32(m) % W)
         var src = Int(o.src) + line * Int(o.so_line) + w * Int(o.si)
         var dst = Int(o.dst) + line * Int(o.to_line) + w * Int(o.ti)
-        var a0 = InlineArray[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
-        var a1 = InlineArray[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
+        var a0 = Array[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
+        var a1 = Array[SIMD[DType.float16, 2], KQ](fill=SIMD[DType.float16, 2](0))
         if ok:
             comptime for kq in range(KQ):
                 var off = src + (kq * 8 + fc) * Int(o.sk)

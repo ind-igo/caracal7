@@ -51,7 +51,7 @@ Every statement implements the `Workload` trait in `workload.mojo` (public input
 
 ## Run
 
-Requirements: Mojo 1.0 through MAX 26.5 or later, installed by `uv sync`; a Mac with Metal (any M-series) or a Linux box with an NVIDIA GPU of sm_80 or later. There is no CPU prover: each kernel's test compares against a few lines of scalar Mojo.
+Requirements: Mojo 1.2 through MAX 26.7 or later, installed by `uv sync`; a Mac with Metal (any M-series) or a Linux box with an NVIDIA GPU of sm_80 or later. There is no CPU prover: each kernel's test compares against a few lines of scalar Mojo.
 
 ```
 uv sync

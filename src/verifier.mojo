@@ -373,7 +373,7 @@ struct _Tail[p: Params]:
     var r_prev: List[UInt8]         # r of the last committed level, empty while that is level 1
     var roots: List[List[UInt8]]    # committed tail roots
     var doms: List[RsDomain]        # their domains
-    var dual: InlineArray[F4, 4]
+    var dual: Array[F4, 4]
 
     def __init__(out self, shape: Shape, openings: List[UInt8], beta_gamma: List[UInt8], z1: E, z2: E, d: Domains) raises:
         self.units = List[Unit]()
@@ -433,7 +433,7 @@ struct _Tail[p: Params]:
         if i == 0:
             for q in range(count):
                 for cw in range(n_cw):
-                    var weights = InlineArray[E, 4](fill=E(0))
+                    var weights = Array[E, 4](fill=E(0))
                     for tau in range(4):
                         weights[tau] = list_e(batch, 1 + 4 * (q * n_cw + cw) + tau)
                     consistency_units[Self.p](d.level1.point(prev.positions[q]), weights, self.dual, cw, self.units)
@@ -590,10 +590,10 @@ def _push_e(mut l: List[UInt8], v: E):
         l.append(v[t])
 
 
-def encode_at[p: Params](y: Span[UInt8, _], pt: F4, cw: Int = 0) -> InlineArray[E, 4]:
+def encode_at[p: Params](y: Span[UInt8, _], pt: F4, cw: Int = 0) -> Array[E, 4]:
     """Enc(y)(pt) of codeword cw in E (x) F4 as four E coordinates: sum_i' (sum_j y[slot(join(i', cw), j)] b_j)
     pt^i', the F4 scalar pt^i' acting on the coordinates by its 4 x 4 matrix (spec 9.1 alphabet rule)."""
-    var acc = InlineArray[E, 4](fill=E(0))
+    var acc = Array[E, 4](fill=E(0))
     var pw = F4(1, 0, 0, 0)
     for ip in range(p.K()):
         var i = join_index[p](ip, cw)

@@ -168,7 +168,7 @@ def test_every_check_has_a_failing_case() raises:
         stopped = String(e)
     assert_equal(stopped, "zero row coordinate is FIX_ONE or FIX_E")
     ws.zero("a", FIX_E)
-    var wz = ws^.compile[p]()
+    var wz = ws.compile[p]()
     assert_equal(len(wz.shape.zeros), 4)
     assert_equal(wz.shape.points, wiring_statement(p.h2()).compile[p]().shape.points)   # (e1, z2) is a boundary point already
     ws = Statement()

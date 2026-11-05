@@ -66,7 +66,7 @@ def _sample_e(seed: Int) -> E:
 
 def _e_mul_reference(a: E20, b: E20) -> E20:
     """Polynomial product of the limbs modulo v^5 - G5, limb by limb in F4."""
-    var c = InlineArray[F4, 9](fill=F4(0))
+    var c = Array[F4, 9](fill=F4(0))
     for m in range(5):
         for n in range(5):
             var am = F4(a[4 * m], a[4 * m + 1], a[4 * m + 2], a[4 * m + 3])

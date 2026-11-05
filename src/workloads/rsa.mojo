@@ -701,8 +701,7 @@ def rsa_trace_into[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: 
     var failed = List[Int](length=p.h2(), fill=0)
     var errors = List[String](length=p.h2(), fill=String(""))
 
-    @parameter
-    def one_chain(x2: Int):
+    def one_chain(x2: Int) {imm, mut errors, mut failed, mut trace}:
         if x2 < base or x2 >= base + len(cells):
             return
         ref c = cells[x2 - base]
@@ -752,7 +751,7 @@ def rsa_trace_into[p: Params](layout: Layout, limbs: Int, muls: Int, s: Big, n: 
         for col in range(columns):
             unsafe_memcpy(dest=trace.unsafe_ptr().unsafe_offset(col * N + x2 * h1), src=chain.unsafe_ptr().unsafe_offset(col * h1), count=h1)
 
-    parallelize[one_chain](p.h2())
+    parallelize(one_chain, p.h2())
     for x2 in range(p.h2()):
         if failed[x2] != 0:
             raise Error(errors[x2])

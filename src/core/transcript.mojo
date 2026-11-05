@@ -7,7 +7,7 @@ positions are u32 below `below`. The same `sample` runs in the device kernel and
 """
 
 from std.math import ceildiv
-from std.gpu import thread_idx, global_idx
+from max.gpu import thread_idx, global_idx
 from std.atomic import Atomic
 from max.gpu.host import DeviceContext
 from max.gpu.sync import barrier

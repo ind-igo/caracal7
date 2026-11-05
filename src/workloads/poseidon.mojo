@@ -197,7 +197,7 @@ def _sum(mut st: Statement, var terms: List[Term], result: String, carries: List
     for k in range(len(carries)):
         terms.append(Term(-(2 << k), st.read(carries[k])))
     terms.extend(extra.copy())
-    st.family("=" + result, terms^)
+    st.family("=" + result, terms)
 
 
 def _fold(mut st: Statement, src: String, result: String, carry: String, extra: List[Term] = List[Term]()) raises:

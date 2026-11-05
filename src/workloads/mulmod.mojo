@@ -1019,8 +1019,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
     var failed = List[Int](length=p.h2(), fill=0)
     var errors = List[String](length=p.h2(), fill=String(""))
 
-    @parameter
-    def one_chain(x2: Int):
+    def one_chain(x2: Int) {imm, mut errors, mut failed, mut trace}:
         """Chain x2 into its own buffer, then into its rows of the trace; an error is kept for the caller."""
         var live = mul_at[x2] >= 0
         if not live and len(adds[x2]) == 0 and x2 != cheat:
@@ -1043,7 +1042,7 @@ def circuit_trace[p: Params](layout: Layout, vals: List[OpValues], ops: List[Op]
         for c in range(columns):
             unsafe_memcpy(dest=trace.unsafe_ptr().unsafe_offset(c * N + x2 * h1), src=chain.unsafe_ptr().unsafe_offset(c * h1), count=h1)
 
-    parallelize[one_chain](p.h2())
+    parallelize(one_chain, p.h2())
     for x2 in range(p.h2()):
         if failed[x2] != 0:
             raise Error(errors[x2])

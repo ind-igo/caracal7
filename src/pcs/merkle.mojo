@@ -6,7 +6,7 @@ Multiproof for sampled positions: [u32 bytes][rows of the sorted distinct positi
 the frontier walked level by level, ascending, each sibling once. `check_multiproof` is the host side.
 """
 
-from std.gpu import block_dim, block_idx, thread_idx
+from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.memory import AddressSpace
 from max.gpu.sync import barrier
 from layout import row_major, stack_allocation
@@ -17,7 +17,7 @@ from core.hash import Hash
 from core.backend import BACKEND
 from core.bytes import Base, Buf, u32, put_u32, host_base, check_field_bytes
 from core.arena import Arena
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 comptime MAX_QUERIES = 1024        # k_frontier holds four Int32 lists of this length in threadgroup memory (16 KB)
 

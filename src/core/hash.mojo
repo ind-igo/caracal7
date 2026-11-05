@@ -150,7 +150,7 @@ def _chunk_cv(key: _CV, flags0: UInt32, prefix: Int, ds: UInt8, src: Base, msg_l
     return cv
 
 
-def _fold(key: _CV, flags0: UInt32, mut stack: InlineArray[_CV, _STACK], mut depth: Int, cv0: _CV,
+def _fold(key: _CV, flags0: UInt32, mut stack: Array[_CV, _STACK], mut depth: Int, cv0: _CV,
           k: Int, n_chunks: Int) -> _CV:
     """Chunk value k enters the merge stack; after the last chunk the result is the root."""
     var cv = cv0
@@ -174,7 +174,7 @@ def _hash(key: _CV, flags0: UInt32, prefix: Int, ds: UInt8, src: Base, bytes: In
     """Blake3 of the message (ds if prefix else nothing) || src[0:bytes] under `key` and mode flags."""
     var msg_len = bytes + prefix
     var n_chunks = max(1, (msg_len + _CHUNK - 1) // _CHUNK)
-    var stack = InlineArray[_CV, _STACK](fill=_CV(0))
+    var stack = Array[_CV, _STACK](fill=_CV(0))
     var depth = 0
     var cv = key
     for k in range(n_chunks):
@@ -227,7 +227,7 @@ struct Blake3(Hash):
     @staticmethod
     def merge(state: Base, n_chunks: Int, cvs: Base):
         var key = _load_words[8](state)
-        var stack = InlineArray[_CV, _STACK](fill=_CV(0))
+        var stack = Array[_CV, _STACK](fill=_CV(0))
         var depth = 0
         var cv = key
         for k in range(n_chunks):

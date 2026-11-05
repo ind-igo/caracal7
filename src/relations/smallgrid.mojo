@@ -44,7 +44,7 @@ from core.bytes import Base, Buf, u16, get_u16
 from relations.ir import END, NONE, WIRE
 from relations.accumulate import AccLayout
 from core.arena import Arena, Bump
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 
 struct SmallGridLayout(TrivialRegisterPassable):

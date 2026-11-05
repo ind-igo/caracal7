@@ -109,15 +109,15 @@ def _add(addends: List[UInt32], mut carry: List[UInt32]) raises -> UInt32:
     return s
 
 
-def _v(*xs: UInt32) -> InlineArray[UInt32, 8]:
+def _v(*xs: UInt32) -> Array[UInt32, 8]:
     """Up to eight addends, zero-padded (a zero addend leaves the sum and the carries unchanged)."""
-    var a = InlineArray[UInt32, 8](fill=0)
+    var a = Array[UInt32, 8](fill=0)
     for i in range(len(xs)):
         a[i] = xs[i]
     return a^
 
 
-def _add8(a: InlineArray[UInt32, 8], k: Int, mut carry: InlineArray[UInt32, 3]) raises -> UInt32:
+def _add8(a: Array[UInt32, 8], k: Int, mut carry: Array[UInt32, 3]) raises -> UInt32:
     """`_add` on all 32 bit positions at once: the carry out of bit z is the sum of the addends' low z + 1 bits
     over 2^(z+1); its bits land in the first k words of `carry`."""
     var z = iota[DType.uint64, ROWS]()
@@ -307,7 +307,7 @@ def _sum(mut st: Statement, result: String, var terms: List[Term], carries: List
     terms.append(Term(-1, st.read(result)))
     for k in range(len(carries)):
         terms.append(Term(-(2 << k), st.read(carries[k])))
-    st.family("=" + result, terms^)
+    st.family("=" + result, terms)
 
 
 def sha256_statement[p: Params]() raises -> Statement:
@@ -494,7 +494,7 @@ def _sum_chain(mut st: Statement, result: String, var terms: List[Term], carries
         terms.append(Term(-1, st.read("rstx"), Read("dg", lane1, back_dg)))
     for k in range(len(carries)):
         terms.append(Term(-(2 << k), st.read(carries[k])))
-    st.family("=" + result, terms^)
+    st.family("=" + result, terms)
 
 
 def chain_statement[p: Params]() raises -> Statement:
@@ -633,12 +633,12 @@ def lane_words(head: List[UInt32], digest_in: List[UInt32], chains: Int, B: Int,
                 block.append(w[t - 63 + i])
             st = compress(iv(), block)
     var init = iv()
-    var sw = InlineArray[UInt32, WORDS](fill=0)
+    var sw = Array[UInt32, WORDS](fill=0)
     for i in range(WORDS):
         sw[i] = init[i]
     var hist = List[UInt32](length=chains * WORDS, fill=0)   # the state entering every chain
     var out = List[UInt32](capacity=chains * (SHA_COLUMNS + 1))
-    var digest = InlineArray[UInt32, WORDS](fill=0)
+    var digest = Array[UInt32, WORDS](fill=0)
     var has_digest = len(digest_in) == WORDS
     if has_digest:
         for i in range(WORDS):
@@ -671,13 +671,13 @@ def lane_words(head: List[UInt32], digest_in: List[UInt32], chains: Int, B: Int,
         var g0m = w1 >> 3
         var g1x = rotr(w14, 17) ^ rotr(w14, 19)
         var g1m = w14 >> 10
-        var wc = InlineArray[UInt32, 3](fill=0)
+        var wc = Array[UInt32, 3](fill=0)
         var ws = _add8(_v(g1x ^ g1m, w[(t + 9) % chains], g0x ^ g0m, w[t]), 2, wc)
         var back = (t - 63) * WORDS
-        var ac = InlineArray[UInt32, 3](fill=0)
-        var ec = InlineArray[UInt32, 3](fill=0)
-        var nxt = InlineArray[UInt32, WORDS](fill=0)
-        var cc = InlineArray[UInt32, 6](fill=0)
+        var ac = Array[UInt32, 3](fill=0)
+        var ec = Array[UInt32, 3](fill=0)
+        var nxt = Array[UInt32, WORDS](fill=0)
+        var cc = Array[UInt32, 6](fill=0)
         if live:
             nxt[0] = _add8(_v(h, s1, ch, w[t], s0, mj, k, hist[back] if end else 0), 3, ac)
         else:
@@ -690,7 +690,7 @@ def lane_words(head: List[UInt32], digest_in: List[UInt32], chains: Int, B: Int,
                 else:
                     nxt[4] = _add8(_v(e), 3, ec)
                 continue
-            var one = InlineArray[UInt32, 3](fill=0)
+            var one = Array[UInt32, 3](fill=0)
             nxt[i] = _add8(_v(sw[i - 1] if live else sw[i], hist[back + i] if end else 0), 1, one)
             cc[ci] = one[0]
             ci += 1
@@ -761,8 +761,7 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
     var lanes = List[List[UInt32]](length=M, fill=List[UInt32]())
     var tp = t.unsafe_ptr()
 
-    @parameter
-    def one_lane(j: Int):
+    def one_lane(j: Int) {imm, mut failed, mut lanes}:
         """Lane j's words: 44 per chain, the lane's state chained through its blocks."""
         var head = List[UInt32](capacity=16)
         if j == 0:
@@ -775,17 +774,16 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
         except e:
             failed[j] = String(e)
 
-    parallelize[one_lane](M)
+    parallelize(one_lane, M)
     for j in range(M):
         if failed[j].byte_length() > 0:
             raise Error(failed[j])
 
-    @parameter
-    def one_column(task: Int):
+    def one_column(task: Int) {imm}:
         """Column i of lane j into its rows crt(z, j); the (lane, column) pairs write disjoint bytes."""
         var j = task // (SHA_COLUMNS + 1)
         var i = task % (SHA_COLUMNS + 1)
-        var rows = InlineArray[Int, ROWS](fill=0)
+        var rows = Array[Int, ROWS](fill=0)
         for z in range(ROWS):
             rows[z] = crt(z, j, M)
         var col = tp.unsafe_offset(cols[i])
@@ -795,11 +793,10 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
             for z in range(ROWS):
                 dst[unsafe_offset=rows[z]] = UInt8((w >> UInt32(31 - z)) & 1)
 
-    parallelize[one_column](M * (SHA_COLUMNS + 1))
+    parallelize(one_column, M * (SHA_COLUMNS + 1))
     var n = ROUNDS * B
 
-    @parameter
-    def one_chain(k: Int):
+    def one_chain(k: Int) {imm}:
         """The per-row selector columns on chain k."""
         var b0c = chain_word(m, kc, n, B, 8, k) != 0
         var s8c = chain_word(m, kc, n, B, 7, k) != 0
@@ -815,7 +812,7 @@ def chain_trace[p: Params](layout: Layout, message: List[UInt8]) raises -> List[
             tp[unsafe_offset=col_lane0w * N + at] = 1 if lane0 else 0
             tp[unsafe_offset=col_notlastw * N + at] = 1 if notlast else 0
 
-    parallelize[one_chain](h2)
+    parallelize(one_chain, h2)
     return t^
 
 
@@ -873,14 +870,13 @@ struct Sha256Chain(Workload, Copyable, Movable):
         var cols = List[List[UInt8]](length=CHAIN_PUBLICS, fill=List[UInt8]())
         var failed = List[String](length=CHAIN_PUBLICS, fill=String())
 
-        @parameter
-        def one_column(l: Int):
+        def one_column(l: Int) {imm, mut cols, mut failed}:
             try:
                 cols[l] = chain_public_values[p](message, l)
             except e:
                 failed[l] = String(e)
 
-        parallelize[one_column](CHAIN_PUBLICS)
+        parallelize(one_column, CHAIN_PUBLICS)
         var data = List[UInt8]()
         for l in range(CHAIN_PUBLICS):
             if failed[l].byte_length() > 0:

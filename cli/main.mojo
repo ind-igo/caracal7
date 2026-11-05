@@ -52,7 +52,7 @@ def _run[p: Params, W: Workload](cmd: String, w: W, path: String, var public: Li
     else:
         var t0 = perf_counter_ns()
         var proof = open(path, "r").read_bytes()
-        var ok = verify_workload[p, Blake3](proof^, w, public^)
+        var ok = verify_workload[p, Blake3](proof^, w, public)
         print("verify_ms", (perf_counter_ns() - t0) // 1000000, "ok", ok)
         if not ok:
             exit(1)

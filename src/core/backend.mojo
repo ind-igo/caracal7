@@ -21,14 +21,14 @@ anything; the tile only has to be legal.
 
 from std.math import ceildiv
 from std.sys import is_defined, _RegisterPackType, llvm_intrinsic
-from std.sys.info import has_apple_gpu_accelerator
+from std.sys import default_accelerator
 from std.sys._assembly import inlined_assembly
 from std.memory import bitcast
 from linalg.arch.apple.mma import MmaOpApple
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
 from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
-from std.gpu import thread_idx, block_idx
+from max.gpu import thread_idx, block_idx
 from max.gpu.memory import AddressSpace
 from layout import row_major, stack_allocation
 
@@ -81,7 +81,7 @@ comptime NVIDIA_MMA = Backend(kind=KIND_NVIDIA_MMA, threadgroup_bytes=49152, mma
 comptime BACKEND = NVIDIA_MMA if is_defined["CARACAL_NVIDIA_MMA"]() else (APPLE_MMA if is_defined["CARACAL_APPLE_MMA"]() else LANES)
 # The lane build on an Apple host (M1..M4, GPU family 7..9): no integer simdgroup matrix, but the 8x8 fp16 -> fp32 one
 # is there and runs at 2.3 T MAC/s on the M1 Pro, 3x the int32 lanes. Bytes < 127 are exact in fp16; their products are exact in the fp32 accumulator of the op.
-comptime APPLE8 = BACKEND.kind == KIND_LANES and has_apple_gpu_accelerator()
+comptime APPLE8 = BACKEND.kind == KIND_LANES and default_accelerator().is_apple_gpu()
 # A build flag, not a device probe: host code reads BACKEND.tile for the launch shape, and `is_nvidia_gpu()` is
 # only true inside device code; the Apple GPU family (M5 or not) is not visible at comptime at all.
 comptime LANE_TILE = Tile(BM=8, BN=128, BK=16, TM=8, TN=4, mma=False)   # M = the 8 F2 lanes of E: residual, open, fold
@@ -91,7 +91,7 @@ comptime F4_TERMS = 32   # F4 products per lane between reductions: a (1, i) lan
 
 @always_inline
 def tile_mac[B: Backend, TM: Int, TN: Int, neg: Bool = False](
-    a: SIMD[DType.int32, TM], b: SIMD[DType.int32, TN], mut acc: InlineArray[SIMD[DType.int32, TN], TM]
+    a: SIMD[DType.int32, TM], b: SIMD[DType.int32, TN], mut acc: Array[SIMD[DType.int32, TN], TM]
 ):
     """acc[i][j] += a[i] * b[j] (or -=). The (TM x 1) by (1 x TN) tile product on lanes; valid on every backend."""
     comptime for i in range(TM):
@@ -102,7 +102,7 @@ def tile_mac[B: Backend, TM: Int, TN: Int, neg: Bool = False](
 
 
 @always_inline
-def tile_reduce[TM: Int, TN: Int](mut acc: InlineArray[SIMD[DType.int32, TN], TM]):
+def tile_reduce[TM: Int, TN: Int](mut acc: Array[SIMD[DType.int32, TN], TM]):
     comptime for i in range(TM):
         acc[i] = f_reduce_signed(acc[i]).cast[DType.int32]()
 
@@ -210,8 +210,8 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var As1 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BM]())
     var Bs0 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
     var Bs1 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
-    var re = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
-    var im = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var re = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var im = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
 
     for kt in range(ceildiv(Ki, BK)):
         comptime for i in range(0, BM * BK, THREADS):
@@ -457,11 +457,11 @@ def gemm_f2_nvidia[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var As2 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BM, BK]())   # -im
     var Bs0 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BN, BK]())   # (n, k)
     var Bs1 = stack_allocation[DType.int8, address_space=AddressSpace.SHARED](row_major[BN, BK]())
-    var re = InlineArray[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
-    var im = InlineArray[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
+    var re = Array[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
+    var im = Array[SIMD[DType.int32, 4], NM * NN](fill=SIMD[DType.int32, 4](0))
 
     @always_inline
-    @parameter
+    @__parameter
     def frag_a(P: type_of(As0), row: Int, k0: Int) -> SIMD[DType.uint32, 4]:
         var r0 = (row + g) * BK + k0 + t * 4
         var r1 = (row + g + 8) * BK + k0 + t * 4
@@ -472,7 +472,7 @@ def gemm_f2_nvidia[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r1 + 16)))
 
     @always_inline
-    @parameter
+    @__parameter
     def frag_b(P: type_of(Bs0), col: Int, k0: Int) -> SIMD[DType.uint32, 2]:
         var r = (col + g) * BK + k0 + t * 4
         return SIMD[DType.uint32, 2](
@@ -626,10 +626,10 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
     var Bs1 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
     var Bs2 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
     var Bs3 = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[BK, BN]())
-    var c0 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
-    var c1 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
-    var c2 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
-    var c3 = InlineArray[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c0 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c1 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c2 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
+    var c3 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
 
     for kt in range(ceildiv(Ki, BK)):
         comptime for i in range(0, BM * BK, THREADS):

@@ -197,7 +197,7 @@ def _sum(mut st: Statement, P: String, result: String, var terms: List[Term], ca
     terms.append(Term(-1, Read(P + result, 0, 0)))
     for k in range(len(carries)):
         terms.append(Term(-(2 << k), Read(P + carries[k], 0, 0)))
-    st.family(P + "=" + result, terms^)
+    st.family(P + "=" + result, terms)
 
 
 def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Zeta, digest_shift: Int, embeds: List[Int] = List[Int]()) raises -> ShaGroup:
@@ -280,7 +280,7 @@ def sha256_group(mut st: Statement, g: String, chains: Int, h2: Int, mut zeta: Z
         for i in range(4):
             t.append(Term(1 << i, Read(P + "start", 0, 0), Read(P + String(STATE[byte=4 * k + i]), 0, 0)))
         t.append(Term(-1, Read(P + "iv" + String(k), 0, 0)))
-        st.family(P + "=iv" + String(k), t^)
+        st.family(P + "=iv" + String(k), t)
     # the block's input state, 15 chains up (slot 0), on the block's last slot
     for i in range(WORDS):
         var x = String(STATE[byte=i])

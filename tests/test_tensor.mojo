@@ -78,7 +78,7 @@ def test_trace_form_gives_the_coordinates() raises:
 def _check_consistency[pp: Params]() raises:
     var d = Domains.__init__[pp]()
     var pt = d.level1.point(7)
-    var weights = InlineArray[E, 4](fill=E(0))
+    var weights = Array[E, 4](fill=E(0))
     for tau in range(4):
         weights[tau] = _e(20 + tau)
     var units = List[Unit]()

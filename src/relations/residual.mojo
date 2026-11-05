@@ -39,7 +39,7 @@ from relations.ir import ENTRY, ENT_A, ENT_B, ENT_MULT, ENT_COEF, ENT_FAMILY, EN
 from core.bytes import Base, Buf, u16, get_u16
 from core.arena import Arena
 from core.dft import dft_axis, DftPlan
-from std.gpu import global_idx
+from max.gpu import global_idx
 
 
 
@@ -190,9 +190,9 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         return
     var pt = LdePoint.__init__[p](j1, j2)
     var g1f = fp_center(gate1.load(base, j1))
-    var g2f = InlineArray[V2, V](fill=V2(0))
-    var re = InlineArray[VH, V](fill=VH(0))
-    var im = InlineArray[VH, V](fill=VH(0))
+    var g2f = Array[V2, V](fill=V2(0))
+    var re = Array[VH, V](fill=VH(0))
+    var im = Array[VH, V](fill=VH(0))
     comptime for t in range(V):
         g2f[t] = fp_center(gate2.load(base, j2 + 2 * t))
     # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
