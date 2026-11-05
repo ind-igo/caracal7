@@ -59,8 +59,8 @@ checks itself in microseconds.
 
 ## Baseline
 
-zkPassport's Noir circuits for the same passport, proved with Barretenberg on the same M1
-(`bench/zkpassport/README.md`): six Honk subproofs of 0.7 to 1.2 s each and a recursive outer proof of
+zkPassport's Noir circuits for the same passport, proved with Barretenberg on an M1 Pro
+(`bench/zkpassport/README.md`; it has not been run on the M5): six Honk subproofs of 0.7 to 1.2 s each and a recursive outer proof of
 40 s; 14.7 KB per proof, 0.06 to 0.09 s to verify, zero-knowledge. Zero knowledge is the baseline's one
 clear advantage besides proof size; it is the next step here (`docs/zk.md`).
 

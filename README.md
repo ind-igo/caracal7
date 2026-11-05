@@ -88,24 +88,27 @@ The csp-benchmarks harness is `csp-rust/`, a Criterion crate over the prover's C
 
 ### RSA-2048 and the passport
 
-M1 Pro, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench/bench_sod.mojo` and
-`bench/bench_dsc.mojo` on 144 x 2688, `bench/bench_passport.mojo` on 144 x 4032):
+Apple M5 Pro (20-core GPU, 64 GB), Mojo 1.2.0, 2026-11-06, commit `bed3c34`, load average about 4, median of
+6 runs, warm prove, proof verified (`bench/bench_rsa.mojo` on 144 x 2016, `bench/bench_sod.mojo` and
+`bench/bench_dsc.mojo` on 144 x 2688, `bench/bench_passport.mojo` on 144 x 4032). The RSA row times the prover
+alone; the other three also include the trace, the advice and the loads:
 
 | statement | chains | prove ms | verify ms | proof bytes |
 | --- | ---: | ---: | ---: | ---: |
-| RSA-2048 verify | 1745 | 593 | 300 | 642,000 |
-| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 1750 | 250 | 1,123,000 |
-| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 1390 | 410 | 1,064,000 |
-| passport in one proof (4 x SHA-256 + nullifier + 2 x RSA-2048, the DSC key a wire) | 3799 | 2520 | 650 | 1,355,000 |
+| RSA-2048 verify | 1745 | 178 | 154 | 580,402 |
+| passport SOD (3 x SHA-256 + commitment + nullifier + RSA-2048, s and n witness) | 1958 | 479 | 152 | 930,154 |
+| DSC certificate check (SHA-256 + commitment + RSA-2048, s witness) | 2003 | 405 | 204 | 874,498 |
+| passport in one proof (4 x SHA-256 + nullifier + 2 x RSA-2048, the DSC key a wire) | 3799 | 715 | 295 | 1,151,566 |
 
 A passport is one proof: the SOD's hashes, the certificate body's hash and both RSA verifies on one grid, the
 DSC key wired from the body to the SOD's verify, no commitment; it discloses the MRZ fields and a nullifier
-per scope. The two-proof form (the SOD and the DSC check sharing a commitment digest, 3.1 s prove, 2.2 MB,
-0.66 s verify) stays for grids that hold no more than 2688 chains. The verify is host-side field arithmetic
+per scope. The two-proof form (the SOD and the DSC check sharing a commitment digest, 0.88 s prove, 1.8 MB,
+0.36 s verify) stays for grids that hold no more than 2688 chains. The verify is host-side field arithmetic
 over the proof; its public data is under 1 MB (`docs/public-columns.md`). zkPassport's Noir circuits for the same passport,
-proved with Barretenberg on the same machine, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s
-recursive outer proof) for a 14.7 KB proof that verifies in 0.09 s and is zero-knowledge; the recipe and the
-per-circuit numbers are in `bench/zkpassport/README.md`.
+proved with Barretenberg on an M1 Pro, take 45 s (six Honk subproofs of about 0.9 s each and a 40 s
+recursive outer proof) for a 14.7 KB proof that verifies in 0.09 s and is zero-knowledge; caracal7 took 2.5 s
+on that M1 Pro. Barretenberg has not been run on the M5. The recipe and the per-circuit numbers are in
+`bench/zkpassport/README.md`.
 The statements are described in `docs/passport.md`.
 
 ### SHA-256 hash chain on NVIDIA
@@ -120,7 +123,7 @@ RTX 3090 (Vast.ai, 2026-09-16, `bench_sha256_chain`, warm prove median, proof ve
 | 224 x 8064 | 875 | 195.3 | 0.22 |
 | 672 x 2688 | 861 | 212.7 | 0.25 |
 
-The M1 Pro proves the 125-hash grid in about 215 ms (1.7 ms per hash).
+The M5 Pro proves the 125-hash grid in 72 ms (0.57 ms per hash) and the 875-hash grid in 481 ms (0.55 ms per hash).
 
 ### SHA-256 chain against OpenVM on one RTX 5090
 
@@ -188,3 +191,22 @@ Metal setup, kernel compile, arena fill) and are not tabulated here. Warm in-pro
 
 Criterion's 10-sample runs flag high outliers on most rows (an iteration lands on the previous
 session's arena being released); the small rows move a few ms between runs on a loaded machine.
+
+The Criterion table has not been rerun on the M5. These are the `warm prove` lines there (M5 Pro, the same run as
+the passport table), which time less than Criterion does, so do not compare them with the rows above:
+
+| target | input | prove ms | verify ms | proof bytes |
+| --- | ---: | ---: | ---: | ---: |
+| sha256 | 128 B | 13 | 11 | 151,212 |
+| sha256 | 256 B | 12 | 13 | 162,980 |
+| sha256 | 512 B | 17 | 17 | 174,712 |
+| sha256 | 1024 B | 19 | 14 | 193,868 |
+| sha256 | 2048 B | 28 | 19 | 194,412 |
+| keccak | 128 B | 13 | 12 | 226,852 |
+| keccak | 1024 B | 17 | 15 | 268,356 |
+| keccak | 2048 B | 20 | 18 | 287,968 |
+| poseidon | 2 | 24 | 20 | 297,541 |
+| poseidon | 8 | 24 | 20 | 299,781 |
+| poseidon | 16 | 36 | 23 | 320,517 |
+| ecdsa | 1 sig | 79 | 49 | 472,612 |
+| ecdsa_p256 | 1 sig | 147 | 106 | 623,164 |

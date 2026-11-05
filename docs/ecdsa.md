@@ -199,24 +199,24 @@ blocks unchanged. The RFC 6979 A.2.5 signature verifies on the host, the live wa
 circuit, its values satisfy every op over P-256's moduli, and the proof round-trips with a changed
 message rejected.
 
-Measured on the M1 Pro at load average about 10, back to back with secp256k1 (`bench/bench_ecdsa_*.mojo`,
-warm prove, `CLIENT`):
+Measured on the M5 Pro (2026-11-06, median of 6 runs), back to back with secp256k1 (`bench/bench_ecdsa_*.mojo`,
+warm prove, `CLIENT`); the csp harness rows are the M1 Pro's, not rerun:
 
 | | secp256k1 | P-256 |
 |---|---:|---:|
 | grid | 144 x 576 | 144 x 1152 |
 | W columns / public columns (dense) / opening points | 236 / 18 (12) / 12 | 220 / 36 (12) / 23 |
 | proof bytes | 472,612 | 623,164 |
-| warm prove ms | 260 | 496 |
-| verify ms | 80 | 165 |
-| trace ms | 30 | 237 |
+| warm prove ms | 79 | 147 |
+| verify ms | 49 | 106 |
+| trace ms | 14 | 142 |
 | soundness ledger, work / interactive bits | 108.03 / 88.21 | 107.70 / 88.04 |
 | csp harness (Criterion mean): prove / verify ms | 317 / 77 | 784 / 169 |
 | csp harness: proof bytes / peak RSS MB | 472,996 / 88 | 622,876 / 119 |
 
 The harness rows are `csp-rust/` on the generators' signatures (`docs/csp.md`); a proof's bytes move by
 a few KB with the inputs, since the transcript picks the queried rows and the Merkle multiproof shares
-more or fewer path nodes. The P-256 proof is 2.2 x the time and 1.3 x the bytes of secp256k1: twice the chains (no GLV split), and
+more or fewer path nodes. The P-256 proof is 1.9 x the time and 1.3 x the bytes of secp256k1: twice the chains (no GLV split), and
 the word offsets add 11 opening points. Two verifier costs went with the public data: `selector_values`
 re-validated the whole public data once per public factor (479 scans of 5.8 MB on P-256, 60 ms on
 secp256k1 too), and the chain-constant public columns (the fold selectors, the word coefficients, the

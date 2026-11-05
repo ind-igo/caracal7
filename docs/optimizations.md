@@ -1,13 +1,14 @@
 # Optimization candidates
 
 This page lists the prover, verifier and proof-size changes that a read of the code found, ranked by
-gain divided by effort. No item here is measured. The gains are estimates from operation counts and the stage
-times in `docs/profile.md` (M1 Pro, `CLIENT` profile). Measure each change A/B, back to back, before you keep it.
+gain divided by effort. Items are unmeasured unless they say otherwise. The gains are estimates from operation
+counts and the M1 Pro stage times of 2026-09 (`CLIENT` profile); `docs/profile.md` now holds the M5 Pro's, and
+the baselines below are the M1 Pro's. Measure each change A/B, back to back, before you keep it.
 The last section lists the items that were tried and lost, so that nobody proposes them again.
 
 ## Prover, wide statements
 
-Baseline: passport 1957 ms, SOD 1378 ms, RSA-2048 593 ms. On these statements the LDE and the residual are
+Baseline (M1 Pro): passport 1957 ms, SOD 1378 ms, RSA-2048 593 ms. On these statements the LDE and the residual are
 about 45 percent of the prove. Together, the items below may save 400 to 500 ms on the passport. The
 estimates overlap, so do not add them exactly.
 
@@ -100,7 +101,7 @@ Smaller items on the wide statements:
 
 ## Prover, hash statements
 
-Baseline: sha256 81 ms, keccak 58 ms. The tail is about 35 percent of the prove, but launch latency is not the
+Baseline (M1 Pro): sha256 81 ms, keccak 58 ms. The tail is about 35 percent of the prove, but launch latency is not the
 cause: the sha256 tail makes about 200 launches, 1 to 3 ms. `prove` has no host sync before `proof.finish`.
 Together the items below may take sha256 to 65 to 70 ms.
 
@@ -133,7 +134,7 @@ encode 0" (46 ms on the passport, about 4 ms estimated for `running0`). `finish`
 
 ## Verifier
 
-Baseline: passport 862 ms, RSA 325 ms. None of these items changes a checked value, so the ledger does not
+Baseline (M1 Pro): passport 862 ms, RSA 325 ms. None of these items changes a checked value, so the ledger does not
 change. Together they may take the passport to about 120 ms.
 
 - **Boundaries (passport 240 ms, RSA 160 ms).** `horner_chain_end` (`ir.mojo:418-443`) decodes each `entry()`

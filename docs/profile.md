@@ -4,12 +4,12 @@ Prover stages, verifier steps and proof bytes per workload, measured on one run 
 statement. The protocol the stages implement is `docs/protocol.md`; the stage names are the
 prover's own profile labels (`prove(profile=True)` synchronizes after every stage), the verifier's
 are its step marks, and the byte regions are the proof layout of `proof.mojo` walked region by
-region. Refresh with the same driver when a stage changes; the numbers in `README.md` are the
-Criterion harness's and move separately.
+region. Refresh with the same driver when a stage changes; the numbers in `README.md` come from the
+`bench/bench_<target>.mojo` files and the Criterion harness, and move separately.
 
-Machine: Apple M1 Pro 16 GB, load average about 30 from other work, after the factored
-openings and the three-coset LDE, warm prover (the third prove of a prepared
-session), `CLIENT` profile (`E = F_127^20`, Johnson regime, 20 grinding
+Machine: Apple M5 Pro (20-core GPU, 64 GB), Mojo 1.2.0, 2026-11-06, commit `bed3c34`, load average about 4,
+median of 6 runs, after the factored openings and the three-coset LDE, warm prover (the third prove of a
+prepared session), `CLIENT` profile (`E = F_127^20`, Johnson regime, 20 grinding
 bits, tail rate 1/8). The hash inputs are 2048 bytes; Poseidon is 16 elements; the RSA, SOD, DSC
 and passport fixtures are the bench files' (2048-bit keys, e = 65537).
 
@@ -24,56 +24,60 @@ and passport fixtures are the bench files' (2048-bit keys, e = 65537).
 
 ## Prover stages, ms
 
-The profiled run synchronizes after every stage, so the stage sum is a few percent above the
-unprofiled warm prove on the small statements and within noise on the large ones.
+The profiled run synchronizes after every stage. Stages are truncated to whole ms and a stage under
+1 ms is not listed, so the stage sum undercounts, most on the statements with many short stages. The
+last row is `Prover.prove` alone: `bench_sod`, `bench_dsc` and `bench_passport`, and so the README's
+table, also include the trace, the advice and the loads.
 
 | stage | sha256 | keccak | poseidon | ecdsa | rsa-2048 | sod | dsc | passport |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| encode W | 8 | 5 | 7 | 38 | 90 | 228 | 199 | 310 |
-| merkle W | 2 | 1 | 2 | 5 | 8 | 22 | 18 | 22 |
-| accumulate | 0 | 0 | 1 | 10 | 18 | 32 | 28 | 46 |
-| encode Z | 0 | 0 | 8 | 42 | 62 | 120 | 119 | 160 |
-| merkle Z | 0 | 0 | 1 | 5 | 7 | 21 | 13 | 16 |
-| small grid | 0 | 0 | 1 | 1 | 2 | 12 | 3 | 3 |
-| lde | 4 | 4 | 14 | 39 | 100 | 263 | 201 | 388 |
-| residual | 5 | 4 | 11 | 43 | 99 | 325 | 220 | 486 |
-| quotient | 6 | 2 | 5 | 15 | 52 | 72 | 71 | 108 |
-| encode Q | 7 | 2 | 4 | 9 | 25 | 41 | 42 | 55 |
-| merkle Q | 3 | 1 | 2 | 3 | 5 | 10 | 9 | 10 |
-| build_queries | 1 | 1 | 2 | 1 | 7 | 1 | 1 | 3 |
-| open | 5 | 4 | 8 | 15 | 38 | 133 | 125 | 195 |
-| fold | 1 | 0 | 1 | 4 | 8 | 14 | 13 | 22 |
-| tail levels, transcript, finish | 29 | 19 | 28 | 30 | 77 | 118 | 98 | 141 |
-| sum of stages | 71 | 43 | 95 | 260 | 598 | 1412 | 1160 | 1965 |
-| warm prove, unprofiled | 81 | 58 | 106 | 261 | 593 | 1378 | 1160 | 1957 |
+| encode W | 2 | 1 | 2 | 11 | 26 | 69 | 61 | 93 |
+| merkle W | 0 | 0 | 0 | 1 | 1 | 5 | 4 | 5 |
+| accumulate | 0 | 0 | 0 | 3 | 6 | 11 | 10 | 16 |
+| encode Z | 0 | 0 | 2 | 13 | 18.5 | 35 | 35 | 47 |
+| merkle Z | 0 | 0 | 0 | 1 | 1 | 3 | 3 | 3 |
+| small grid | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| lde | 1 | 1 | 4 | 13 | 32 | 92.5 | 71 | 134.5 |
+| residual | 1 | 1 | 2 | 9 | 22 | 73 | 48 | 109.5 |
+| quotient | 1 | 0 | 1 | 2 | 9 | 12 | 12 | 18 |
+| encode Q | 2 | 0 | 1 | 2 | 7 | 12 | 12 | 15 |
+| merkle Q | 0 | 0 | 0 | 0 | 1 | 2 | 2 | 2 |
+| build_queries | 0 | 0 | 1 | 0 | 3 | 0 | 0 | 1 |
+| open | 2 | 1 | 3 | 5 | 16 | 53.5 | 50 | 78.5 |
+| fold | 0 | 0 | 0 | 1 | 3 | 4 | 4 | 6 |
+| tail levels, transcript, finish | 6.5 | 4.5 | 5 | 5 | 18 | 25 | 23 | 37 |
+| sum of stages | 15.5 | 8.5 | 22 | 66 | 163.5 | 397 | 335 | 565.5 |
+| warm prove, unprofiled | 29 | 23 | 36.5 | 79 | 178 | 413.5 | 349 | 581 |
 
 Reading it: on the hash statements the encoder and the tail are the budget and the whole prove is
-under 110 ms. On the wide statements (RSA and up) the residual pass and the LDE that feeds it are
-the largest pair, about 45 percent of the passport, then `encode W` and `open`. The openings are
+under 40 ms. On the wide statements (RSA and up) the LDE and the residual pass it feeds are the
+largest pair, about 43 percent of the passport's stages, then `encode W` and `open`; the LDE alone is
+now the largest stage. The openings are
 factored by the classes of points that share `z2` (`open.point_classes`: the SOD's 52 points fall
 into 14 classes, so the contraction runs over 28 weight rows instead of 52 points) where that wins,
 and are the direct GEMM on RSA and Poseidon, whose points fall into almost as many classes. The tail
-is 5 to 15 percent everywhere; the Merkle trees are under 3 percent.
+is 6 to 11 percent from ECDSA up and about half of the listed stages on sha256 and keccak; the Merkle trees
+are 3 percent or less.
 
 ## Verifier steps, ms
 
 | step | sha256 | keccak | poseidon | ecdsa | rsa-2048 | sod | dsc | passport |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| transcript and openings | 0 | 0 | 0 | 0 | 0 | 3 | 13 | 4 |
-| boundaries | 0 | 0 | 0 | 70 | 160 | 15 | 199 | 240 |
-| small grid | 0 | 0 | 1 | 14 | 18 | 108 | 37 | 68 |
-| residual at z | 15 | 9 | 10 | 20 | 3 | 12 | 7 | 28 |
+| transcript and openings | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
+| boundaries | 0 | 0 | 0 | 6 | 70.5 | 3 | 60 | 62.5 |
+| small grid | 0 | 0 | 1 | 8 | 11 | 20 | 20 | 30 |
+| residual at z | 4 | 1 | 1 | 3 | 2 | 4 | 3 | 5 |
 | restrictions | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| running claim | 4 | 6 | 6 | 2 | 8 | 22 | 17 | 57 |
-| tail levels | 11 | 14 | 12 | 19 | 28 | 38 | 24 | 85 |
-| clear vector | 4 | 2 | 3 | 16 | 69 | 290 | 156 | 284 |
-| total | 39 | 44 | 43 | 160 | 325 | 578 | 506 | 862 |
+| running claim | 2 | 3 | 3 | 1 | 3 | 8 | 7 | 10 |
+| tail levels | 7 | 8.5 | 8 | 9 | 13 | 13 | 12 | 21 |
+| clear vector | 2 | 1 | 2 | 10 | 45 | 91.5 | 89 | 147 |
+| total | 19 | 18 | 22.5 | 49 | 154 | 153 | 204.5 | 295.5 |
 
 Reading it: the hash statements verify in the residual and the tail. The RSA-based statements
 verify in two places that are not the commitment at all: the boundaries (the wiring product and
 the public factors' fingerprints, one Horner scan per factor over the public data) and the clear
 vector (units times clear length; the clear vector is the odd part `m1 m2` of the grid times the
-unfolded digits, 1134 elements on 4032). The SOD's 108 ms small grid is its many chain-end terms.
+unfolded digits, 1134 elements on 4032). The SOD's 20 ms small grid is its many chain-end terms.
 These are the open verify-time items of `docs/passport.md`.
 
 ## Proof bytes
