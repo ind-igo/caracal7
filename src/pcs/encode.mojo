@@ -49,7 +49,7 @@ from core.field import fp_reduce, fp_center, fp_canonical, fp_mul2, fp_mul4, fp_
 from core.params import Params
 from core.tables import TableLayout, RsTables, two_adic, rs_factors
 from core.arena import Bump, ST_LOAD, ST_END
-from core.bytes import Base, Buf, u16
+from core.bytes import Base, Buf, Off, OFF32, u16
 from core.arena import Arena
 from core.backend import BACKEND, Strided, Bytes, launch_gemm_f2, strided
 from core.dft import dft_axis, DftPlan, Radix, _stage as radix_stage
@@ -261,39 +261,44 @@ def k_rs_gather[B2: Int](base: Base, src: Buf[4], etmp: Buf[4], ga: Buf[4], crt:
     var row: Int
     var ok: Bool
     c, row, ok = _rs_thread(columns)
-    var bb = Int(b)
-    var Mi = Int(M)
-    var b1: Int
-    var b2: Int
-    b1, b2 = _adic_split(bb)
-    if not ok or row >= Mi << b1:
+    var b1i: Int
+    var b2i: Int
+    b1i, b2i = _adic_split(Int(b))
+    var Mi = Off(M)
+    var b1 = Off(b1i)
+    var b2 = Off(b2i)
+    var r32 = Off(row)
+    if not ok or r32 >= Mi << b1:
         return
-    var lin = row >> b1
-    var n1 = row & ((1 << b1) - 1)
-    var c0 = u16(base, crt.at(lin * 2))
-    var mask1 = (1 << b1) - 1
-    var q = (((n1 - c0) & mask1) * Int(minv)) & mask1
+    var cols = Off(columns)
+    var c32 = Off(c)
+    var lin = r32 >> b1
+    var n1 = r32 & ((1 << b1) - 1)
+    var c0 = Off(u16(base, crt.at(Int(lin) * 2)))
+    var mask1 = (Off(1) << b1) - 1
+    var q = ((n1 - c0) & mask1) * Off(minv) & mask1
+    var Q32 = Off(Q)
+    var K32 = Off(K)
+    var mask = (Off(1) << Off(b)) - 1
     # fp32 lanes: x (twisted and reduced, |x| <= 190) times a canonical gA power is below 192 K per
     # coordinate; 64 terms stay below 12.3 M, exact
     var acc = Array[V4, B2](fill=V4(0))
-    var terms = 0
-    while q < Int(Q):
-        var i = c0 + Mi * q
-        if i < Int(K):
-            var x = src.load(base, i * Int(columns) + c).cast[DType.float32]()
-            if twisted != 0:
-                x = fp_reduce(fp_mul4(x, twist.load(base, i).cast[DType.float32]()))
-            comptime for k2 in range(B2):
-                acc[k2] += fp_mul4(ga.load(base, (i * k2) & ((1 << bb) - 1)).cast[DType.float32](), x)
-            terms += 1
-            if terms == 64:
+    while q < Q32:
+        var stop = min(q + (64 << b1), Q32)           # 64 iterations, so at most 64 terms between reductions
+        while q < stop:
+            var i = c0 + Mi * q
+            if i < K32:
+                var x = src.load(base, Int(i * cols + c32)).cast[DType.float32]()
+                if twisted != 0:
+                    x = fp_reduce(fp_mul4(x, twist.load(base, Int(i)).cast[DType.float32]()))
                 comptime for k2 in range(B2):
-                    acc[k2] = fp_reduce(acc[k2])
-                terms = 0
-        q += 1 << b1
-    var out = (((lin << b1) + n1) << b2) * Int(columns) + c
+                    acc[k2] += fp_mul4(ga.load(base, Int((i * Off(k2)) & mask)).cast[DType.float32](), x)
+            q += 1 << b1
+        comptime for k2 in range(B2):
+            acc[k2] = fp_reduce(acc[k2])
+    var out = (((lin << b1) + n1) << b2) * cols + c32
     comptime for k2 in range(B2):
-        etmp.store(base, out + k2 * Int(columns), fp_canonical(acc[k2]))
+        etmp.store(base, Int(out + Off(k2) * cols), fp_canonical(acc[k2]))
 
 
 @always_inline
@@ -337,8 +342,8 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     var cols = Int(columns)
     var ok = c < cols and blk < (Int(M) << b2)
     var k2 = blk & ((1 << b2) - 1)
-    var block_base = ((((blk >> b2) << 6) << b2) + k2) * cols + c
-    var pos_step = (1 << b2) * cols
+    var block_base = Off(((((blk >> b2) << 6) << b2) + k2)) * Off(cols) + Off(c)
+    var pos_step = Off(1 << b2) * Off(cols)
     var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[64 * CW * 4]())
     var wr = Array[V2, 8](fill=V2(0))       # W_8^m = gA^(m 2^b / 8)
     comptime for m in range(8):
@@ -346,7 +351,7 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     var xs = Array[V4, 8](fill=V4(0))
     if ok:
         comptime for k in range(8):
-            xs[k] = etmp.load(base, block_base + (n_lo + 8 * k) * pos_step).cast[DType.float32]()
+            xs[k] = etmp.load(base, Int(block_base + Off(n_lo + 8 * k) * pos_step)).cast[DType.float32]()
     var ys = _dif8(xs, wr)
     comptime for e in range(8):
         var y = ys[e]
@@ -360,7 +365,7 @@ def k_rs_stage64(base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32,
     ys = _dif8(xs, wr)
     if ok:
         comptime for e in range(8):
-            etmp.store(base, block_base + (8 * n_lo + e) * pos_step, fp_canonical(ys[e]))
+            etmp.store(base, Int(block_base + Off(8 * n_lo + e) * pos_step), fp_canonical(ys[e]))
 
 
 def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b: Int32, M: Int32, s: Int32):
@@ -384,8 +389,8 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
     var rest = row >> b2
     var n_lo = rest & ((1 << t) - 1)
     rest >>= t
-    var first = ((((rest << ss) + n_lo) << b2) + k2) * Int(columns) + c
-    var step = (1 << (t + b2)) * Int(columns)
+    var first = Off(((((rest << ss) + n_lo) << b2) + k2)) * Off(columns) + Off(c)
+    var step = Off(1 << (t + b2)) * Off(columns)
     var shift = bb - ss
     var mask = (1 << bb) - 1
     var wr = Array[V2, r](fill=V2(0))       # W_r^m = gA^(m 2^b / r)
@@ -393,7 +398,7 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
         wr[m] = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(m << (bb - lr))))
     var xs = Array[V4, r](fill=V4(0))
     comptime for k in range(r):
-        xs[k] = etmp.load(base, first + k * step).cast[DType.float32]()
+        xs[k] = etmp.load(base, Int(first + Off(k) * step)).cast[DType.float32]()
     var ys = Array[V4, r](fill=V4(0))
     comptime if r == 8:
         var y8 = _dif8(rebind[Array[V4, 8]](xs), rebind[Array[V2, 8]](wr))
@@ -410,7 +415,7 @@ def k_rs_stage2[r: Int](base: Base, etmp: Buf[4], ga: Buf[4], columns: Int32, b:
         comptime if e > 0:
             var ws = fp_center(base.unsafe_load[width=2, alignment=2](ga.at(((e * n_lo) << shift) & mask)))
             y = fp_mul2(ws, y)
-        etmp.store(base, first + e * step, fp_canonical(y))
+        etmp.store(base, Int(first + Off(e) * step), fp_canonical(y))
 
 
 @always_inline
@@ -507,9 +512,9 @@ def _dft_odd[r: Int, W: SIMDLength](base: Base, wr: Buf[4], xs: Array[SIMD[DType
 
 
 @always_inline
-def _scatter(base: Base, ruri: Buf[1], lin: Int, s_t1: Int, L0: Int, bb: Int) -> Int:
+def _scatter(base: Base, ruri: Buf[1], lin: Off, s_t1: Off, L0: Off, bb: Off) -> Off:
     """Leaf index of line lin's output t1: s = M t1 + 2^b ruri(lin) mod L0."""
-    var s = s_t1 + (u16(base, ruri.at(lin * 2)) << bb)    # < 2 L0
+    var s = s_t1 + (Off(u16(base, ruri.at(Int(lin) * 2))) << bb)    # < 2 L0
     return s - L0 if s >= L0 else s
 
 
@@ -528,27 +533,31 @@ def k_rs_stage[r: Int, stride: Int](base: Base, etmp: Buf[4], wr: Buf[4], code: 
     var ok: Bool
     c, rest, ok = _rs_thread[V](columns)
     var n = Int(columns) - c
-    var bb = Int(b)
-    var Mi = Int(M)
-    comptime st = stride
-    if not ok or rest >= (Mi // r) << bb:
+    var bb = Off(b)
+    var Mi = Off(M)
+    var cols = Off(columns)
+    var c32 = Off(c)
+    var r32 = Off(rest)
+    comptime st = Off(stride)
+    comptime R = Off(r)
+    if not ok or r32 >= (Mi // R) << bb:
         return
-    var t1 = rest & ((1 << bb) - 1)
-    var l = rest >> bb
-    var first_lin = (l // st) * r * st + l % st
-    var col_off = t1 * Int(columns) + c        # + lin * 2^b * columns
+    var t1 = r32 & ((Off(1) << bb) - 1)
+    var l = r32 >> bb
+    var first_lin = (l // st) * R * st + l % st
+    var col_off = t1 * cols + c32        # + lin * 2^b * columns
     var xs = Array[VF, r](fill=VF(0))
     comptime for k in range(r):
-        xs[k] = _ldw[V](base, etmp, ((first_lin + k * st) << bb) * Int(columns) + col_off, n)
+        xs[k] = _ldw[V](base, etmp, Int(((first_lin + Off(k) * st) << bb) * cols + col_off), n)
     var ys = _dft_odd[r](base, wr, xs)
-    var s_t1 = Mi * _t1_true(t1, bb) if final else 0
+    var s_t1 = Mi * Off(_t1_true(Int(t1), Int(bb))) if final else Off(0)
     comptime for t in range(r):
         var y = fp_canonical(ys[t])
-        var lin = first_lin + t * st
+        var lin = first_lin + Off(t) * st
         comptime if final:
-            _stw[V](base, code, _scatter(base, ruri, lin, s_t1, Mi << bb, bb) * Int(columns) + c, n, y)
+            _stw[V](base, code, Int(_scatter(base, ruri, lin, s_t1, Mi << bb, bb) * cols + c32), n, y)
         else:
-            _stw[V](base, etmp, (lin << bb) * Int(columns) + col_off, n, y)
+            _stw[V](base, etmp, Int((lin << bb) * cols + col_off), n, y)
 
 
 def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: Buf[4], code: Buf[4], ruri: Buf[1],
@@ -560,18 +569,22 @@ def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: 
     var c = Int(block_idx.x) * CW + Int(thread_idx.x)
     var y = Int(thread_idx.y)
     var row = Int(block_idx.y)
-    var bb = Int(b)
-    var Mi = Int(M)
-    var cols = Int(columns)
-    var ok = c < cols and row < (Mi // (ra * rb)) << bb
-    var t1 = row & ((1 << bb) - 1)
-    var base_lin = (row >> bb) * ra * rb
-    var col_off = t1 * cols + c
+    var bb = Off(b)
+    var Mi = Off(M)
+    var cols = Off(columns)
+    var r32 = Off(row)
+    var c32 = Off(c)
+    comptime RA = Off(ra)
+    comptime RB = Off(rb)
+    var ok = c32 < cols and r32 < (Mi // (RA * RB)) << bb
+    var t1 = r32 & ((Off(1) << bb) - 1)
+    var base_lin = (r32 >> bb) * RA * RB
+    var col_off = t1 * cols + c32
     var sh = stack_allocation[DType.uint8, address_space=AddressSpace.SHARED](row_major[ra * rb * CW * 4]())
     if ok and y < rb:                                   # radix ra over lines base + k rb + y
         var xs = Array[V4, ra](fill=V4(0))
         comptime for k in range(ra):
-            xs[k] = etmp.load(base, ((base_lin + k * rb + y) << bb) * cols + col_off).cast[DType.float32]()
+            xs[k] = etmp.load(base, Int(((base_lin + Off(k) * RB + Off(y)) << bb) * cols + col_off)).cast[DType.float32]()
         var ys = _dft_odd[ra](base, wa, xs)
         comptime for t in range(ra):
             sh.ptr.unsafe_store(((t * rb + y) * CW + Int(thread_idx.x)) * 4, fp_canonical(ys[t]))
@@ -581,10 +594,10 @@ def k_rs_stage_pair[ra: Int, rb: Int](base: Base, etmp: Buf[4], wa: Buf[4], wb: 
         comptime for k in range(rb):
             xs[k] = sh.ptr.unsafe_load[width=4](((y * rb + k) * CW + Int(thread_idx.x)) * 4).cast[DType.float32]()
         var ys = _dft_odd[rb](base, wb, xs)
-        var s_t1 = Mi * _t1_true(t1, bb)
+        var s_t1 = Mi * Off(_t1_true(Int(t1), Int(bb)))
         comptime for t in range(rb):
-            var s = _scatter(base, ruri, base_lin + y * rb + t, s_t1, Mi << bb, bb)
-            code.store(base, s * cols + c, fp_canonical(ys[t]))
+            var s = _scatter(base, ruri, base_lin + Off(y) * RB + Off(t), s_t1, Mi << bb, bb)
+            code.store(base, Int(s * cols + c32), fp_canonical(ys[t]))
 
 
 # ---- host orchestration: enqueue the whole encoder on one stream ----
@@ -681,6 +694,9 @@ def rs_encode_on[mask: Int = 31](ctx: DeviceContext, arena: Arena,
     F5, F7, F9 = rs_factors(M)
     if F5 * F7 * F9 != M or M == 1:
         raise Error("odd part of L0 must divide 315 and be > 1")
+    comptime if OFF32:
+        if L0 * columns > 1 << 32:
+            raise Error("a coset of the code does not fit a 32-bit index")
     var cols = Int32(columns)
     var gx = ceildiv(columns, CW)
     var ruri = rs.base + rs.ruri

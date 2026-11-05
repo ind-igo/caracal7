@@ -14,7 +14,7 @@ estimates overlap, so do not add them exactly.
 | # | change | where | estimate (passport) | effort |
 |---|---|---|---:|---|
 | 1 | LDE of the public term columns as outer products | `prover.mojo:537`, `load_public` | ~140 ms | low to medium |
-| 2 | Pre-decoded entries and 32-bit index math in `k_residual` | `residual.mojo:121-219` | 70-110 ms | low |
+| 2 | Pre-decoded entries in `k_residual` (the 32-bit index math and the single descriptor load are done) | `residual.mojo` | see below | low |
 | 3 | Horner terms in the coefficient domain; Z LDE on 10 F2 lanes | `residual.mojo:143,228` | ~95 ms | medium |
 | 4 | RS gather as a twisted 8-point DFT | `encode.mojo:255-296` | ~60 ms | low |
 | 5 | Cancel the odd stage of `idft2` against the odd stage of `to_packed` | `encode.mojo:91-99, 612-651` | 55-60 ms | medium |
@@ -38,7 +38,9 @@ in total), `e_planes` and `to_f32` convert 20 bytes of kappa, and `LdePoint.at` 
 which the Apple GPU emulates. Let `k_fold_alpha` / `k_merge_kappa` also write a 16-byte aligned int32 record
 (`col * h2 * 3W`, the A and B offsets, the flags) and kappa as fp32 planes. The largest in-buffer index is
 689 x 4032 x 480, less than 2^31. The `LdePoint` docstring gives the scale: 8 more integer ops per read cost
-15 to 25 percent.
+15 to 25 percent. Done on the M5 Pro (2026-11-05): `LdePoint.at` on 32-bit `Off` and one 16-byte load for both
+read descriptors took the passport residual from 172 to 109 ms (54 ms of it the 32-bit math, 9 ms the load).
+Left: kappa as fp32 planes, and offsets stored in the descriptor.
 
 **3. Horner in the coefficient domain.** No family entry reads a Z column on RSA, SOD, DSC or the passport; only
 `k_horner` reads Z. The Horner term is linear in Z, and lane `l = Z_2l + i Z_2l+1` is F2-linear (the `_z_read`
@@ -194,6 +196,9 @@ are committed at different barriers), shorter digests (below the collision targe
   32 KB threadgroup memory. Merkle is near its Blake3 compute floor.
 - The LDE of Z on E lanes, without item 3: `k_residual` reads the Z coordinate columns one by one.
 - A smaller code domain: 4 x 161280 is the only domain that fits the passport.
+- 32-bit offsets outside the residual (M5 Pro, 2026-11-05): the RS stages and the radix kernels, runtime 64-bit
+  divisions included, gain 1 to 2 percent each. They are memory-bound; only ALU-bound kernels pay for the emulated
+  64-bit multiply. `k_horner` is 13 of the passport's 109 ms residual, so item 3 can only gain in the LDE.
 
 ## Order
 

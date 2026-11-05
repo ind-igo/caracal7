@@ -30,7 +30,7 @@ from relations.statement import Compiled
 from relations import AccLayout, accumulate, horner, wiring, derive_chals, counting_sort, merge_tables
 from relations import lde, residual, quotient, quotient_elems, lde_bytes, ltmp_bytes, k_values_to_trace
 from relations import SmallGridLayout, small_grid_accumulator, small_grid_wiring, small_grid_end, small_grid_values
-from core.bytes import Buf, get_u16
+from core.bytes import Buf, OFF32, get_u16
 from core.backend import BACKEND
 
 comptime PREFIX_MAX = 1 << 16       # arena bytes for the transcript prefix (public inputs included)
@@ -72,8 +72,11 @@ struct LdeLayout(TrivialRegisterPassable):
     var residual: Int       # (G2, G1, e)
     var quotient: Int       # quotient_elems x e            Q1, Q2 interpolation scratch (residual.mojo)
 
-    def __init__[p: Params](out self, mut bump: Bump, shape: Shape):
+    def __init__[p: Params](out self, mut bump: Bump, shape: Shape) raises:
         comptime N = p.N()
+        comptime if OFF32:
+            if lde_bytes[p](shape.columns_w + shape.columns_z + shape.columns_p) > 1 << 33:
+                raise Error("the LDE does not fit the 32-bit index of LdePoint.at")
         self.pub_vals = bump.alloc(shape.columns_p * N)   # loaded once too: the selected ingest terms read it in every prove's Z stage
         self.pub_coeff = bump.alloc(shape.columns_p * N * 2)   # loaded once, must survive repeated proves
         self.ltmp = bump.alloc(ltmp_bytes[p](max(shape.columns_w, max(shape.columns_z, shape.columns_p))), ST_LOAD, ST_LDE)   # load_public's scratch too

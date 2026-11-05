@@ -26,7 +26,7 @@ from max.gpu.host import DeviceContext
 
 from core.field import F2, f_reduce_signed, fp_canonical, fp_reduce, fp_center
 from core.backend import BACKEND, APPLE8, frag8, mma8
-from core.bytes import Base
+from core.bytes import Base, Off, OFF32
 from core.arena import Arena
 
 
@@ -141,31 +141,34 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
     var t = UInt32(global_idx.x)
     if t >= UInt32(o.total):
         return
-    var inner = Int(t % UInt32(o.inner)) * V
+    var inner = Off(t % UInt32(o.inner)) * Off(V)
     var rest = t // UInt32(o.inner)
     var pre32 = rest % UInt32(o.od)
-    var line = Int(rest // UInt32(o.od)) * LB
-    var hi = Int(pre32 // UInt32(o.od_lo))
-    var lo = Int(pre32 % UInt32(o.od_lo))
-    var pre = Int(pre32)
-    var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
-    var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
-    var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
+    var line = Off(rest // UInt32(o.od)) * Off(LB)
+    var hi = Off(pre32 // UInt32(o.od_lo))
+    var lo = Off(pre32 % UInt32(o.od_lo))
+    var so_line = Off(o.so_line)
+    var sk = Off(o.sk)
+    var to_line = Off(o.to_line)
+    var tj = Off(o.tj)
+    var src = Int(o.src) + Int(line * so_line + hi * Off(o.so_pre) + lo * Off(o.so_pre_lo) + inner * Off(o.si))
+    var dst = Int(o.dst) + Int(line * to_line + hi * Off(o.to_pre) + lo * Off(o.to_pre_lo) + inner * Off(o.ti))
+    var tab = Int(o.tab) + Int(pre32 % UInt32(o.tabmod)) * r * kin * 2
     var x0 = Array[SIMD[DType.int32, VL], kin](fill=0)
     var x1 = Array[SIMD[DType.int32, VL], kin](fill=0)
     comptime for k in range(kin):
         comptime if LB > 1:
             comptime for l in range(LB):
                 comptime if bytes_in:
-                    x0[k][l] = Int32(base[unsafe_offset=src + l * Int(o.so_line) + k * Int(o.sk)])
+                    x0[k][l] = Int32(base[unsafe_offset=src + Int(Off(l) * so_line + Off(k) * sk)])
                 else:
-                    var v = base.unsafe_load[width=2, alignment=2](src + l * Int(o.so_line) + k * Int(o.sk))
+                    var v = base.unsafe_load[width=2, alignment=2](src + Int(Off(l) * so_line + Off(k) * sk))
                     x0[k][l] = Int32(v[0])
                     x1[k][l] = Int32(v[1])
         elif bytes_in:
-            x0[k] = Int32(base[unsafe_offset=src + k * Int(o.sk)])
+            x0[k] = Int32(base[unsafe_offset=src + Int(Off(k) * sk)])
         else:
-            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + k * Int(o.sk)).deinterleave()
+            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + Int(Off(k) * sk)).deinterleave()
             x0[k] = rebind[SIMD[DType.int32, VL]](v[0].cast[DType.int32]())
             x1[k] = rebind[SIMD[DType.int32, VL]](v[1].cast[DType.int32]())
     comptime for j in range(r):
@@ -181,9 +184,9 @@ def k_radix[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Bas
         var ii = f_reduce_signed(im)
         comptime if LB > 1:
             comptime for l in range(LB):
-                base.unsafe_store[width=2, alignment=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
+                base.unsafe_store[width=2, alignment=2](dst + Int(Off(l) * to_line + Off(j) * tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
         else:
-            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
+            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + Int(Off(j) * tj), rr.interleave(ii))
 
 
 def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
@@ -204,16 +207,19 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
     var t = UInt32(global_idx.x)
     if t >= UInt32(o.total):
         return
-    var inner = Int(t % UInt32(o.inner)) * V
+    var inner = Off(t % UInt32(o.inner)) * Off(V)
     var rest = t // UInt32(o.inner)
     var pre32 = rest % UInt32(o.od)
-    var line = Int(rest // UInt32(o.od)) * LB
-    var hi = Int(pre32 // UInt32(o.od_lo))
-    var lo = Int(pre32 % UInt32(o.od_lo))
-    var pre = Int(pre32)
-    var src = Int(o.src) + line * Int(o.so_line) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo) + inner * Int(o.si)
-    var dst = Int(o.dst) + line * Int(o.to_line) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo) + inner * Int(o.ti)
-    var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * r * 2
+    var line = Off(rest // UInt32(o.od)) * Off(LB)
+    var hi = Off(pre32 // UInt32(o.od_lo))
+    var lo = Off(pre32 % UInt32(o.od_lo))
+    var so_line = Off(o.so_line)
+    var sk = Off(o.sk)
+    var to_line = Off(o.to_line)
+    var tj = Off(o.tj)
+    var src = Int(o.src) + Int(line * so_line + hi * Off(o.so_pre) + lo * Off(o.so_pre_lo) + inner * Off(o.si))
+    var dst = Int(o.dst) + Int(line * to_line + hi * Off(o.to_pre) + lo * Off(o.to_pre_lo) + inner * Off(o.ti))
+    var tab = Int(o.tab) + Int(pre32 % UInt32(o.tabmod)) * r * r * 2
     var x0 = Array[VF, r](fill=VF(0))
     var x1 = Array[VF, r](fill=VF(0))
     comptime for k in range(r):
@@ -224,13 +230,13 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
             var b0 = SIMD[DType.uint8, VL](0)
             var b1 = SIMD[DType.uint8, VL](0)
             comptime for l in range(LB):
-                var v = base.unsafe_load[width=2, alignment=2](src + l * Int(o.so_line) + k * Int(o.sk))
+                var v = base.unsafe_load[width=2, alignment=2](src + Int(Off(l) * so_line + Off(k) * sk))
                 b0[l] = v[0]
                 b1[l] = v[1]
             v0 = b0.cast[DType.float32]()
             v1 = b1.cast[DType.float32]()
         else:
-            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + k * Int(o.sk)).deinterleave()
+            var v = base.unsafe_load[width=2 * V, alignment=2 * V](src + Int(Off(k) * sk)).deinterleave()
             v0 = rebind[VF](v[0].cast[DType.float32]())
             v1 = rebind[VF](v[1].cast[DType.float32]())
         x0[k] = VF(c[0]) * v0 - VF(c[1]) * v1
@@ -254,9 +260,9 @@ def k_radix_odd[r: Int, V: Int = 1, LB: Int = 1](base: Base, o: Radix):
         var ii = fp_canonical(VF(rt[0]) * u1 + VF(rt[1]) * u0)
         comptime if LB > 1:
             comptime for l in range(LB):
-                base.unsafe_store[width=2, alignment=2](dst + l * Int(o.to_line) + j * Int(o.tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
+                base.unsafe_store[width=2, alignment=2](dst + Int(Off(l) * to_line + Off(j) * tj), SIMD[DType.uint8, 2](rr[l], ii[l]))
         else:
-            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + j * Int(o.tj), rr.interleave(ii))
+            base.unsafe_store[width=2 * VL, alignment=2 * VL](dst + Int(Off(j) * tj), rr.interleave(ii))
 
     var sa0 = Array[VF, h + 1](fill=VF(0))     # x_k + x_(r-k), x_k - x_(r-k)
     var sa1 = Array[VF, h + 1](fill=VF(0))
@@ -321,13 +327,18 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
     var fr = rc[0]
     var fc = rc[1]
     var inner = Int(o.inner) * V
-    var lines = (Int(o.total) // (Int(o.od) * Int(o.inner))) * LB
-    var pre = Int(block_idx.z)
-    var hi = pre // Int(o.od_lo)
-    var lo = pre % Int(o.od_lo)
-    var src_pre = Int(o.src) + hi * Int(o.so_pre) + lo * Int(o.so_pre_lo)
-    var dst_pre = Int(o.dst) + hi * Int(o.to_pre) + lo * Int(o.to_pre_lo)
-    var tab = Int(o.tab) + (pre % Int(o.tabmod)) * r * kin * 2
+    var lines = Int(UInt32(o.total) // (UInt32(o.od) * UInt32(o.inner))) * LB
+    var pre = UInt32(block_idx.z)
+    var hi = Off(pre // UInt32(o.od_lo))
+    var lo = Off(pre % UInt32(o.od_lo))
+    var so_line = Off(o.so_line)
+    var to_line = Off(o.to_line)
+    var sk = Off(o.sk)
+    var tj = Off(o.tj)
+    var ti = Off(o.ti)
+    var src_pre = Int(o.src) + Int(hi * Off(o.so_pre) + lo * Off(o.so_pre_lo))
+    var dst_pre = Int(o.dst) + Int(hi * Off(o.to_pre) + lo * Off(o.to_pre_lo))
+    var tab = Int(o.tab) + Int(pre % UInt32(o.tabmod)) * r * kin * 2
     var af = Array[SIMD[DType.float16, 2], 2 * RQ * KT](fill=SIMD[DType.float16, 2](0))
     comptime for jt in range(2 * RQ):
         comptime po = jt // RQ
@@ -348,8 +359,8 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
         var line = Int(block_idx.y) * RADIX8_LPB + l
         if line >= lines:                            # uniform over the block
             return
-        var src_line = src_pre + line * Int(o.so_line)
-        var dst_line = dst_pre + line * Int(o.to_line)
+        var src_line = src_pre + Int(Off(line) * so_line)
+        var dst_line = dst_pre + Int(Off(line) * to_line)
         for t in range(RADIX8_TILES):
             var p0 = (tile0 + t) * 8
             if p0 >= inner:                          # uniform over the simdgroup
@@ -359,7 +370,7 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
             var ok1 = p + 1 < inner
             var acc = Array[SIMD[DType.float32, 2], 2 * RQ](fill=SIMD[DType.float32, 2](0))
             comptime for kq in range(KQ):
-                var off = src_line + (kq * 8 + fr) * Int(o.sk) + p * SI
+                var off = src_line + Int(Off(kq * 8 + fr) * sk) + p * SI
                 comptime if bytes_in:
                     var vb = SIMD[DType.uint8, 2](0)
                     if ok1:
@@ -385,7 +396,7 @@ def k_radix8[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](base: Ba
             comptime for jq in range(RQ):
                 var re = fp_canonical(acc[jq])
                 var im = fp_canonical(acc[RQ + jq])
-                var off = dst_line + (jq * 8 + fr) * Int(o.tj) + p * Int(o.ti)
+                var off = dst_line + Int(Off(jq * 8 + fr) * tj + Off(p) * ti)
                 if ok1:
                     base.unsafe_store[width=4](off, SIMD[DType.uint8, 4](re[0], im[0], re[1], im[1]))
                 elif ok0:
@@ -402,6 +413,12 @@ def _stage[r: Int, kin: Int, bytes_in: Bool, V: Int = 1, LB: Int = 1](ctx: Devic
         t0 = perf_counter_ns()
     if o.total >= 1 << 32:
         raise Error("radix stage too large for the 32-bit thread decode")
+    comptime if OFF32:                                  # the stage's kernels offset within a region in 32 bits
+        var ln = Int(o.total) // (Int(o.od) * Int(o.inner)) * LB
+        var reach = max(ln * Int(o.so_line) + Int(o.od) * Int(o.so_pre) + Int(o.od_lo) * Int(o.so_pre_lo) + kin * Int(o.sk) + Int(o.inner) * V * Int(o.si),
+                        ln * Int(o.to_line) + Int(o.od) * Int(o.to_pre) + Int(o.od_lo) * Int(o.to_pre_lo) + r * Int(o.tj) + Int(o.inner) * V * Int(o.ti))
+        if reach >= 1 << 32:
+            raise Error("radix stage too large for 32-bit offsets")
     var launched = False
     comptime if r == 3 or r == 7 or r == 9:
         comptime assert kin == r and not bytes_in, "odd stages are square F2 stages"

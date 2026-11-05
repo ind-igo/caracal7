@@ -213,51 +213,50 @@ def gemm_f2[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var re = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
     var im = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
 
-    for kt in range(ceildiv(Ki, BK)):
-        comptime for i in range(0, BM * BK, THREADS):
-            var idx = i + tid
-            var r = idx // BK
-            var kk = idx % BK
-            var v = F2(0)
-            if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
-            As0.ptr.unsafe_store(kk * BM + r, v[0])
-            As1.ptr.unsafe_store(kk * BM + r, v[1])
-        comptime for i in range(0, BK * BN, THREADS):
-            var idx = i + tid
-            var kk: Int
-            var nn: Int
-            comptime if L.kfast:
-                nn = idx // BK
-                kk = idx % BK
-            else:
-                kk = idx // BN
-                nn = idx % BN
-            var n = bcol + nn
-            var v = F2(0)
-            if n < Ni and kt * BK + kk < Ki:
-                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
-            Bs0.ptr.unsafe_store(kk * BN + nn, v[0])
-            comptime if not L.real:
-                Bs1.ptr.unsafe_store(kk * BN + nn, v[1])
-        barrier()
-        comptime for kk in range(BK):
-            var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            tile_mac[B](a0, b0, re)
-            tile_mac[B](a1, b0, im)
-            comptime if not L.real:
-                var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-                tile_mac[B, neg=True](a1, b1, re)
-                tile_mac[B](a0, b1, im)
-        barrier()
-        if ((kt + 1) * BK) % B.max_terms == 0:
-            tile_reduce(re)
-            tile_reduce(im)
+    var kblocks = ceildiv(Ki, BK)
+    for kt0 in range(0, kblocks, B.max_terms // BK):
+        for kt in range(kt0, min(kt0 + B.max_terms // BK, kblocks)):
+            comptime for i in range(0, BM * BK, THREADS):
+                var idx = i + tid
+                var r = idx // BK
+                var kk = idx % BK
+                var v = F2(0)
+                if brow + r < Mi and kt * BK + kk < Ki:
+                    v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                As0.ptr.unsafe_store(kk * BM + r, v[0])
+                As1.ptr.unsafe_store(kk * BM + r, v[1])
+            comptime for i in range(0, BK * BN, THREADS):
+                var idx = i + tid
+                var kk: Int
+                var nn: Int
+                comptime if L.kfast:
+                    nn = idx // BK
+                    kk = idx % BK
+                else:
+                    kk = idx // BN
+                    nn = idx % BN
+                var n = bcol + nn
+                var v = F2(0)
+                if n < Ni and kt * BK + kk < Ki:
+                    v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+                Bs0.ptr.unsafe_store(kk * BN + nn, v[0])
+                comptime if not L.real:
+                    Bs1.ptr.unsafe_store(kk * BN + nn, v[1])
+            barrier()
+            comptime for kk in range(BK):
+                var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                tile_mac[B](a0, b0, re)
+                tile_mac[B](a1, b0, im)
+                comptime if not L.real:
+                    var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                    tile_mac[B, neg=True](a1, b1, re)
+                    tile_mac[B](a0, b1, im)
+            barrier()
+        tile_reduce(re)
+        tile_reduce(im)
 
-    tile_reduce(re)
-    tile_reduce(im)
     comptime for i in range(TM):
         var m = brow + trow * TM + i
         comptime for j in range(TN):
@@ -337,51 +336,52 @@ def gemm_f2_apple[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
     var re = Op.zero_accum()
     var im = Op.zero_accum()
 
-    for kt in range(ceildiv(Ki, BK)):
-        comptime for i in range(0, BM * BK, THREADS):
-            var idx = i + tid
-            var r = idx // BK
-            var kk = idx % BK
-            var v = F2(0)
-            if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
-            var a1 = Int8(v[1])
-            As0.ptr.unsafe_store(idx, Int8(v[0]))
-            As1.ptr.unsafe_store(idx, a1)
-            As2.ptr.unsafe_store(idx, -a1)
-        comptime for i in range(0, BK * BN, THREADS):
-            var idx = i + tid
-            var kk: Int
-            var nn: Int
-            comptime if L.kfast:
-                nn = idx // BK
-                kk = idx % BK
-            else:
-                kk = idx // BN
-                nn = idx % BN
-            var n = bcol + nn
-            var v = F2(0)
-            if n < Ni and kt * BK + kk < Ki:
-                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
-            Bs0.ptr.unsafe_store(kk * BN + nn, Int8(v[0]))
+    var kblocks = ceildiv(Ki, BK)
+    for kt0 in range(0, kblocks, B.max_terms // BK):
+        for kt in range(kt0, min(kt0 + B.max_terms // BK, kblocks)):
+            comptime for i in range(0, BM * BK, THREADS):
+                var idx = i + tid
+                var r = idx // BK
+                var kk = idx % BK
+                var v = F2(0)
+                if brow + r < Mi and kt * BK + kk < Ki:
+                    v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                var a1 = Int8(v[1])
+                As0.ptr.unsafe_store(idx, Int8(v[0]))
+                As1.ptr.unsafe_store(idx, a1)
+                As2.ptr.unsafe_store(idx, -a1)
+            comptime for i in range(0, BK * BN, THREADS):
+                var idx = i + tid
+                var kk: Int
+                var nn: Int
+                comptime if L.kfast:
+                    nn = idx // BK
+                    kk = idx % BK
+                else:
+                    kk = idx // BN
+                    nn = idx % BN
+                var n = bcol + nn
+                var v = F2(0)
+                if n < Ni and kt * BK + kk < Ki:
+                    v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+                Bs0.ptr.unsafe_store(kk * BN + nn, Int8(v[0]))
+                comptime if not L.real:
+                    Bs1.ptr.unsafe_store(kk * BN + nn, Int8(v[1]))
+            barrier()
+            var a0 = As0.tile[SGM, BK](sg_row, 0)
+            var a1 = As1.tile[SGM, BK](sg_row, 0)
+            var b0 = Bs0.tile[BK, SGN](0, sg_col)
+            op.mma(re, a0, b0)
+            op.mma(im, a1, b0)
             comptime if not L.real:
-                Bs1.ptr.unsafe_store(kk * BN + nn, Int8(v[1]))
-        barrier()
-        var a0 = As0.tile[SGM, BK](sg_row, 0)
-        var a1 = As1.tile[SGM, BK](sg_row, 0)
-        var b0 = Bs0.tile[BK, SGN](0, sg_col)
-        op.mma(re, a0, b0)
-        op.mma(im, a1, b0)
-        comptime if not L.real:
-            var a2 = As2.tile[SGM, BK](sg_row, 0)
-            var b1 = Bs1.tile[BK, SGN](0, sg_col)
-            op.mma(re, a2, b1)
-            op.mma(im, a0, b1)
-        barrier()
-        if ((kt + 1) * BK) % B.max_terms == 0:
-            comptime for t in range(NM * NN):
-                re[t] = f_reduce_signed(re[t]).cast[DType.int32]()
-                im[t] = f_reduce_signed(im[t]).cast[DType.int32]()
+                var a2 = As2.tile[SGM, BK](sg_row, 0)
+                var b1 = Bs1.tile[BK, SGN](0, sg_col)
+                op.mma(re, a2, b1)
+                op.mma(im, a0, b1)
+            barrier()
+        comptime for t in range(NM * NN):
+            re[t] = f_reduce_signed(re[t]).cast[DType.int32]()
+            im[t] = f_reduce_signed(im[t]).cast[DType.int32]()
 
     comptime for mi in range(NM):
         comptime for ni in range(NN):
@@ -479,56 +479,57 @@ def gemm_f2_nvidia[B: Backend, T: Tile, L: Loader, D: Int, acc: Bool = False](
             bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r)),
             bitcast[DType.uint32, 1](P.ptr.unsafe_load[width=4](r + 16)))
 
-    for kt in range(ceildiv(Ki, BK)):
-        comptime for i in range(0, BM * BK, THREADS):
-            var idx = i + tid
-            var r = idx // BK
-            var kk = idx % BK
-            var v = F2(0)
-            if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
-            var a1 = Int8(v[1])
-            As0.ptr.unsafe_store(idx, Int8(v[0]))
-            As1.ptr.unsafe_store(idx, a1)
-            As2.ptr.unsafe_store(idx, -a1)
-        comptime for i in range(0, BK * BN, THREADS):
-            var idx = i + tid
-            var kk: Int
-            var nn: Int
-            comptime if L.kfast:
-                nn = idx // BK
-                kk = idx % BK
-            else:
-                kk = idx // BN
-                nn = idx % BN
-            var n = bcol + nn
-            var v = F2(0)
-            if n < Ni and kt * BK + kk < Ki:
-                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
-            Bs0.ptr.unsafe_store(nn * BK + kk, Int8(v[0]))
-            comptime if not L.real:
-                Bs1.ptr.unsafe_store(nn * BK + kk, Int8(v[1]))
-        barrier()
-        comptime for ks in range(0, BK, 32):
-            comptime for mi in range(NM):
-                var row = wrow * WM + mi * 16
-                var a0 = frag_a(As0, row, ks)
-                var a1 = frag_a(As1, row, ks)
-                var a2 = frag_a(As2, row, ks)
-                comptime for ni in range(NN):
-                    var col = wcol * WN + ni * 8
-                    var b0 = frag_b(Bs0, col, ks)
-                    mma_s8(re[mi * NN + ni], a0, b0)
-                    mma_s8(im[mi * NN + ni], a1, b0)
-                    comptime if not L.real:
-                        var b1 = frag_b(Bs1, col, ks)
-                        mma_s8(re[mi * NN + ni], a2, b1)
-                        mma_s8(im[mi * NN + ni], a0, b1)
-        barrier()
-        if ((kt + 1) * BK) % B.max_terms == 0:
-            comptime for f in range(NM * NN):
-                re[f] = f_reduce_signed(re[f]).cast[DType.int32]()
-                im[f] = f_reduce_signed(im[f]).cast[DType.int32]()
+    var kblocks = ceildiv(Ki, BK)
+    for kt0 in range(0, kblocks, B.max_terms // BK):
+        for kt in range(kt0, min(kt0 + B.max_terms // BK, kblocks)):
+            comptime for i in range(0, BM * BK, THREADS):
+                var idx = i + tid
+                var r = idx // BK
+                var kk = idx % BK
+                var v = F2(0)
+                if brow + r < Mi and kt * BK + kk < Ki:
+                    v = base.unsafe_load[width=2, alignment=2](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                var a1 = Int8(v[1])
+                As0.ptr.unsafe_store(idx, Int8(v[0]))
+                As1.ptr.unsafe_store(idx, a1)
+                As2.ptr.unsafe_store(idx, -a1)
+            comptime for i in range(0, BK * BN, THREADS):
+                var idx = i + tid
+                var kk: Int
+                var nn: Int
+                comptime if L.kfast:
+                    nn = idx // BK
+                    kk = idx % BK
+                else:
+                    kk = idx // BN
+                    nn = idx % BN
+                var n = bcol + nn
+                var v = F2(0)
+                if n < Ni and kt * BK + kk < Ki:
+                    v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+                Bs0.ptr.unsafe_store(nn * BK + kk, Int8(v[0]))
+                comptime if not L.real:
+                    Bs1.ptr.unsafe_store(nn * BK + kk, Int8(v[1]))
+            barrier()
+            comptime for ks in range(0, BK, 32):
+                comptime for mi in range(NM):
+                    var row = wrow * WM + mi * 16
+                    var a0 = frag_a(As0, row, ks)
+                    var a1 = frag_a(As1, row, ks)
+                    var a2 = frag_a(As2, row, ks)
+                    comptime for ni in range(NN):
+                        var col = wcol * WN + ni * 8
+                        var b0 = frag_b(Bs0, col, ks)
+                        mma_s8(re[mi * NN + ni], a0, b0)
+                        mma_s8(im[mi * NN + ni], a1, b0)
+                        comptime if not L.real:
+                            var b1 = frag_b(Bs1, col, ks)
+                            mma_s8(re[mi * NN + ni], a2, b1)
+                            mma_s8(im[mi * NN + ni], a0, b1)
+            barrier()
+        comptime for f in range(NM * NN):
+            re[f] = f_reduce_signed(re[f]).cast[DType.int32]()
+            im[f] = f_reduce_signed(im[f]).cast[DType.int32]()
 
     comptime for mi in range(NM):
         comptime for ni in range(NN):
@@ -631,71 +632,68 @@ def gemm_f4[B: Backend, T: Tile, L: Loader4, D: Int, acc: Bool = False](
     var c2 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
     var c3 = Array[SIMD[DType.int32, TN], TM](fill=SIMD[DType.int32, TN](0))
 
-    for kt in range(ceildiv(Ki, BK)):
-        comptime for i in range(0, BM * BK, THREADS):
-            var idx = i + tid
-            var r = idx // BK
-            var kk = idx % BK
-            var v = F4(0)
-            if brow + r < Mi and kt * BK + kk < Ki:
-                v = base.unsafe_load[width=4](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
-            As0.ptr.unsafe_store(kk * BM + r, v[0])
-            As1.ptr.unsafe_store(kk * BM + r, v[1])
-            As2.ptr.unsafe_store(kk * BM + r, v[2])
-            As3.ptr.unsafe_store(kk * BM + r, v[3])
-        comptime for i in range(0, BK * BN, THREADS):
-            var idx = i + tid
-            var kk = idx // BN
-            var n = bcol + idx % BN
-            var v = F4(0)
-            if n < Ni and kt * BK + kk < Ki:
-                v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
-            Bs0.ptr.unsafe_store(kk * BN + idx % BN, v[0])
-            Bs1.ptr.unsafe_store(kk * BN + idx % BN, v[1])
-            Bs2.ptr.unsafe_store(kk * BN + idx % BN, v[2])
-            Bs3.ptr.unsafe_store(kk * BN + idx % BN, v[3])
-        barrier()
-        comptime for kk in range(BK):
-            var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var a2 = As2.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var a3 = As3.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
-            var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            var b2 = Bs2.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            var b3 = Bs3.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
-            # (a_lo + a_hi j)(b_lo + b_hi j) = a_lo b_lo + (2 + i) a_hi b_hi + (a_lo b_hi + a_hi b_lo) j
-            tile_mac[B](a0, b0, c0)
-            tile_mac[B, neg=True](a1, b1, c0)
-            tile_mac[B](a2 + a2, b2, c0)             # 2 (a2 b2 - a3 b3) - (a2 b3 + a3 b2)
-            tile_mac[B, neg=True](a3 + a3, b3, c0)
-            tile_mac[B, neg=True](a2, b3, c0)
-            tile_mac[B, neg=True](a3, b2, c0)
-            tile_mac[B](a0, b1, c1)
-            tile_mac[B](a1, b0, c1)
-            tile_mac[B](a2 + a2, b3, c1)             # 2 (a2 b3 + a3 b2) + (a2 b2 - a3 b3)
-            tile_mac[B](a3 + a3, b2, c1)
-            tile_mac[B](a2, b2, c1)
-            tile_mac[B, neg=True](a3, b3, c1)
-            tile_mac[B](a0, b2, c2)
-            tile_mac[B, neg=True](a1, b3, c2)
-            tile_mac[B](a2, b0, c2)
-            tile_mac[B, neg=True](a3, b1, c2)
-            tile_mac[B](a0, b3, c3)
-            tile_mac[B](a1, b2, c3)
-            tile_mac[B](a2, b1, c3)
-            tile_mac[B](a3, b0, c3)
-        barrier()
-        if ((kt + 1) * BK) % F4_TERMS == 0:
-            tile_reduce(c0)
-            tile_reduce(c1)
-            tile_reduce(c2)
-            tile_reduce(c3)
+    var kblocks = ceildiv(Ki, BK)
+    for kt0 in range(0, kblocks, F4_TERMS // BK):
+        for kt in range(kt0, min(kt0 + F4_TERMS // BK, kblocks)):
+            comptime for i in range(0, BM * BK, THREADS):
+                var idx = i + tid
+                var r = idx // BK
+                var kk = idx % BK
+                var v = F4(0)
+                if brow + r < Mi and kt * BK + kk < Ki:
+                    v = base.unsafe_load[width=4](Int(o.a) + (brow + r) * Int(o.sa_m) + (kt * BK + kk) * Int(o.sa_k) + za)
+                As0.ptr.unsafe_store(kk * BM + r, v[0])
+                As1.ptr.unsafe_store(kk * BM + r, v[1])
+                As2.ptr.unsafe_store(kk * BM + r, v[2])
+                As3.ptr.unsafe_store(kk * BM + r, v[3])
+            comptime for i in range(0, BK * BN, THREADS):
+                var idx = i + tid
+                var kk = idx // BN
+                var n = bcol + idx % BN
+                var v = F4(0)
+                if n < Ni and kt * BK + kk < Ki:
+                    v = L.load(base, o, kt * BK + kk, n // D, n % D, zb)
+                Bs0.ptr.unsafe_store(kk * BN + idx % BN, v[0])
+                Bs1.ptr.unsafe_store(kk * BN + idx % BN, v[1])
+                Bs2.ptr.unsafe_store(kk * BN + idx % BN, v[2])
+                Bs3.ptr.unsafe_store(kk * BN + idx % BN, v[3])
+            barrier()
+            comptime for kk in range(BK):
+                var a0 = As0.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var a1 = As1.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var a2 = As2.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var a3 = As3.ptr.unsafe_load[width=TM](kk * BM + trow * TM).cast[DType.int32]()
+                var b0 = Bs0.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                var b1 = Bs1.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                var b2 = Bs2.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                var b3 = Bs3.ptr.unsafe_load[width=TN](kk * BN + tcol * TN).cast[DType.int32]()
+                # (a_lo + a_hi j)(b_lo + b_hi j) = a_lo b_lo + (2 + i) a_hi b_hi + (a_lo b_hi + a_hi b_lo) j
+                tile_mac[B](a0, b0, c0)
+                tile_mac[B, neg=True](a1, b1, c0)
+                tile_mac[B](a2 + a2, b2, c0)             # 2 (a2 b2 - a3 b3) - (a2 b3 + a3 b2)
+                tile_mac[B, neg=True](a3 + a3, b3, c0)
+                tile_mac[B, neg=True](a2, b3, c0)
+                tile_mac[B, neg=True](a3, b2, c0)
+                tile_mac[B](a0, b1, c1)
+                tile_mac[B](a1, b0, c1)
+                tile_mac[B](a2 + a2, b3, c1)             # 2 (a2 b3 + a3 b2) + (a2 b2 - a3 b3)
+                tile_mac[B](a3 + a3, b2, c1)
+                tile_mac[B](a2, b2, c1)
+                tile_mac[B, neg=True](a3, b3, c1)
+                tile_mac[B](a0, b2, c2)
+                tile_mac[B, neg=True](a1, b3, c2)
+                tile_mac[B](a2, b0, c2)
+                tile_mac[B, neg=True](a3, b1, c2)
+                tile_mac[B](a0, b3, c3)
+                tile_mac[B](a1, b2, c3)
+                tile_mac[B](a2, b1, c3)
+                tile_mac[B](a3, b0, c3)
+            barrier()
+        tile_reduce(c0)
+        tile_reduce(c1)
+        tile_reduce(c2)
+        tile_reduce(c3)
 
-    tile_reduce(c0)
-    tile_reduce(c1)
-    tile_reduce(c2)
-    tile_reduce(c3)
     comptime for i in range(TM):
         var m = brow + trow * TM + i
         comptime for j in range(TN):

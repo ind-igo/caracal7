@@ -3,10 +3,15 @@ host readers of the same layouts. Every load and store of a committed layout goe
 kernel module defines its own."""
 
 from std.builtin.device_passable import DevicePassable, DeviceTypeEncoder
+from std.sys import default_accelerator
 
 from core.field import E, E_BYTES, E_WIDTH
 
 comptime Base = MutPointer[UInt8, MutAnyOrigin]   # the arena base every kernel takes
+# Offset arithmetic inside a kernel. The Apple GPU emulates 64-bit multiplies and divisions, so there an offset within
+# one region is 32 bits (`_stage`, `rs_encode_on` and `LdeLayout` check the bound on the host); elsewhere it stays 64.
+comptime OFF32 = default_accelerator().is_apple_gpu()
+comptime Off = Scalar[DType.uint32 if OFF32 else DType.uint64]
 
 
 struct Buf[W: Int](TrivialRegisterPassable, DevicePassable):

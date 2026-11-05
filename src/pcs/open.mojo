@@ -729,45 +729,46 @@ def k_open_apple8[BN: Int](base: Base, a: Int64, b: Int64, c: Int64, mrows: Int3
     var Bs = stack_allocation[DType.float16, address_space=AddressSpace.SHARED](row_major[BK * BN]())   # Bs[k][n]
     var acc = Array[SIMD[DType.float32, 2], NT](fill=SIMD[DType.float32, 2](0))
 
-    for kc in range(ceildiv(KB, BK)):
-        var k_base = z * KB + kc * BK
-        # A: thread -> slot k_base + tid // 8, rows (tid % 8) 8 .. + 8: 8 contiguous bytes (row offsets are 4-aligned)
-        var ka = tid // 8
-        var ma = (tid % 8) * 8
-        var va = SIMD[DType.uint8, 8](0)
-        if k_base + ka < k_end:
-            if m0 + ma + 8 <= Mr:
-                va = base.unsafe_load[width=8, alignment=4](Int(a) + (k_base + ka) * Mr + m0 + ma)
-            elif m0 + ma < Mr:
-                for j in range(Mr - m0 - ma):
-                    va[j] = base[unsafe_offset=Int(a) + (k_base + ka) * Mr + m0 + ma + j]
-        var fa = va.cast[DType.float16]()
-        comptime for j in range(8):
-            As.ptr.unsafe_store((ma + j) * BK + ka, fa[j])
-        # B: thread < NT * 32 -> column tid // 4, slots (tid % 4) 8 .. + 8 of the chunk: 8 contiguous bytes
-        if tid < NT * 8 * 4:
-            var nb = n0 + tid // 4
-            var kb = (tid % 4) * 8
-            var vb = SIMD[DType.uint8, 8](0)
-            if nb < Nc:
-                if k_base + kb + 8 <= k_end:
-                    vb = base.unsafe_load[width=8](Int(b) + nb * Int(n_total) + k_base + kb)   # k_base is any multiple of K: no alignment
-                elif k_base + kb < k_end:
-                    for j in range(k_end - k_base - kb):
-                        vb[j] = base[unsafe_offset=Int(b) + nb * Int(n_total) + k_base + kb + j]
-            var fb = vb.cast[DType.float16]()
+    var kchunks = ceildiv(KB, BK)
+    for kc0 in range(0, kchunks, 32):
+        for kc in range(kc0, min(kc0 + 32, kchunks)):
+            var k_base = z * KB + kc * BK
+            # A: thread -> slot k_base + tid // 8, rows (tid % 8) 8 .. + 8: 8 contiguous bytes (row offsets are 4-aligned)
+            var ka = tid // 8
+            var ma = (tid % 8) * 8
+            var va = SIMD[DType.uint8, 8](0)
+            if k_base + ka < k_end:
+                if m0 + ma + 8 <= Mr:
+                    va = base.unsafe_load[width=8, alignment=4](Int(a) + (k_base + ka) * Mr + m0 + ma)
+                elif m0 + ma < Mr:
+                    for j in range(Mr - m0 - ma):
+                        va[j] = base[unsafe_offset=Int(a) + (k_base + ka) * Mr + m0 + ma + j]
+            var fa = va.cast[DType.float16]()
             comptime for j in range(8):
-                Bs.ptr.unsafe_store((kb + j) * BN + nb - n0, fb[j])
-        barrier()
-        comptime for ks in range(BK // 8):
-            var af = As.ptr.unsafe_load[width=2]((sg * 8 + r) * BK + ks * 8 + cb)
-            comptime for nt in range(NT):
-                var bf = Bs.ptr.unsafe_load[width=2]((ks * 8 + r) * BN + nt * 8 + cb)
-                acc[nt] = mma8(af, bf, acc[nt])
-        barrier()
-        if (kc + 1) % 32 == 0:
-            comptime for nt in range(NT):
-                acc[nt] = fp_reduce(acc[nt])
+                As.ptr.unsafe_store((ma + j) * BK + ka, fa[j])
+            # B: thread < NT * 32 -> column tid // 4, slots (tid % 4) 8 .. + 8 of the chunk: 8 contiguous bytes
+            if tid < NT * 8 * 4:
+                var nb = n0 + tid // 4
+                var kb = (tid % 4) * 8
+                var vb = SIMD[DType.uint8, 8](0)
+                if nb < Nc:
+                    if k_base + kb + 8 <= k_end:
+                        vb = base.unsafe_load[width=8](Int(b) + nb * Int(n_total) + k_base + kb)   # k_base is any multiple of K: no alignment
+                    elif k_base + kb < k_end:
+                        for j in range(k_end - k_base - kb):
+                            vb[j] = base[unsafe_offset=Int(b) + nb * Int(n_total) + k_base + kb + j]
+                var fb = vb.cast[DType.float16]()
+                comptime for j in range(8):
+                    Bs.ptr.unsafe_store((kb + j) * BN + nb - n0, fb[j])
+            barrier()
+            comptime for ks in range(BK // 8):
+                var af = As.ptr.unsafe_load[width=2]((sg * 8 + r) * BK + ks * 8 + cb)
+                comptime for nt in range(NT):
+                    var bf = Bs.ptr.unsafe_load[width=2]((ks * 8 + r) * BN + nt * 8 + cb)
+                    acc[nt] = mma8(af, bf, acc[nt])
+            barrier()
+        comptime for nt in range(NT):
+            acc[nt] = fp_reduce(acc[nt])
 
     var Mp = m0 + sg * 8 + r
     if Mp < Mr:

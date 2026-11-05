@@ -125,13 +125,13 @@ def k_materialize_level1[p: Params](base: Base, running: Buf[E_BYTES], batch: Bu
     bj[j] = 1
     var lo = ip % POW_LO
     var hi = POW_LO + ip // POW_LO
-    for q in range(Int(count)):                     # 4 count products of canonical values, below 16 K each
-        var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
-        var m = to_f32(ext_mul[2](bj, pw))
-        comptime for tau in range(4):
-            w = to_f32(batch.load(base, 1 + 4 * (q * p.n_cw() + cw) + tau)).fma(EF(m[tau]), w)
-        if q % 128 == 127:                          # 512 terms: 512 * 126^2 + 190 < 2^24, no cancellation here
-            w = fp_reduce(w)
+    for q0 in range(0, Int(count), 128):            # 512 terms: 512 * 126^2 + 190 < 2^24, no cancellation here
+        for q in range(q0, min(q0 + 128, Int(count))):   # 4 count products of canonical values, below 16 K each
+            var pw = ext_mul[2](ptab.load(base, q * TAB + lo), ptab.load(base, q * TAB + hi))
+            var m = to_f32(ext_mul[2](bj, pw))
+            comptime for tau in range(4):
+                w = to_f32(batch.load(base, 1 + 4 * (q * p.n_cw() + cw) + tau)).fma(EF(m[tau]), w)
+        w = fp_reduce(w)
     w_tilde.store(base, slot, fp_canonical(w))
 
 

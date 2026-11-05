@@ -29,14 +29,15 @@ transforms radix stages:
                back: 13 ms of round trip at 32 x 8064"""
 
 from std.math import ceildiv
+from std.memory import bitcast
 from max.gpu.host import DeviceContext
 
 from core.field import F2, E, V2, E_WIDTH, wcast, f_reduce_signed, f_add, f_mul, f_sub, ext_mul, ext_pow, fp_center, fp_reduce, fp_canonical, fp_mul_f2, fp_ext_mul, E_LEVEL, E_BYTES, VH, e_planes, e_merge, ef_planes, ef_merge, to_f32, E_DFT_V
 from core.params import Params
 from core.tables import TableLayout
 from core.backend import BACKEND, Strided, launch_gemm_f2, strided
-from relations.ir import ENTRY, ENT_A, ENT_B, ENT_MULT, ENT_COEF, ENT_FAMILY, ENT_CHAL, ENT_BASIS, NONE, NO_BASIS, ACC, KIND_HORNER, HORNER_TRANSITIONS, acc_kind
-from core.bytes import Base, Buf, u16, get_u16
+from relations.ir import ENTRY, ENT_A, ENT_COEF, ENT_FAMILY, ENT_CHAL, ENT_BASIS, NONE, NO_BASIS, ACC, KIND_HORNER, HORNER_TRANSITIONS, acc_kind
+from core.bytes import Base, Buf, Off, OFF32, u16, get_u16
 from core.arena import Arena
 from core.dft import dft_axis, DftPlan
 from max.gpu import global_idx
@@ -108,45 +109,47 @@ struct LdePoint(TrivialRegisterPassable):
     (`lde_index`). Shifts are even, so a read keeps the third and adds half the shift to t and i1: two constant
     multiplies and the wraps per read, as on the full grid (the full `lde_index` per read, about eight integer
     operations more, cost the ALU-bound residual 15 to 25 percent)."""
-    var t: Int
-    var i1: Int
-    var third: Int
+    var t: UInt32
+    var i1: UInt32
+    var third: UInt32
 
     @always_inline
     def __init__[p: Params](out self, j1: Int, j2: Int):
-        self.t = j2 >> 1
-        self.i1 = j1 >> 1
-        self.third = (j2 & 1) * (1 + (j1 & 1)) * lde_row[p]()
+        self.t = UInt32(j2 >> 1)
+        self.i1 = UInt32(j1 >> 1)
+        self.third = UInt32((j2 & 1) * (1 + (j1 & 1)) * lde_row[p]())
 
     @always_inline
-    def at[p: Params](self, col: Int, di1: Int, dt: Int) -> Int:
+    def at[p: Params](self, col: UInt32, di1: UInt32, dt: UInt32) -> Int:
         """The element of column col at the point shifted by (2 di1, 2 dt); di1 < h1 and dt <= h2 (a shift below
         the domain plus the second row of a thread), so one subtraction wraps each."""
-        comptime W = lde_row[p]()
+        comptime W = UInt32(lde_row[p]())
+        comptime H1 = UInt32(p.h1())
+        comptime H2 = UInt32(p.h2())
         var i1 = self.i1 + di1
-        if i1 >= p.h1():
-            i1 -= p.h1()
+        if i1 >= H1:
+            i1 -= H1
         var t = self.t + dt
-        if t >= p.h2():
-            t -= p.h2()
-        return (col * p.h2() + t) * 3 * W + self.third + i1
+        if t >= H2:
+            t -= H2
+        return Int(Off(col) * Off(H2 * 3 * W) + Off(t) * Off(3 * W) + Off(self.third + i1))    # col * S: shared by the V rows
 
 
 @always_inline
-def _read[p: Params](base: Base, lde: Buf[2], at: Int, pt: LdePoint, dt: Int) -> F2:
-    """c(shift point) for the read descriptor (col, dj1, dj2) at `at`, `dt` row pairs below the point;
-    shifts are below the domain size and even (Shape)."""
-    return lde.load(base, pt.at[p](u16(base, at), u16(base, at + 2) >> 1, (u16(base, at + 4) >> 1) + dt))
+def _read[p: Params](base: Base, lde: Buf[2], col: UInt16, dj1: UInt16, dj2: UInt16, pt: LdePoint, dt: Int) -> F2:
+    """c(shift point) for the read descriptor (col, dj1, dj2), `dt` row pairs below the point; shifts are
+    below the domain size and even (Shape)."""
+    return lde.load(base, pt.at[p](UInt32(col), UInt32(dj1 >> 1), UInt32(dj2 >> 1) + UInt32(dt)))
 
 
 @always_inline
-def _z_read[p: Params](base: Base, lde: Buf[2], col: Int, pt: LdePoint, di1: Int) -> E:
+def _z_read[p: Params](base: Base, lde: Buf[2], col: UInt32, pt: LdePoint, di1: UInt32) -> E:
     """R(point shifted by omega1^di1) = sum_t b_t R_t from the e coordinate columns at col: with R_t = u_t + i v_t
     in F2, coordinate 2l is u_2l - v_(2l + 1) and 2l + 1 is v_2l + u_(2l + 1) (i^2 = -1, i = b_1)."""
     var r = E(0)
     comptime for l in range(E_BYTES // 2):
-        var a = lde.load(base, pt.at[p](col + 2 * l, di1, 0))
-        var b = lde.load(base, pt.at[p](col + 2 * l + 1, di1, 0))
+        var a = lde.load(base, pt.at[p](col + UInt32(2 * l), di1, 0))
+        var b = lde.load(base, pt.at[p](col + UInt32(2 * l + 1), di1, 0))
         r[2 * l] = f_sub(a[0], b[1])
         r[2 * l + 1] = f_add(a[1], b[0])
     return r
@@ -162,6 +165,7 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
     for a satisfied statement, so the last quadrant's threads write zero. The Horner transitions are
     k_horner's, launched after this one. One body after the point is chosen: a body per branch inlines twice
     and ran 15 percent slower."""
+    comptime assert ENT_A % 4 == 0, "the entry descriptors are one 4-aligned load"
     comptime G1 = 2 * p.h1()
     comptime G2 = 2 * p.h2()
     comptime V = 2 if p.h2() % 2 == 0 else 1
@@ -169,7 +173,6 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
     comptime Q2 = p.h1() * p.h2()
     comptime R1 = Q1 // V
     comptime R2 = Q2 // V
-    comptime assert BACKEND.max_terms & (BACKEND.max_terms - 1) == 0, "the reduction cadence masks k"
     var gid = Int(global_idx.x)
     if gid >= R1 + R2 + Q2:
         return
@@ -197,30 +200,35 @@ def k_residual[p: Params](base: Base, lde: Buf[2], fam: Buf[1], count: Int32, ga
         g2f[t] = fp_center(gate2.load(base, j2 + 2 * t))
     # fp32 lanes: |c| <= 126, times a second read <= 31.7 K, times a centered gate <= 4 M, reduced to
     # |v| <= 190; a term kappa v is below 48 K, 128 of them below 6.2 M, exact in fp32
-    for k in range(Int(count)):
-        var ent = fam.at(k * ENTRY)
-        var second = u16(base, ent + ENT_B) != NONE
-        var mult = fam.load(base, k * ENTRY + ENT_MULT)
-        var kap = e_planes(Buf[E_BYTES](ent).load(base, 0))
-        var kre = to_f32(kap[0])
-        var kim = to_f32(kap[1])
-        comptime for t in range(V):
-            var v = to_f32(_read[p](base, lde, ent + ENT_A, pt, t))
-            if second:
-                v = fp_mul_f2(v, to_f32(_read[p](base, lde, ent + ENT_B, pt, t)))
-            if mult == 1:
-                v = fp_mul_f2(v, g1f)
-            elif mult == 2:
-                v = fp_mul_f2(v, g2f[t])
-            v = fp_reduce(v)
-            var v0 = VH(v[0])
-            var v1 = VH(v[1])
-            re[t] = kim.fma(-v1, kre.fma(v0, re[t]))
-            im[t] = kim.fma(v0, kre.fma(v1, im[t]))
-        if (k & (BACKEND.max_terms - 1)) == BACKEND.max_terms - 1:
+    # Blocks of max_terms, not a test on k: with re and im in registers the optimizer if-converts a rare branch
+    # and runs the reduction on every term.
+    var n = Int(count)
+    for k0 in range(0, n, BACKEND.max_terms):
+        for k in range(k0, min(k0 + BACKEND.max_terms, n)):
+            var ent = fam.at(k * ENTRY)
+            # one load for both read descriptors and mult, at ENT_A: (col, dj1, dj2) twice, then mult | coef << 8
+            var d = bitcast[DType.uint16, 8](base.unsafe_load[width=16, alignment=4](ent + ENT_A))
+            var second = d[3] != NONE
+            var mult = d[6] & 255
+            var kap = e_planes(Buf[E_BYTES](ent).load(base, 0))
+            var kre = to_f32(kap[0])
+            var kim = to_f32(kap[1])
             comptime for t in range(V):
-                re[t] = fp_reduce(re[t])
-                im[t] = fp_reduce(im[t])
+                var v = to_f32(_read[p](base, lde, d[0], d[1], d[2], pt, t))
+                if second:
+                    v = fp_mul_f2(v, to_f32(_read[p](base, lde, d[3], d[4], d[5], pt, t)))
+                if mult == 1:
+                    v = fp_mul_f2(v, g1f)
+                elif mult == 2:
+                    v = fp_mul_f2(v, g2f[t])
+                v = fp_reduce(v)
+                var v0 = VH(v[0])
+                var v1 = VH(v[1])
+                re[t] = kim.fma(-v1, kre.fma(v0, re[t]))
+                im[t] = kim.fma(v0, kre.fma(v1, im[t]))
+        comptime for t in range(V):
+            re[t] = fp_reduce(re[t])
+            im[t] = fp_reduce(im[t])
     comptime for t in range(V):
         dst.store(base, (j2 + 2 * t) * G1 + j1, e_merge(fp_canonical(re[t]), fp_canonical(im[t])))
 
@@ -255,7 +263,7 @@ def k_horner[p: Params](base: Base, lde: Buf[2], gate1: Buf[2], families: Buf[1]
         var d = accs.offset(k * ACC)
         if Int(d.load(base, 38)) != KIND_HORNER:
             continue
-        var col = u16(base, d.at(0))
+        var col = UInt32(u16(base, d.at(0)))
         var first = u16(base, d.at(2))
         var ka = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS) * ENTRY)).load(base, 0))
         var kb = to_f32(Buf[E_BYTES](families.at((first - HORNER_TRANSITIONS + 1) * ENTRY)).load(base, 0))
@@ -397,7 +405,8 @@ def lde[p: Params](ctx: DeviceContext, arena: Arena,
 
 
 def lde_bytes[p: Params](columns: Int) -> Int:
-    """Bytes of the LDE buffer of `columns` columns: h2 row pairs of three `lde_row` thirds each."""
+    """Bytes of the LDE buffer of `columns` columns: h2 row pairs of three `lde_row` thirds each.
+    On Apple `LdePoint.at` indexes it in 32 bits, so 2^33 bytes is the limit (`LdeLayout` checks)."""
     return columns * 3 * lde_row[p]() * p.h2() * 2
 
 
